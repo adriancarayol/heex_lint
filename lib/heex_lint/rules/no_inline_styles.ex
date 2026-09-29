@@ -81,7 +81,7 @@ defmodule HeexLint.Rules.NoInlineStyles do
 
     dynamic =
       for position <- site.unresolved do
-        data = %{"component" => component}
+        data = %{"component" => Rule.display(component)}
 
         %{
           position: position,
@@ -118,7 +118,7 @@ defmodule HeexLint.Rules.NoInlineStyles do
       end
 
     if message do
-      data = %{"property" => property, "component" => component}
+      data = %{"property" => property, "component" => Rule.display(component)}
       %{position: position, message: Rule.message(message, data, words, options, file)}
     end
   end

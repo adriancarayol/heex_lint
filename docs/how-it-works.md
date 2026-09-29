@@ -22,6 +22,14 @@ Name matching across the project is a fallback only when imports cannot be
 read. Phoenix's own components (`link`, `form`, `inputs_for`...) are not the
 project's.
 
+**Components you don't own.** A module the project imports, uses or aliases
+that is not in the project is looked up in `deps/` by its conventional path
+(`SaladUI.Button` in `deps/salad_ui/lib/salad_ui/button.ex`), a few levels
+deep so `use SaladUI` brings in what its quote block imports. Its components
+then resolve with their attrs, and `<.button>` from `import SaladUI.Button`
+is SaladUI's, not a local one of the same name. A dependency's components are
+the design system only when `ui` or `component_imports` names them.
+
 **The design system** is the set of modules whose components `no_restyle`
 and `require_static_classes` check: every module defined under a
 `components/` directory, plus the modules `ui` names by prefix

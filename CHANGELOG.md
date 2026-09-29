@@ -32,6 +32,9 @@ Rule parity with [@shadcn/lint](https://github.com/shadcn-ui/lint) 0.2.0.
 - Readable maps spread onto elements and colocated CSS are read.
 - `no_arbitrary_values` suggests the variable shorthand for `[var(--x)]`.
 - `SETUP.md`: a prompt for coding agents to set the linter up.
+- Components you don't own: modules imported from `deps/` resolve, and join
+  the design system through `component_imports`.
+- Settings of the wrong type warn and are ignored.
 
 ## 0.1.0
 

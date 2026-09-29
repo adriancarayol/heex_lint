@@ -188,7 +188,7 @@ defmodule HeexLint.Rules.NoRestyle do
 
     places =
       if primitives != [],
-        do: places ++ [list_of(Enum.map(primitives, &"<#{Rule.display(&1)}>"))],
+        do: places ++ [list_of(Enum.map(primitives, &Rule.display/1))],
         else: places
 
     {rest, [last]} = Enum.split(places, -1)
@@ -222,12 +222,17 @@ defmodule HeexLint.Rules.NoRestyle do
     end
   end
 
+  # The design system's components in definition order, the way an
+  # index of exports reads.
   defp design_system_names(project) do
-    for {name, module} <- project.modules,
-        Map.get(project.ds, name, false),
-        {component_name, _} <- module.components,
-        uniq: true,
-        do: component_name
+    project.modules
+    |> Map.values()
+    |> Enum.filter(&Map.get(project.ds, &1.name, false))
+    |> Enum.sort_by(&{&1.file, &1.line})
+    |> Enum.flat_map(fn module ->
+      module.components |> Map.values() |> Enum.sort_by(&(&1.line || 0)) |> Enum.map(& &1.name)
+    end)
+    |> Enum.uniq()
   end
 
   # "row", "row and stack", "row, stack and box".

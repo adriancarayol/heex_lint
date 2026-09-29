@@ -107,6 +107,20 @@ defmodule HeexLint.Rules.NoInlineStylesTest do
     assert Enum.all?(findings, &(&1.message =~ ~s(entry "bg-red-500" is not a CSS property name)))
   end
 
+  test "{{component}} is the element as written, empty on HTML tags", %{tmp_dir: dir} do
+    template = """
+    <.card style="color: red" />
+    <div style="color: red" />
+    """
+
+    options = [message: "{{property}} on {{component|an element}}."]
+
+    assert Enum.map(styles(dir, template, options), & &1.message) == [
+             "color on .card.",
+             "color on an element."
+           ]
+  end
+
   test "custom messages", %{tmp_dir: dir} do
     [finding] =
       styles(dir, ~s(<div style="color: red" />),

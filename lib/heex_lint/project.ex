@@ -71,6 +71,8 @@ defmodule HeexLint.Project do
       |> Enum.flat_map(& &1.modules)
       |> Enum.reduce(%{}, fn module, acc -> Map.put_new(acc, module.name, module) end)
 
+    modules = dependency_modules(root, modules)
+
     project = %__MODULE__{root: root, settings: settings, sources: sources, modules: modules}
     project = attach_heex(project)
     project = mark_render_templates(project)
@@ -107,6 +109,85 @@ defmodule HeexLint.Project do
 
     %{project | wrappers: wrappers(project)}
   end
+
+  ## Dependencies
+
+  # Components you don't own: modules the project imports, uses or aliases
+  # from its dependencies (SaladUI, PetalComponents...), read from deps/ so
+  # their components and attrs resolve. Followed a few levels, since
+  # `use SaladUI` imports more modules through its quote block.
+  defp dependency_modules(root, modules) do
+    deps = dependency_dirs(root)
+
+    if deps == [] do
+      modules
+    else
+      Enum.reduce_while(1..3, {modules, MapSet.new()}, fn _round, {modules, tried} ->
+        missing =
+          modules
+          |> Map.values()
+          |> Enum.flat_map(&referenced_modules/1)
+          |> Enum.uniq()
+          |> Enum.reject(&(Map.has_key?(modules, &1) or MapSet.member?(tried, &1)))
+
+        found =
+          missing
+          |> Enum.flat_map(&dependency_file(deps, &1))
+          |> Enum.uniq()
+          |> Enum.flat_map(fn file -> Source.parse(file, File.read!(file)).modules end)
+
+        modules =
+          Enum.reduce(found, modules, fn module, acc -> Map.put_new(acc, module.name, module) end)
+
+        tried = MapSet.union(tried, MapSet.new(missing))
+
+        if found == [], do: {:halt, {modules, tried}}, else: {:cont, {modules, tried}}
+      end)
+      |> elem(0)
+    end
+  end
+
+  defp dependency_dirs(root) do
+    [Path.join(root, "deps"), Path.join([root, "..", "..", "deps"])]
+    |> Enum.map(&Path.expand/1)
+    |> Enum.filter(&File.dir?/1)
+    |> Enum.uniq()
+  end
+
+  defp referenced_modules(module) do
+    quoted =
+      for {_key, clauses} <- module.functions,
+          clause <- clauses,
+          clause.body != nil,
+          {_, found} = Macro.prewalk(clause.body, [], &collect_reference/2),
+          name <- found,
+          do: ModuleInfo.expand_alias(module, name)
+
+    module.imports ++ Enum.map(module.uses, &elem(&1, 0)) ++ Map.values(module.aliases) ++ quoted
+  end
+
+  defp collect_reference({kind, _, [target | _]} = node, acc)
+       when kind in [:import, :use, :alias] do
+    case Code.alias_name(target) do
+      nil -> {node, acc}
+      name -> {node, [name | acc]}
+    end
+  end
+
+  defp collect_reference(node, acc), do: {node, acc}
+
+  # SaladUI.Button lives in deps/salad_ui/lib/salad_ui/button.ex.
+  defp dependency_file(deps, module_name) do
+    relative = Macro.underscore(module_name) <> ".ex"
+
+    deps
+    |> Enum.flat_map(&Path.wildcard(Path.join([&1, "*", "lib", relative])))
+    |> Enum.take(1)
+  end
+
+  @doc "Whether `module` comes from a dependency rather than the project."
+  @spec dependency?(ModuleInfo.t()) :: boolean()
+  def dependency?(%ModuleInfo{file: file}), do: String.contains?(file, "/deps/")
 
   ## Theme
 
@@ -514,6 +595,11 @@ defmodule HeexLint.Project do
 
       Enum.any?(imports, &Regex.match?(&1, name)) ->
         true
+
+      String.contains?(file, "/deps/") ->
+        # A dependency's components are the design system only when the
+        # settings name them.
+        false
 
       true ->
         # Phoenix's convention, and the design system's home whatever else

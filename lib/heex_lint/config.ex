@@ -101,7 +101,7 @@ defmodule HeexLint.Config do
     :variant_functions
   ]
 
-  defstruct inputs: @default_inputs, settings: %{}, rules: [], overrides: []
+  defstruct inputs: @default_inputs, settings: %{}, rules: [], overrides: [], warnings: []
 
   @type rule_setting :: {module(), :error | :warning | :off, keyword()}
 
@@ -151,6 +151,8 @@ defmodule HeexLint.Config do
             "unknown heex_lint setting #{inspect(key)}; expected one of #{inspect(@setting_keys)}"
     end
 
+    {settings, warnings} = validate_settings(settings)
+
     {rules, overrides} =
       case Keyword.fetch(options, :rules) do
         {:ok, rules} -> {rules, Keyword.get(options, :overrides, [])}
@@ -161,9 +163,40 @@ defmodule HeexLint.Config do
       inputs: Keyword.get(options, :inputs, @default_inputs),
       settings: settings,
       rules: Enum.map(rules, &rule/1),
-      overrides: Enum.map(overrides, &override/1)
+      overrides: Enum.map(overrides, &override/1),
+      warnings: warnings
     }
   end
+
+  @list_settings [:ui, :component_imports, :ignore_imports, :merge_functions, :variant_functions]
+
+  # A setting of the wrong type is ignored with one warning, the way a
+  # shared ESLint setting is, rather than failing the whole run.
+  defp validate_settings(settings) do
+    Enum.reduce(settings, {%{}, []}, fn {key, value}, {valid, warnings} ->
+      cond do
+        key in @list_settings and strings?(value) ->
+          {Map.put(valid, key, List.wrap(value)), warnings}
+
+        key in @list_settings ->
+          {valid,
+           warnings ++ ["settings.#{key} must be a string or a list of strings; it is ignored."]}
+
+        is_binary(value) or value == nil ->
+          {Map.put(valid, key, value), warnings}
+
+        true ->
+          {valid, warnings ++ ["settings.#{key} must be a string; it is ignored."]}
+      end
+    end)
+  end
+
+  defp strings?(value) when is_binary(value), do: true
+
+  defp strings?(value) when is_list(value),
+    do: Enum.all?(value, &(is_binary(&1) or is_struct(&1, Regex)))
+
+  defp strings?(_), do: false
 
   defp rule({key, setting}) do
     module = module!(key)

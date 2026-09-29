@@ -32,6 +32,52 @@ defmodule HeexLint.IntegrationTest do
            |> Enum.sort() == [{"admin", ~s("bg-shop")}, {"shop", ~s("bg-admin")}]
   end
 
+  test "components you don't own: dependencies named by component_imports", %{tmp_dir: dir} do
+    salad = """
+    defmodule SaladUI.Button do
+      use Phoenix.Component
+
+      attr :variant, :string, values: ~w(default secondary ghost), default: "default"
+      attr :class, :any, default: nil
+
+      def button(assigns) do
+        ~H\"\"\"
+        <button class={["inline-flex", @class]} />
+        \"\"\"
+      end
+    end
+    """
+
+    page = """
+    defmodule AppWeb.ShopLive do
+      use Phoenix.LiveView
+      import SaladUI.Button
+
+      def render(assigns) do
+        ~H\"\"\"
+        <.button class="bg-pink-500">Buy</.button>
+        \"\"\"
+      end
+    end
+    """
+
+    files = %{
+      "deps/salad_ui/lib/salad_ui/button.ex" => salad,
+      "lib/app_web/live/shop_live.ex" => page
+    }
+
+    rules = [no_restyle: {:error, allow: ["layout"]}]
+
+    # Imported from the dependency, so not CoreComponents' button, and not
+    # the design system until the settings say so.
+    assert lint(dir, files, rules: rules) == []
+
+    [finding] = lint(dir, files, rules: rules, settings: [component_imports: ["^SaladUI\\."]])
+
+    assert finding.message ==
+             ~s|"bg-pink-500" is not allowed on <.button>: <.button> owns its color. Use a variant: default, secondary, ghost. Add a new variant in deps/salad_ui/lib/salad_ui/button.ex only if the design explicitly calls for a treatment none of these provides.|
+  end
+
   test "suppression comments, with or without rule names", %{tmp_dir: dir} do
     template = """
     <%!-- heex-lint-disable-next-line no_raw_colors -- partner brand color --%>

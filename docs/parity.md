@@ -27,6 +27,7 @@ This page maps each part to its Phoenix counterpart.
 | `className` | `class` and other class attributes (`input_class`...). |
 | Components from `components.json` / `components/ui`, plus `ui` and `componentImports` | Function components in modules under `components/`, plus `ui` module prefixes and `component_imports`. |
 | Import resolution, re-exports, barrels | `import`, `alias` and `use MyAppWeb, :html` expansion. |
+| Components from packages ("use components you don't own") | Components from `deps/` (SaladUI, PetalComponents...), recognized through `component_imports`. |
 | Variants from `cva`/`tv` and string-union props | `attr :variant, values: [...]` and `attr :size, values: [...]`. |
 | Wrappers forwarding `className`, render props | Components forwarding `@class` or global attributes (`{@rest}`). Slots belong to their component. |
 | Same-file `const`/`let`, one hop | Function-body variables, `assign/3` in the rendering function, module attributes, same-module helpers and map lookups. |

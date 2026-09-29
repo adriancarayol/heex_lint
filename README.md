@@ -109,6 +109,10 @@ rules: `no_arbitrary_values` still keeps `p-[13px]` off the scale.
   `component_imports` add. `<.button>` resolves through the module's imports,
   including what `use MyAppWeb, :html` brings in, and `<Layouts.app>` through
   its aliases.
+- **Components you don't own.** Modules imported from `deps/` (SaladUI,
+  PetalComponents, Doggo...) are read too, so their components resolve with
+  their attrs. They join the design system when `ui` or `component_imports`
+  names them: `component_imports: ["^SaladUI\\."]`.
 - **Variants.** `attr :variant, values: ~w(primary ghost)` gives the variants a
   finding suggests; `attr :size, values: ...` the sizes a spacing finding offers.
 - **Wrappers.** A component that forwards its `class` (`class={["w-full", @class]}`)

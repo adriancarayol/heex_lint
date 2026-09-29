@@ -46,8 +46,18 @@ defmodule HeexLint.ConfigTest do
 
   test "recognition options: a rule's own wins over the shared settings" do
     config = Config.new(settings: [ui: "AppWeb.UI", merge_functions: ["tw"]], rules: [])
-    assert %{ui: "AppWeb.UI", merge_functions: ["tw"]} = Config.recognition(config, [])
+    assert %{ui: ["AppWeb.UI"], merge_functions: ["tw"]} = Config.recognition(config, [])
     assert %{merge_functions: ["cx"]} = Config.recognition(config, merge_functions: ["cx"])
+  end
+
+  test "settings of the wrong type warn and are ignored" do
+    config = Config.new(settings: [note: 42, ui: [:atom], merge_functions: "classes"], rules: [])
+    assert config.settings == %{merge_functions: ["classes"]}
+
+    assert Enum.sort(config.warnings) == [
+             "settings.note must be a string; it is ignored.",
+             "settings.ui must be a string or a list of strings; it is ignored."
+           ]
   end
 
   test "invalid configuration raises" do
