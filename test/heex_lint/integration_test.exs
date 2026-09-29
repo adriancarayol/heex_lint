@@ -129,6 +129,56 @@ defmodule HeexLint.IntegrationTest do
     assert String.ends_with?(path, "page_live.ex")
   end
 
+  test "calls through __MODULE__ aliases are read, not crashed on", %{tmp_dir: dir} do
+    page = """
+    defmodule AppWeb.PageLive do
+      use AppWeb, :live_view
+
+      def start, do: __MODULE__.Client.run(:ok)
+
+      def render(assigns) do
+        ~H\"\"\"
+        <div class="bg-pink-500">{__MODULE__.Labels.title(@page)}</div>
+        \"\"\"
+      end
+    end
+    """
+
+    result = run(dir, %{"lib/app_web/live/page_live.ex" => page}, rules: [no_raw_colors: :error])
+    assert result.failures == []
+    assert [%{rule: :no_raw_colors}] = result.diagnostics
+  end
+
+  test "helpers an embedded .heex calls are reported at the call, fixed in their file", %{
+    tmp_dir: dir
+  } do
+    files = %{
+      "lib/app_web/controllers/page_html.ex" => """
+      defmodule AppWeb.PageHTML do
+        use AppWeb, :html
+        embed_templates "page_html/*"
+
+        def pad, do: "flex p-[12px]"
+      end
+      """,
+      "lib/app_web/controllers/page_html/home.html.heex" => """
+      <h1>
+        <%= @title %>
+      </h1>
+      <div class={pad()} />
+      """
+    }
+
+    result = run(dir, files, rules: [no_arbitrary_values: :error])
+
+    assert [%{file: file, line: 4, column: 13}] = result.diagnostics
+    assert String.ends_with?(file, "home.html.heex")
+
+    assert HeexLint.Fixer.apply(result.diagnostics) == 1
+    module = File.read!(Path.join(dir, "lib/app_web/controllers/page_html.ex"))
+    assert module =~ ~s(def pad, do: "flex p-3")
+  end
+
   test "components resolve through use, import and aliases", %{tmp_dir: dir} do
     module = """
     defmodule AppWeb.Other do

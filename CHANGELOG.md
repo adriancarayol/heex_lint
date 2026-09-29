@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- Calls through `__MODULE__` aliases, such as `__MODULE__.Client.run()`,
+  no longer crash the run.
+- Helpers that an embedded `.heex` template calls are read from their own
+  file: findings in them are reported at the call in the template, and
+  their fixes edit the helper. Before, their positions were read from the
+  template, which gave wrong locations and garbled messages.
+
 ## 0.2.1
 
 - `mix heex_lint --quiet` prints errors only, as ESLint's `--quiet` does;

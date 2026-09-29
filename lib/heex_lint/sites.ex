@@ -9,7 +9,7 @@ defmodule HeexLint.Sites do
   wearing the classes, directly or through a wrapper.
   """
 
-  alias HeexLint.{Collector, Element, Project, Template}
+  alias HeexLint.{Code, Collector, Element, Project, Template}
   alias HeexLint.Project.{Component, Source}
 
   defstruct [
@@ -254,8 +254,9 @@ defmodule HeexLint.Sites do
 
   defp helper_name(callee) when is_atom(callee), do: Atom.to_string(callee)
 
-  defp helper_name({:., _, [{:__aliases__, _, parts}, fun]}) when is_atom(fun),
-    do: Enum.map_join(parts, ".", &to_string/1) <> "." <> Atom.to_string(fun)
+  defp helper_name({:., _, [{:__aliases__, _, _} = mod, fun]}) when is_atom(fun) do
+    if name = Code.alias_name(mod), do: name <> "." <> Atom.to_string(fun)
+  end
 
   defp helper_name(_), do: nil
 end

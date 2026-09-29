@@ -120,12 +120,35 @@ defmodule HeexLint.Collector do
     state |> visit(ast) |> result()
   end
 
+  # A hop into a function body reads the module's file. For an embedded .heex
+  # template that is another file, so what it finds is reported at the call;
+  # `origin` keeps the real positions for fixes, which name their own file.
+  defp body_text(state, meta) do
+    text = file_text(state.context)
+
+    if text.file == state.context.source.path do
+      text
+    else
+      call = locate(state, meta)
+      Map.merge(text, %{locate: fn _line, _column -> call end, origin: text.locate})
+    end
+  end
+
   defp file_text(context) do
+    source = module_source(context) || context.source
+
     %{
-      lines: context.source.lines,
+      lines: source.lines,
       locate: fn line, column -> {line, column} end,
-      file: context.source.path
+      file: source.path
     }
+  end
+
+  defp module_source(context) do
+    case current_module(%{context: context}) do
+      %ModuleInfo{file: file} -> Map.get(context.project.sources, file)
+      nil -> nil
+    end
   end
 
   defp state(context, opts, text, mode) do
@@ -294,7 +317,7 @@ defmodule HeexLint.Collector do
     case meta[:delimiter] do
       "\"" ->
         {items, _end} = scan(state.text, meta[:line], meta[:column] + 1)
-        {line, column} = locate(state, meta)
+        {line, column} = origin(state, meta)
         # Escapes move classes between source and value; such a string
         # gets no suggestion rather than a wrong one.
         source_line = text_line(state.text, meta[:line])
@@ -380,7 +403,7 @@ defmodule HeexLint.Collector do
     with false <- MapSet.member?(state.seen, key),
          [_ | _] = values <- assigned_values(state.clause, name) do
       hop(state, key, fn state ->
-        state = %{state | mode: :body, text: file_text(state.context)}
+        state = %{state | mode: :body, text: body_text(state, meta)}
         Enum.reduce(values, state, &visit(&2, &1))
       end)
     else
@@ -407,7 +430,7 @@ defmodule HeexLint.Collector do
             hop(
               state,
               {:default, name},
-              &visit(%{&1 | mode: :body, text: file_text(&1.context)}, default)
+              &visit(%{&1 | mode: :body, text: body_text(&1, meta)}, default)
             )
         end
 
@@ -516,8 +539,9 @@ defmodule HeexLint.Collector do
 
   defp callee_name(callee) when is_atom(callee), do: Atom.to_string(callee)
 
-  defp callee_name({:., _, [{:__aliases__, _, parts}, fun]}) when is_atom(fun),
-    do: Enum.map_join(parts, ".", &to_string/1) <> "." <> Atom.to_string(fun)
+  defp callee_name({:., _, [{:__aliases__, _, _} = mod, fun]}) when is_atom(fun) do
+    if name = Code.alias_name(mod), do: name <> "." <> Atom.to_string(fun)
+  end
 
   defp callee_name(_), do: nil
 
@@ -538,7 +562,7 @@ defmodule HeexLint.Collector do
       clauses = current_module(state).functions[{name, arity}]
 
       hop(state, key, fn state ->
-        state = %{state | mode: :body, text: file_text(state.context)}
+        state = %{state | mode: :body, text: body_text(state, meta)}
 
         Enum.reduce(clauses, state, fn
           %{body: nil}, acc -> acc
@@ -710,6 +734,10 @@ defmodule HeexLint.Collector do
   defp meta_of(_), do: nil
 
   defp locate(state, meta), do: state.text.locate.(meta[:line] || 1, meta[:column] || 1)
+
+  # Where `meta` is in `state.text.file`, even when findings are reported elsewhere.
+  defp origin(state, meta),
+    do: (state.text[:origin] || state.text.locate).(meta[:line] || 1, meta[:column] || 1)
 
   # Maps positions inside a `{...}` expression to positions in the file.
   defp locator({base_line, base_column}, indentation) do
