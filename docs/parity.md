@@ -5,7 +5,7 @@ This page maps each part to its Phoenix counterpart.
 
 ## Verified
 
-[`scripts/parity/run.sh`](../scripts/parity) lints 552 classes (a sample of
+[`scripts/parity/run.sh`](https://github.com/adriancarayol/heex_lint/tree/main/scripts/parity) lints 552 classes (a sample of
 Tailwind's class list plus colors, tokens, typos, arbitrary values, variants
 and markers) on a plain element, a Button with variants and sizes, and a
 CardTitle, with @shadcn/lint's own ESLint rules on a React project and with
