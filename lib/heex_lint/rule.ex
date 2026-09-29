@@ -33,7 +33,9 @@ defmodule HeexLint.Rule do
               file: String.t(),
               from: {pos_integer(), pos_integer()},
               old: String.t(),
-              new: String.t()
+              new: String.t(),
+              token: String.t(),
+              replacement: String.t()
             }
             | nil
         }
@@ -88,7 +90,14 @@ defmodule HeexLint.Rule do
                 message: describe.(replacement),
                 replacement: replacement,
                 exact: exact,
-                fix: %{file: literal.file, from: literal.from, old: raw, new: replaced}
+                fix: %{
+                  file: literal.file,
+                  from: literal.from,
+                  old: raw,
+                  new: replaced,
+                  token: token,
+                  replacement: replacement
+                }
               }
             ]
           else

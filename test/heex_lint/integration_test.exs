@@ -103,7 +103,7 @@ defmodule HeexLint.IntegrationTest do
     <div class="flex p-[12px]" />
     <div class="bg-neutral-900" />
     <div class="text-[14px]" />
-    <div class="hover:px-[var(--gutter)]" />
+    <div class="hover:px-[var(--gutter)] border-[var(--x)] text-[var(--y)]" />
     """
 
     files = %{"lib/app_web/live/page_live.ex" => live(template)}
@@ -113,12 +113,13 @@ defmodule HeexLint.IntegrationTest do
 
     # The nearest color and the font size (which adds a line height) stay
     # suggestions; the spacing step and the variable shorthand apply.
-    assert HeexLint.Fixer.apply(result.diagnostics) == 2
+    assert HeexLint.Fixer.apply(result.diagnostics) == 4
     contents = File.read!(Path.join(dir, "lib/app_web/live/page_live.ex"))
     assert contents =~ ~s(class="flex p-3")
     assert contents =~ ~s(class="bg-neutral-900")
     assert contents =~ ~s(class="text-[14px]")
-    assert contents =~ ~s|class="hover:px-(--gutter)"|
+    # Several fixes in one literal compose.
+    assert contents =~ ~s|class="hover:px-(--gutter) border-(--x) text-(--y)"|
   end
 
   test "unparsable templates are failures, not crashes", %{tmp_dir: dir} do

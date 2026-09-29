@@ -8,6 +8,7 @@ defmodule HeexLint.Fixer do
   """
 
   alias HeexLint.Diagnostic
+  alias HeexLint.Grammar.Classes
 
   @doc "Whether `diagnostic` has exactly one suggestion, and it is exact."
   @spec fixable?(Diagnostic.t()) :: boolean()
@@ -15,15 +16,15 @@ defmodule HeexLint.Fixer do
   def fixable?(_), do: false
 
   @doc """
-  Applies every exact suggestion in `diagnostics`, one per literal, and
-  returns how many were applied.
+  Applies every exact suggestion in `diagnostics` and returns how many were
+  applied. Several fixes in one literal compose, so one run converges.
   """
   @spec apply([Diagnostic.t()]) :: non_neg_integer()
   def apply(diagnostics) do
     diagnostics
     |> Enum.filter(&fixable?/1)
     |> Enum.map(fn %Diagnostic{suggestions: [%{fix: fix}]} -> fix end)
-    |> Enum.uniq_by(&{&1.file, &1.from})
+    |> Enum.uniq_by(&{&1.file, &1.from, &1.token})
     |> Enum.group_by(& &1.file)
     |> Enum.map(fn {file, fixes} -> apply_file(file, fixes) end)
     |> Enum.sum()
@@ -33,18 +34,24 @@ defmodule HeexLint.Fixer do
     contents = File.read!(file)
     lines = String.split(contents, "\n")
 
-    # From the end of the file backwards, so earlier offsets stay valid.
+    # One edit per literal, from the end of the file backwards, so earlier
+    # offsets stay valid.
     {contents, applied} =
       fixes
-      |> Enum.sort_by(& &1.from, :desc)
-      |> Enum.reduce({contents, 0}, fn fix, {contents, applied} ->
-        offset = offset(lines, fix.from)
-        size = byte_size(fix.old)
+      |> Enum.group_by(&{&1.from, &1.old})
+      |> Enum.sort_by(fn {{from, _old}, _} -> from end, :desc)
+      |> Enum.reduce({contents, 0}, fn {{from, old}, literal_fixes}, {contents, applied} ->
+        offset = offset(lines, from)
+        size = byte_size(old)
 
-        if offset + size <= byte_size(contents) and binary_part(contents, offset, size) == fix.old do
-          {binary_part(contents, 0, offset) <>
-             fix.new <> binary_part(contents, offset + size, byte_size(contents) - offset - size),
-           applied + 1}
+        new =
+          Enum.reduce(literal_fixes, old, fn fix, text ->
+            Classes.replace_class(text, fix.token, fix.replacement)
+          end)
+
+        if offset + size <= byte_size(contents) and binary_part(contents, offset, size) == old do
+          rest = binary_part(contents, offset + size, byte_size(contents) - offset - size)
+          {binary_part(contents, 0, offset) <> new <> rest, applied + length(literal_fixes)}
         else
           {contents, applied}
         end
