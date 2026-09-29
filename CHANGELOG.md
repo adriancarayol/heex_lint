@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.2
 
 - Calls through `__MODULE__` aliases, such as `__MODULE__.Client.run()`,
   no longer crash the run.

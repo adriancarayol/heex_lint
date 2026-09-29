@@ -11,7 +11,7 @@ The rest of this file is for the agent.
 
 ## Install
 
-- Add `{:heex_lint, github: "adriancarayol/heex_lint", only: [:dev, :test], runtime: false}`
+- Add `{:heex_lint, "~> 0.2", only: [:dev, :test], runtime: false}`
   to the `deps` of the Mix project that owns the templates (the web app, in an
   umbrella), then run `mix deps.get`.
 - Run `mix heex_lint` from that project's root. With no `.heex_lint.exs`, the
