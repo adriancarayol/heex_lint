@@ -48,6 +48,10 @@ defmodule HeexLint do
       |> Enum.map(fn {m, _s, o} -> {m, o} end)
       |> Enum.uniq()
 
+    # The theme each file sees (its app's, in an umbrella).
+    theme_files = Map.new(targets, &{&1, Project.for_file(project, &1).theme_file})
+    themes = theme_files |> Map.values() |> Enum.uniq()
+
     oracle =
       if project.entry && Enum.any?(pairs, fn {module, _} -> module in @oracle_rules end) do
         {:ok, pid} = Tailwind.start_link(project)
@@ -68,7 +72,11 @@ defmodule HeexLint do
         |> Enum.uniq()
         |> Map.new(&{&1, Project.recognize(project, &1)})
 
-      prepared = Map.new(pairs, &{&1, prepare(recognized, config, &1)})
+      prepared =
+        for {module, options} = pair <- pairs, theme_file <- themes, into: %{} do
+          {{module, options, theme_file}, prepare(recognized, config, pair, theme_file)}
+        end
+
       :persistent_term.put(key, {project, config, prepared})
 
       {diagnostics, failures} =
@@ -108,9 +116,9 @@ defmodule HeexLint do
 
   # Each distinct {rule, options} compiles once, against the project as its
   # recognition options see it.
-  defp prepare(recognized, config, {module, options}) do
+  defp prepare(recognized, config, {module, options}, theme_file) do
     recognition = Config.recognition(config, options)
-    scoped = Map.fetch!(recognized, recognition)
+    scoped = recognized |> Map.fetch!(recognition) |> themed(theme_file)
 
     placeholder_warnings =
       for text <- message_texts(options),
@@ -138,6 +146,14 @@ defmodule HeexLint do
     end
   end
 
+  # The project with a given theme: every file of an app shares its app's.
+  defp themed(project, theme_file) do
+    case Enum.find(Map.values(project.themes), &(&1.file == theme_file)) do
+      nil -> project
+      info -> %{project | theme: info.theme, theme_file: info.file, entry: info.entry}
+    end
+  end
+
   defp message_texts(options) do
     [
       options[:message]
@@ -152,6 +168,7 @@ defmodule HeexLint do
 
   defp lint_file(project, config, prepared, path, rules) do
     source = Map.fetch!(project.sources, path)
+    theme_file = Project.for_file(project, path).theme_file
 
     if source.error do
       {[], [{path, source.error}]}
@@ -159,11 +176,11 @@ defmodule HeexLint do
       {diagnostics, errors} =
         rules
         |> Enum.group_by(fn {module, _severity, options} ->
-          prepared[{module, options}].recognition
+          prepared[{module, options, theme_file}].recognition
         end)
         |> Enum.reduce({[], []}, fn {recognition, group}, {diagnostics, errors} ->
           [{module, _, options} | _] = group
-          scoped = prepared[{module, options}].project
+          scoped = prepared[{module, options, theme_file}].project
 
           collected =
             Sites.collect(scoped, source,
@@ -181,7 +198,7 @@ defmodule HeexLint do
 
           found =
             Enum.flat_map(group, fn {module, severity, options} ->
-              case prepared[{module, options}] do
+              case prepared[{module, options, theme_file}] do
                 %{error: message} when is_binary(message) ->
                   [diagnostic(module, severity, path, Rule.config_error(message))]
 

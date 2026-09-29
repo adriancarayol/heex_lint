@@ -2,19 +2,19 @@ defmodule HeexLint.Tailwind do
   @moduledoc """
   Asks the project's own Tailwind v4 which classes generate CSS.
 
-  Two ways, tried in order:
+  Two ways, tried in order for each stylesheet:
 
     * **Node**: when `node` and the project's `tailwindcss` (or
-      `@tailwindcss/node`) are installed, a long-lived Node process loads
-      the design system with its imports and plugins and answers with
-      spelling and variant suggestions.
+      `@tailwindcss/node`) resolve from the stylesheet, a long-lived Node
+      process loads the design system with its imports and plugins and
+      answers with spelling and variant suggestions.
     * **Standalone CLI**: otherwise, the `tailwind` binary Phoenix installs
       in `_build/` (or `:tailwind_bin`) builds the theme with the
       candidates as `@source inline(...)`, and a class is known when its
       selector is in the output. No suggestions this way.
 
   When neither works, `unknown/2` returns nil and rules fall back to the
-  class grammar. Answers are cached for the run.
+  class grammar. Answers are cached for the run, per stylesheet.
   """
 
   use GenServer
@@ -40,8 +40,8 @@ defmodule HeexLint.Tailwind do
   end
 
   @doc """
-  The tokens Tailwind does not know, with suggestions, or nil when no
-  Tailwind can be asked.
+  The tokens the project's Tailwind (for the project's current theme entry)
+  does not know, with suggestions, or nil when no Tailwind can be asked.
   """
   @spec unknown(HeexLint.Project.t(), [String.t()]) :: [unknown()] | nil
   def unknown(_project, []), do: []
@@ -59,9 +59,9 @@ defmodule HeexLint.Tailwind do
     end
   end
 
-  @doc "The strategy an oracle uses, and why, for diagnostics."
-  def status(nil), do: {:none, "not started"}
-  def status(pid), do: GenServer.call(pid, :status, @timeout)
+  @doc "The strategy the oracle uses for `entry`, and why, for diagnostics."
+  def status(nil, _entry), do: {:none, "not started"}
+  def status(pid, entry), do: GenServer.call(pid, {:status, entry}, @timeout)
 
   @doc "The warnings an oracle collected, such as a theme that could not be built."
   def warnings(nil), do: []
@@ -74,30 +74,30 @@ defmodule HeexLint.Tailwind do
     {:ok,
      %{
        project: project,
-       strategy: nil,
+       strategies: %{},
+       reasons: %{},
        port: nil,
        buffer: "",
        pending: %{},
        next: 1,
        cache: %{},
-       reason: nil,
        warnings: []
      }}
   end
 
   @impl true
-  def handle_call(:status, _from, state) do
-    state = ensure_strategy(state)
-    {:reply, {state.strategy, state.reason}, state}
+  def handle_call({:status, entry}, _from, state) do
+    {strategy, state} = strategy(state, entry)
+    {:reply, {strategy, state.reasons[entry]}, state}
   end
 
   def handle_call(:warnings, _from, state), do: {:reply, Enum.reverse(state.warnings), state}
 
   def handle_call({:unknown, entry, tokens}, from, state) do
-    state = ensure_strategy(state)
+    {strategy, state} = strategy(state, entry)
     missing = Enum.reject(tokens, &Map.has_key?(state.cache, {entry, &1}))
 
-    case state.strategy do
+    case strategy do
       :none ->
         {:reply, nil, state}
 
@@ -119,17 +119,20 @@ defmodule HeexLint.Tailwind do
 
   @impl true
   def handle_info({port, {:data, data}}, %{port: port} = state) do
-    buffer = state.buffer <> data
-    {lines, rest} = split_lines(buffer)
-    state = Enum.reduce(lines, %{state | buffer: rest}, &node_answer/2)
-    {:noreply, state}
+    {lines, rest} = split_lines(state.buffer <> data)
+    {:noreply, Enum.reduce(lines, %{state | buffer: rest}, &node_answer/2)}
   end
 
   def handle_info({port, {:exit_status, _status}}, %{port: port} = state) do
     for {_id, {from, _entry, _tokens, _missing}} <- state.pending, do: GenServer.reply(from, nil)
 
+    strategies =
+      Map.new(state.strategies, fn {entry, s} -> {entry, if(s == :node, do: :none, else: s)} end)
+
+    state = %{state | strategies: strategies, port: nil, pending: %{}}
+
     {:noreply,
-     %{state | strategy: :none, port: nil, pending: %{}, reason: "the Tailwind process exited"}}
+     warn(state, "The Tailwind process exited; no_unknown_classes is using the class grammar.")}
   end
 
   def handle_info(_message, state), do: {:noreply, state}
@@ -149,66 +152,48 @@ defmodule HeexLint.Tailwind do
   end
 
   defp node_answer(line, state) do
-    case JSON.decode(line) do
-      {:ok, %{"id" => id} = answer} ->
-        case Map.pop(state.pending, id) do
-          {nil, _} ->
-            state
+    with {:ok, %{"id" => id} = answer} <- JSON.decode(line),
+         {{from, entry, tokens, missing}, pending} <- Map.pop(state.pending, id),
+         true <- from != nil do
+      state = %{state | pending: pending}
 
-          {{from, entry, tokens, missing}, pending} ->
-            state = %{state | pending: pending}
+      case answer do
+        %{"ok" => true, "unknown" => unknown} ->
+          results =
+            Enum.map(unknown, fn item ->
+              %{
+                token: item["token"],
+                suggestion: item["suggestion"],
+                base_known: item["baseKnown"] == true
+              }
+            end)
 
-            case answer do
-              %{"ok" => true, "unknown" => unknown} ->
-                results =
-                  Enum.map(unknown, fn item ->
-                    %{
-                      token: item["token"],
-                      suggestion: item["suggestion"],
-                      base_known: item["baseKnown"] == true
-                    }
-                  end)
+          state = cache(state, entry, missing, results)
+          GenServer.reply(from, answer(state, entry, tokens))
+          state
 
-                state = cache(state, entry, missing, results)
-                GenServer.reply(from, answer(state, entry, tokens))
-                state
+        %{"ok" => false, "reason" => reason} ->
+          # Fall back to the standalone CLI, then to the grammar.
+          state = %{state | reasons: Map.put(state.reasons, entry, reason)}
 
-              %{"ok" => false, "reason" => reason} ->
-                # Fall back to the standalone CLI, then to the grammar.
-                state = %{state | reason: reason}
+          case standalone_binary(state.project) do
+            nil ->
+              GenServer.reply(from, nil)
 
-                case standalone_binary(state.project) do
-                  nil ->
-                    GenServer.reply(from, nil)
+              state
+              |> put_strategy(entry, :none)
+              |> warn(
+                "The Tailwind theme at #{entry} could not be built (#{reason}); no_unknown_classes is using the class grammar."
+              )
 
-                    warn(
-                      %{state | strategy: :none},
-                      "The Tailwind theme at #{entry} could not be built (#{reason}); no_unknown_classes is using the class grammar."
-                    )
-
-                  _bin ->
-                    state = run_standalone(%{state | strategy: :standalone}, entry, missing)
-                    GenServer.reply(from, answer(state, entry, tokens))
-                    state
-                end
-            end
-        end
-
-      _ ->
-        state
-    end
-  end
-
-  defp run_standalone(state, entry, missing) do
-    case standalone(state.project, entry, missing) do
-      {:ok, results} ->
-        cache(state, entry, missing, results)
-
-      {:error, message} ->
-        warn(
-          %{state | strategy: :none},
-          message <> " no_unknown_classes is using the class grammar."
-        )
+            _bin ->
+              state = run_standalone(put_strategy(state, entry, :standalone), entry, missing)
+              GenServer.reply(from, answer(state, entry, tokens))
+              state
+          end
+      end
+    else
+      _ -> state
     end
   end
 
@@ -223,46 +208,67 @@ defmodule HeexLint.Tailwind do
     %{state | cache: cache}
   end
 
-  defp answer(%{strategy: :none}, _entry, _tokens), do: nil
-
   defp answer(state, entry, tokens) do
-    for token <- tokens, result = Map.get(state.cache, {entry, token}), is_map(result), do: result
-  end
-
-  defp ensure_strategy(%{strategy: nil} = state) do
-    node = System.find_executable("node")
-    script = Application.app_dir(:heex_lint, "priv/tailwind_oracle.mjs")
-
-    cond do
-      node && File.regular?(script) && node_tailwind?(state.project) ->
-        port =
-          Port.open({:spawn_executable, node}, [
-            :binary,
-            :exit_status,
-            :use_stdio,
-            args: [script],
-            cd: state.project.root
-          ])
-
-        %{state | strategy: :node, port: port}
-
-      standalone_binary(state.project) ->
-        %{state | strategy: :standalone}
-
-      true ->
-        %{
-          state
-          | strategy: :none,
-            reason: "neither the tailwindcss package nor a tailwind binary was found"
-        }
+    if state.strategies[entry] == :none do
+      nil
+    else
+      for token <- tokens,
+          result = Map.get(state.cache, {entry, token}),
+          is_map(result),
+          do: result
     end
   end
 
-  defp ensure_strategy(state), do: state
+  defp put_strategy(state, entry, strategy),
+    do: %{state | strategies: Map.put(state.strategies, entry, strategy)}
+
+  # The way to ask about `entry`, decided once per stylesheet.
+  defp strategy(state, entry) do
+    case Map.fetch(state.strategies, entry) do
+      {:ok, strategy} ->
+        {strategy, state}
+
+      :error ->
+        port = if node_tailwind?(entry), do: state.port || start_node(state)
+
+        state =
+          cond do
+            port != nil ->
+              put_strategy(%{state | port: port}, entry, :node)
+
+            standalone_binary(state.project) ->
+              put_strategy(state, entry, :standalone)
+
+            true ->
+              reason = "neither the tailwindcss package nor a tailwind binary was found"
+
+              state
+              |> put_strategy(entry, :none)
+              |> Map.update!(:reasons, &Map.put(&1, entry, reason))
+          end
+
+        {state.strategies[entry], state}
+    end
+  end
+
+  defp start_node(state) do
+    node = System.find_executable("node")
+    script = Application.app_dir(:heex_lint, "priv/tailwind_oracle.mjs")
+
+    if node && File.regular?(script) do
+      Port.open({:spawn_executable, node}, [
+        :binary,
+        :exit_status,
+        :use_stdio,
+        args: [script],
+        cd: state.project.root
+      ])
+    end
+  end
 
   # tailwindcss is installed where Node would resolve it from the theme.
-  defp node_tailwind?(project) do
-    project.entry
+  defp node_tailwind?(entry) do
+    entry
     |> Path.dirname()
     |> Stream.iterate(&Path.dirname/1)
     |> Enum.take(32)
@@ -282,14 +288,25 @@ defmodule HeexLint.Tailwind do
         Path.expand(configured, project.root)
 
       found =
-          project.root
-          |> Path.join("_build/tailwind-*")
-          |> Path.wildcard()
+          ["_build/tailwind-*", "apps/*/_build/tailwind-*"]
+          |> Enum.flat_map(&Path.wildcard(Path.join(project.root, &1)))
           |> Enum.find(&File.regular?/1) ->
         found
 
       true ->
         System.find_executable("tailwindcss")
+    end
+  end
+
+  defp run_standalone(state, entry, missing) do
+    case standalone(state.project, entry, missing) do
+      {:ok, results} ->
+        cache(state, entry, missing, results)
+
+      {:error, message} ->
+        state
+        |> put_strategy(entry, :none)
+        |> warn(message <> " no_unknown_classes is using the class grammar.")
     end
   end
 
@@ -320,7 +337,7 @@ defmodule HeexLint.Tailwind do
 
       case System.cmd(bin, ["--input", input, "--output", output],
              stderr_to_stdout: true,
-             cd: project.root
+             cd: Path.dirname(entry)
            ) do
         {_out, 0} ->
           css = File.read!(output)

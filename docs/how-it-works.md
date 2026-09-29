@@ -39,9 +39,12 @@ hops deep.
 
 ## Theme tokens
 
-The theme is the stylesheet that imports Tailwind, found under the project
-root: when several do, the one declaring the most color tokens wins, then the
-one nearest the root. Set `theme` to choose it. Its `@import`s are followed;
+The theme is the stylesheet that imports Tailwind, found under the Mix
+project a file belongs to: when several do, the one declaring the most color
+tokens wins, then the one nearest the root. In an umbrella, each app (each
+directory with a `mix.exs`) finds its own, so files are checked against their
+app's tokens, and `no_unknown_classes` asks that app's Tailwind. Set `theme`
+to use one stylesheet everywhere. Its `@import`s are followed;
 files under `node_modules` contribute `@utility` names and class selectors,
 not tokens.
 

@@ -20,7 +20,14 @@ Works with any Tailwind v4 project. It reads your function components, their
 
 ## Quickstart
 
-Add it to your dev and test dependencies:
+Give your coding agent this prompt:
+
+```text
+Read https://github.com/adriancarayol/heex_lint/blob/main/SETUP.md
+and set up heex_lint in this project.
+```
+
+Or add it to your dev and test dependencies yourself:
 
 ```elixir
 def deps do
@@ -202,7 +209,8 @@ See [placeholders](docs/rules.md#your-own-words).
 Findings carry suggestions: the nearest theme tokens, an exact scale step
 (`p-[13px]` → `p-3.25`), or a spelling correction. `--format json` includes
 them, and `mix heex_lint --fix` applies the ones with a single unambiguous
-replacement, rewriting only the class inside its literal.
+replacement, rewriting only the class inside its literal. In GitHub Actions,
+`--format github` turns findings into annotations on the pull request.
 
 ## Exceptions
 

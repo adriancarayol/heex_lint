@@ -73,6 +73,14 @@ defmodule Mix.Tasks.HeexLintTest do
            } = diagnostic
   end
 
+  test "GitHub annotations", %{tmp_dir: dir} do
+    setup_project(dir, ~s(<div class="bg-neutral-900" />), no_raw_colors: :warning)
+    assert {:ok, output, _} = task(dir, ["--format", "github"])
+
+    assert output =~
+             ~s(::warning file=lib/app_web/live/page_live.ex,line=6,col=17,title=no_raw_colors::"bg-neutral-900" uses the raw Tailwind palette.)
+  end
+
   test "--fix applies suggestions and lints again", %{tmp_dir: dir} do
     setup_project(dir, ~s(<div class="p-[12px]" />), no_arbitrary_values: :error)
     assert {:ok, output, _} = task(dir, ["--fix"])

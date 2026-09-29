@@ -32,6 +32,7 @@ This page maps each part to its Phoenix counterpart.
 | Same-file `const`/`let`, one hop | Function-body variables, `assign/3` in the rendering function, module attributes, same-module helpers and map lookups. |
 | Received `className` prop | A function component's received `class`; socket assigns in a LiveView `render/1` are not received props. |
 | `{{component}}` as `Button` | `.button`, the way the tag is written. Contract patterns match the function name: `^button$`. |
+| Monorepos: a theme per package | Umbrellas: a theme (and Tailwind) per app. |
 | Tailwind through Node only | Node, the standalone Tailwind binary Phoenix installs in `_build/`, then the grammar. |
 | No shared config; enable each rule | A recommended set when `rules` is not given. |
 

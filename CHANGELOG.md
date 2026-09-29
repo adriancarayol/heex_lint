@@ -25,8 +25,13 @@ Rule parity with [@shadcn/lint](https://github.com/shadcn-ui/lint) 0.2.0.
   `.heex` files through `embed_templates` and LiveView colocation.
 - Configuration: explicit `rules` with a recommended default, file
   `overrides`, shared `settings`.
-- Suggestions in JSON output, `mix heex_lint --fix`, and `heex-lint-disable`
-  comments.
+- Suggestions in JSON output, `mix heex_lint --fix`, `--format github`
+  annotations, and `heex-lint-disable` comments.
+- Umbrella apps: each app's files are checked against its own theme and
+  Tailwind.
+- Readable maps spread onto elements and colocated CSS are read.
+- `no_arbitrary_values` suggests the variable shorthand for `[var(--x)]`.
+- `SETUP.md`: a prompt for coding agents to set the linter up.
 
 ## 0.1.0
 

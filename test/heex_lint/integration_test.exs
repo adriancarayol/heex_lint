@@ -5,6 +5,33 @@ defmodule HeexLint.IntegrationTest do
 
   @moduletag :tmp_dir
 
+  test "each app of an umbrella uses its own theme", %{tmp_dir: dir} do
+    app = fn name, token ->
+      %{
+        "apps/#{name}/mix.exs" => "defmodule #{Macro.camelize(name)}.MixProject do\nend\n",
+        "apps/#{name}/assets/css/app.css" =>
+          ~s(@import "tailwindcss";\n@theme { --color-#{token}: #123456; }\n),
+        "apps/#{name}/lib/#{name}_web/live/page_live.ex" =>
+          live(~s(<div class="bg-shop bg-admin" />), Macro.camelize(name) <> "Live")
+      }
+    end
+
+    files =
+      Map.merge(app.("shop", "shop"), app.("admin", "admin"))
+      |> Map.put("mix.exs", "defmodule Umbrella.MixProject do\nend\n")
+      |> Map.put("assets/css/app.css", nil)
+
+    result =
+      run(dir, files, rules: [no_raw_colors: :error], inputs: ["apps/*/lib/**/*.{ex,heex}"])
+
+    assert result.diagnostics
+           |> Enum.map(
+             &{&1.file |> Path.relative_to(dir) |> Path.split() |> Enum.at(1),
+              hd(Regex.run(~r/"[^"]+"/, &1.message))}
+           )
+           |> Enum.sort() == [{"admin", ~s("bg-shop")}, {"shop", ~s("bg-admin")}]
+  end
+
   test "suppression comments, with or without rule names", %{tmp_dir: dir} do
     template = """
     <%!-- heex-lint-disable-next-line no_raw_colors -- partner brand color --%>

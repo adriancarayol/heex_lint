@@ -58,6 +58,19 @@ defmodule HeexLint.Rules.NoArbitraryValuesTest do
              "hardcodes a color and no declared theme color is close to it. Use one of: background,"
   end
 
+  test "a variable in brackets is arbitrary; the shorthand is suggested", %{tmp_dir: dir} do
+    [finding] =
+      arbitrary(dir, ~s|<div class="hover:px-[var(--gutter)] text-[length:var(--size)]" />|,
+        allow: ["text-*"]
+      )
+
+    assert finding.message =~ ~s|"hover:px-[var(--gutter)]" hardcodes an off-token value.|
+    assert [%{replacement: "hover:px-(--gutter)"}] = finding.suggestions
+
+    [typed] = arbitrary(dir, ~s|<div class="text-[length:var(--size)]" />|)
+    assert [%{replacement: "text-(length:--size)"}] = typed.suggestions
+  end
+
   test "arbitrary variants and variable shorthands are not arbitrary values", %{tmp_dir: dir} do
     assert arbitrary(dir, ~s|<div class="data-[state=open]:flex [&_svg]:size-4 bg-(--brand)" />|) ==
              []

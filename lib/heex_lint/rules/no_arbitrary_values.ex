@@ -46,7 +46,8 @@ defmodule HeexLint.Rules.NoArbitraryValues do
     arbitrary_color_far:
       ~s|"{{className}}" hardcodes a color and no declared theme color is close to it. Use one of: {{tokens}}, or declare --color-<name> in {{file}}.|,
     use_scale: ~s|Replace with "{{replacement}}" (same value, on the scale).|,
-    use_token: ~s|Replace with "{{replacement}}".|
+    use_token: ~s|Replace with "{{replacement}}".|,
+    use_variable: ~s|Replace with "{{replacement}}" (the variable shorthand).|
   }
 
   @impl true
@@ -170,21 +171,48 @@ defmodule HeexLint.Rules.NoArbitraryValues do
         "file" => theme_file
       }
 
+      suggestions =
+        cond do
+          replacement ->
+            Rule.suggestions(
+              string,
+              token,
+              [replacement],
+              &Messages.interpolate(@messages.use_scale, %{"replacement" => &1})
+            )
+
+          shorthand = parts && variable_shorthand(token, parts) ->
+            Rule.suggestions(
+              string,
+              token,
+              [shorthand],
+              &Messages.interpolate(@messages.use_variable, %{"replacement" => &1})
+            )
+
+          true ->
+            []
+        end
+
       %{
         position: position,
         message: Rule.message(@messages[id], data, words, options, file),
-        suggestions:
-          if(replacement,
-            do:
-              Rule.suggestions(
-                string,
-                token,
-                [replacement],
-                &Messages.interpolate(@messages.use_scale, %{"replacement" => &1})
-              ),
-            else: []
-          )
+        suggestions: suggestions
       }
+    end
+  end
+
+  # A HeexLint addition: bg-[var(--brand)] names a variable the way the
+  # shorthand bg-(--brand) does, which is not an arbitrary value.
+  defp variable_shorthand(token, parts) do
+    case Regex.run(~r/^(?:([a-z-]+):)?var\((--[\w-]+)\)$/, parts.inner) do
+      [_, "", variable] ->
+        Classes.with_base(token, "#{parts.utility}-(#{variable})#{parts.suffix}")
+
+      [_, hint, variable] ->
+        Classes.with_base(token, "#{parts.utility}-(#{hint}:#{variable})#{parts.suffix}")
+
+      nil ->
+        nil
     end
   end
 

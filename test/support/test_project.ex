@@ -205,7 +205,9 @@ defmodule HeexLint.TestProject do
         Map.new(files)
       )
 
-    for {path, contents} <- files, contents != nil do
+    files = Map.reject(files, fn {_path, contents} -> contents == nil end)
+
+    for {path, contents} <- files do
       full = Path.join(dir, path)
       File.mkdir_p!(Path.dirname(full))
       File.write!(full, contents)

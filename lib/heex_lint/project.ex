@@ -25,6 +25,7 @@ defmodule HeexLint.Project do
             ds: %{},
             wrappers: %{},
             oracle: nil,
+            themes: %{},
             warnings: []
 
   @type t :: %__MODULE__{}
@@ -109,32 +110,54 @@ defmodule HeexLint.Project do
 
   ## Theme
 
+  # Each Mix project (an umbrella's apps included) has its own theme, the
+  # way each package of a JavaScript monorepo does. A configured theme
+  # applies everywhere.
   defp load_theme(project) do
-    configured = project.settings[:theme]
+    roots =
+      project.sources
+      |> Map.keys()
+      |> Enum.map(&app_root(project.root, &1))
+      |> then(&[project.root | &1])
+      |> Enum.uniq()
 
-    {file, warnings} =
-      cond do
-        configured && File.regular?(Path.expand(configured, project.root)) ->
-          {Path.expand(configured, project.root), []}
+    {themes, warnings} =
+      case project.settings[:theme] do
+        nil ->
+          {Map.new(roots, &{&1, discovered_theme(&1)}), []}
 
         configured ->
-          discovered = Theme.discover(project.root)
-
-          {discovered,
-           [
-             "The theme is set to #{configured}, which does not exist. " <>
-               if(discovered,
-                 do:
-                   "Using #{Path.relative_to(discovered, project.root)} until the path is fixed.",
-                 else:
-                   "No stylesheet importing Tailwind was found, so declared tokens cannot be checked until the path is fixed."
-               )
-           ]}
-
-        true ->
-          {Theme.discover(project.root), []}
+          {info, warnings} = configured_theme(project.root, configured)
+          {Map.new(roots, &{&1, info}), warnings}
       end
 
+    %{project | themes: themes, warnings: project.warnings ++ warnings}
+    |> with_theme_info(Map.fetch!(themes, project.root))
+  end
+
+  defp configured_theme(root, configured) do
+    path = Path.expand(configured, root)
+
+    if File.regular?(path) do
+      {theme_info(path, root), []}
+    else
+      discovered = Theme.discover(root)
+
+      message =
+        "The theme is set to #{configured}, which does not exist. " <>
+          if(discovered,
+            do: "Using #{Path.relative_to(discovered, root)} until the path is fixed.",
+            else:
+              "No stylesheet importing Tailwind was found, so declared tokens cannot be checked until the path is fixed."
+          )
+
+      {theme_info(discovered, root), [message]}
+    end
+  end
+
+  defp discovered_theme(root), do: theme_info(Theme.discover(root), root)
+
+  defp theme_info(file, root) do
     theme = Theme.load(file)
 
     # The stylesheet Tailwind builds: a theme partial that does not import
@@ -143,16 +166,47 @@ defmodule HeexLint.Project do
       cond do
         file == nil -> nil
         theme.tailwind -> file
-        true -> Theme.discover(project.root)
+        true -> Theme.discover(root)
       end
 
-    %{
-      project
-      | theme: theme,
-        theme_file: file,
-        entry: entry,
-        warnings: project.warnings ++ warnings
-    }
+    %{file: file, theme: theme, entry: entry}
+  end
+
+  defp with_theme_info(project, info),
+    do: %{project | theme: info.theme, theme_file: info.file, entry: info.entry}
+
+  @doc """
+  The project as the file at `path` sees it: with the theme of its Mix
+  project (in an umbrella, its app).
+  """
+  @spec for_file(t(), String.t()) :: t()
+  def for_file(project, path) do
+    case Map.get(project.themes, app_root(project.root, path)) do
+      nil -> project
+      info -> with_theme_info(project, info)
+    end
+  end
+
+  @doc """
+  The directory of the Mix project `path` belongs to: the nearest
+  directory with a `mix.exs`, up to `root`.
+  """
+  @spec app_root(String.t(), String.t()) :: String.t()
+  def app_root(root, path) do
+    root = Path.expand(root)
+
+    path
+    |> Path.expand()
+    |> Path.dirname()
+    |> Stream.iterate(&Path.dirname/1)
+    |> Enum.reduce_while(root, fn dir, acc ->
+      cond do
+        not String.starts_with?(dir, root) -> {:halt, acc}
+        dir != root and File.regular?(Path.join(dir, "mix.exs")) -> {:halt, dir}
+        dir == root -> {:halt, root}
+        true -> {:cont, acc}
+      end
+    end)
   end
 
   ## Templates and owners

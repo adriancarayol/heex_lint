@@ -15,7 +15,8 @@ defmodule Mix.Tasks.HeexLint do
   ## Options
 
     * `--config` - path to the config file (default `.heex_lint.exs`)
-    * `--format` - `text` (default) or `json`
+    * `--format` - `text` (default), `json`, or `github` for GitHub Actions
+      annotations
     * `--max-warnings` - fail when there are more warnings than this
     * `--fix` - apply suggestions that have exactly one replacement, such
       as an exact scale step or a spelling correction, then lint again
@@ -56,6 +57,7 @@ defmodule Mix.Tasks.HeexLint do
 
     case Keyword.get(options, :format, "text") do
       "json" -> IO.puts(json(result))
+      "github" -> github(result)
       _ -> text(result)
     end
 
@@ -119,6 +121,30 @@ defmodule Mix.Tasks.HeexLint do
 
   defp plural(1, word), do: word
   defp plural(_, word), do: word <> "s"
+
+  # GitHub Actions workflow commands: findings become annotations on the
+  # pull request's diff.
+  defp github(result) do
+    for {file, message} <- result.failures do
+      IO.puts("::error file=#{Path.relative_to_cwd(file)}::#{escape(message)}")
+    end
+
+    for d <- result.diagnostics do
+      level = if d.severity == :error, do: "error", else: "warning"
+
+      location =
+        "file=#{Path.relative_to_cwd(d.file)},line=#{d.line},col=#{d.column},title=#{d.rule}"
+
+      IO.puts("::#{level} #{location}::#{escape(d.message)}")
+    end
+  end
+
+  defp escape(message) do
+    message
+    |> String.replace("%", "%25")
+    |> String.replace("\r", "%0D")
+    |> String.replace("\n", "%0A")
+  end
 
   defp json(result) do
     JSON.encode!(%{

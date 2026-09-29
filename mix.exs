@@ -45,7 +45,7 @@ defmodule HeexLint.MixProject do
   defp package do
     [
       licenses: ["MIT"],
-      files: ~w(lib priv docs mix.exs README.md CHANGELOG.md LICENSE .formatter.exs),
+      files: ~w(lib priv docs mix.exs README.md SETUP.md CHANGELOG.md LICENSE .formatter.exs),
       links: %{"GitHub" => @source_url}
     ]
   end
