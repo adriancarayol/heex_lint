@@ -54,6 +54,11 @@ defmodule HeexLint.Rules.NoRawColorsTest do
     assert [%{replacement: "text-primary"}] = typo.suggestions
   end
 
+  test "readable maps spread onto an element are checked", %{tmp_dir: dir} do
+    [finding] = colors(dir, ~s|<div {[class: "p-2 bg-pink-500"]} />|)
+    assert finding.message =~ ~s("bg-pink-500")
+  end
+
   test "named colors, arbitrary colors and variable shorthands pass", %{tmp_dir: dir} do
     template =
       ~s|<div class="bg-white text-black bg-transparent text-current fill-inherit bg-[#333] bg-(--brand)" />|

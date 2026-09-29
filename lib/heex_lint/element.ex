@@ -9,12 +9,24 @@ defmodule HeexLint.Element do
     * `nil` - a boolean attribute
 
   A root attribute such as `{@rest}` has the name `:root`. `parent` is the
-  index of the enclosing element in the template, or nil.
+  index of the enclosing element in the template, or nil. `text` is the
+  content of a `<style>` element.
   """
 
   alias HeexLint.{TagHandler, Template, Tokenizer}
 
-  defstruct [:file, :type, :name, :line, :column, :index, :parent, indentation: 0, attributes: []]
+  defstruct [
+    :file,
+    :type,
+    :name,
+    :line,
+    :column,
+    :index,
+    :parent,
+    :text,
+    indentation: 0,
+    attributes: []
+  ]
 
   @type value ::
           {:string, String.t(), {pos_integer(), pos_integer()}}
@@ -91,6 +103,11 @@ defmodule HeexLint.Element do
           stack = if meta[:closing] in [:self, :void], do: stack, else: [index | stack]
           {[element | elements], stack}
 
+        {:text, text, _meta},
+        {[%__MODULE__{name: "style", type: :tag} = style | rest], [index | _] = stack}
+        when style.index == index ->
+          {[%{style | text: (style.text || "") <> text} | rest], stack}
+
         {:close, _type, name, _meta}, {elements, stack} ->
           # Pop to the matching element, so a stray close cannot desync.
           case Enum.find_index(stack, fn i ->
@@ -117,6 +134,21 @@ defmodule HeexLint.Element do
   def display_name(%__MODULE__{type: :local_component, name: name}), do: "." <> name
   def display_name(%__MODULE__{type: :slot, name: name}), do: ":" <> name
   def display_name(%__MODULE__{name: name}), do: name
+
+  @doc """
+  Whether the element is a colocated stylesheet,
+  `<style :type={Phoenix.LiveView.ColocatedCSS}>`, which LiveView extracts
+  into the app's CSS bundle.
+  """
+  @spec colocated_css?(t()) :: boolean()
+  def colocated_css?(%__MODULE__{type: :tag, name: "style", attributes: attributes}) do
+    Enum.any?(attributes, fn
+      %{name: ":type", value: {:expr, code, _}} -> String.contains?(code, "ColocatedCSS")
+      _ -> false
+    end)
+  end
+
+  def colocated_css?(_element), do: false
 
   @doc "Whether the element is a component or slot rather than an HTML tag."
   @spec component?(t()) :: boolean()

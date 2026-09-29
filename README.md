@@ -98,9 +98,10 @@ rules: `no_arbitrary_values` still keeps `p-[13px]` off the scale.
 
 - **Components.** A design-system component is a function component in one of
   your component modules: by default, modules under a `components/` directory,
-  where Phoenix puts `CoreComponents`. `<.button>` resolves through the
-  module's imports, including what `use MyAppWeb, :html` brings in, and
-  `<Layouts.app>` through its aliases. Set `ui` to choose the modules yourself.
+  where Phoenix puts `CoreComponents`, plus the modules `ui` and
+  `component_imports` add. `<.button>` resolves through the module's imports,
+  including what `use MyAppWeb, :html` brings in, and `<Layouts.app>` through
+  its aliases.
 - **Variants.** `attr :variant, values: ~w(primary ghost)` gives the variants a
   finding suggests; `attr :size, values: ...` the sizes a spacing finding offers.
 - **Wrappers.** A component that forwards its `class` (`class={["w-full", @class]}`)
@@ -165,7 +166,7 @@ options set before it.
 | Setting             | What it does                                                               |
 | ------------------- | -------------------------------------------------------------------------- |
 | `theme`             | The Tailwind stylesheet. Discovered when not set.                          |
-| `ui`                | Design-system module prefixes: `"MyAppWeb.UI"` matches it and `MyAppWeb.UI.*`. |
+| `ui`                | Module prefixes added to the design system: `"MyAppWeb.UI"` matches it and `MyAppWeb.UI.*`. |
 | `component_imports` | Regexes on module names that are also the design system.                   |
 | `ignore_imports`    | Regexes on module names that never are. Takes precedence.                  |
 | `merge_functions`   | Functions whose arguments contain classes, such as `"classes"`.            |

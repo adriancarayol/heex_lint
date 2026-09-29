@@ -9,12 +9,16 @@ jobs:
   test:
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         include:
           - elixir: "1.18"
             otp: "27"
           - elixir: "1.19"
             otp: "28"
+          - elixir: "1.20"
+            otp: "28"
+            lint: true
     steps:
       - uses: actions/checkout@v4
 
@@ -27,9 +31,15 @@ jobs:
         with:
           node-version: 22
 
-      # Tailwind for the oracle tests.
+      # Tailwind for the oracle tests: the npm packages for the Node path,
+      # the standalone binary for the CLI path.
       - run: npm ci
         working-directory: test/fixtures/node
+      - run: |
+          mkdir -p test/fixtures/bin
+          curl -sSL -o test/fixtures/bin/tailwindcss \
+            https://github.com/tailwindlabs/tailwindcss/releases/download/v4.3.3/tailwindcss-linux-x64
+          chmod +x test/fixtures/bin/tailwindcss
 
       - uses: actions/cache@v4
         with:
@@ -39,6 +49,8 @@ jobs:
           key: ${{ runner.os }}-${{ matrix.elixir }}-${{ matrix.otp }}-${{ hashFiles('mix.lock') }}
 
       - run: mix deps.get
+      # The formatter's output changes between Elixir versions.
       - run: mix format --check-formatted
+        if: ${{ matrix.lint }}
       - run: mix compile --warnings-as-errors
       - run: mix test

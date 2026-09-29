@@ -23,10 +23,10 @@ read. Phoenix's own components (`link`, `form`, `inputs_for`...) are not the
 project's.
 
 **The design system** is the set of modules whose components `no_restyle`
-and `require_static_classes` check. By default it is every module defined
-under a `components/` directory. Set `ui` to module prefixes
-(`"MyAppWeb.CoreComponents"`), `component_imports` to regexes, and
-`ignore_imports` to exclude modules.
+and `require_static_classes` check: every module defined under a
+`components/` directory, plus the modules `ui` names by prefix
+(`"MyAppWeb.UI"` matches it and `MyAppWeb.UI.*`) and `component_imports`
+matches by regex. `ignore_imports` excludes modules and takes precedence.
 
 **Variants** come from `attr` declarations: `values:` on an attribute named
 `variant` lists the component's variants, and on `size` its sizes.

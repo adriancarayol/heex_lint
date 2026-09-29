@@ -5,10 +5,10 @@ defmodule HeexLint.Project do
   its Tailwind theme.
 
   A design-system component is a function component defined in one of the
-  project's component modules. By default those are the modules under a
-  `components` directory (Phoenix puts `CoreComponents` in
-  `lib/my_app_web/components`); the `ui`, `component_imports` and
-  `ignore_imports` settings change that.
+  project's component modules: the modules under a `components` directory
+  (Phoenix puts `CoreComponents` in `lib/my_app_web/components`), plus those
+  the `ui` and `component_imports` settings name, minus those
+  `ignore_imports` excludes.
   """
 
   alias HeexLint.{Code, Template, Theme}
@@ -461,12 +461,10 @@ defmodule HeexLint.Project do
       Enum.any?(imports, &Regex.match?(&1, name)) ->
         true
 
-      ui == [] and imports == [] ->
-        # Phoenix's convention: CoreComponents and friends live in components/.
-        file |> Path.relative_to(project.root) |> Path.split() |> Enum.member?("components")
-
       true ->
-        false
+        # Phoenix's convention, and the design system's home whatever else
+        # the settings add: CoreComponents and friends live in components/.
+        file |> Path.relative_to(project.root) |> Path.split() |> Enum.member?("components")
     end
   end
 

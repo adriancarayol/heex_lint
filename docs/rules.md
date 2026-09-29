@@ -113,7 +113,7 @@ the shared settings of the same name:
 
 | Option              | What it does                                                   |
 | ------------------- | -------------------------------------------------------------- |
-| `ui`                | Module name prefixes of the design system.                     |
+| `ui`                | Module name prefixes added to the design system.               |
 | `component_imports` | Regexes on module names that are also the design system.       |
 | `ignore_imports`    | Regexes on module names that never are. Takes precedence.      |
 | `merge_functions`   | Adds functions whose arguments contain classes.                |

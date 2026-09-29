@@ -81,37 +81,46 @@ defmodule HeexLint.Sites do
       component: owner_component(project, template)
     }
 
-    Enum.flat_map(element.attributes, fn attribute ->
-      kind =
-        cond do
-          attribute.name == "style" -> :style
-          class_attribute?(attribute.name) -> :class
-          true -> nil
-        end
+    element.attributes
+    |> Enum.flat_map(fn
+      # {%{class: ..., style: ...}}: a readable map spread onto the element.
+      %{name: :root, value: value} ->
+        for {key, kind} <- [{"class", :class}, {"style", :style}],
+            collected = Collector.root(value, key, context, Keyword.put(opts, :mode, kind)),
+            collected != nil,
+            do: {key, kind, collected}
 
-      if kind do
-        collected = Collector.attribute(attribute.value, context, Keyword.put(opts, :mode, kind))
+      attribute ->
+        kind =
+          cond do
+            attribute.name == "style" -> :style
+            class_attribute?(attribute.name) -> :class
+            true -> nil
+          end
 
-        [
-          %__MODULE__{
-            file: source.path,
-            kind: kind,
-            attribute: attribute.name,
-            element: element,
-            template: template,
-            component: resolved && resolved.name,
-            component_ref: resolved && resolved.component,
-            component_file: resolved && resolved.component.file,
-            written: written_name(element, component),
-            wrapper: resolved && resolved.wrapper,
-            strings: collected.strings,
-            unresolved: collected.unresolved,
-            parents: Enum.map(parents, &{&1, resolution(project, template, &1, by_index)})
-          }
-        ]
-      else
-        []
-      end
+        if kind,
+          do: [
+            {attribute.name, kind,
+             Collector.attribute(attribute.value, context, Keyword.put(opts, :mode, kind))}
+          ],
+          else: []
+    end)
+    |> Enum.map(fn {name, kind, collected} ->
+      %__MODULE__{
+        file: source.path,
+        kind: kind,
+        attribute: name,
+        element: element,
+        template: template,
+        component: resolved && resolved.name,
+        component_ref: resolved && resolved.component,
+        component_file: resolved && resolved.component.file,
+        written: written_name(element, component),
+        wrapper: resolved && resolved.wrapper,
+        strings: collected.strings,
+        unresolved: collected.unresolved,
+        parents: Enum.map(parents, &{&1, resolution(project, template, &1, by_index)})
+      }
     end)
   end
 

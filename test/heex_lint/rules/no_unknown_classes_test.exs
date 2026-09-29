@@ -71,6 +71,41 @@ defmodule HeexLint.Rules.NoUnknownClassesTest do
     end
   end
 
+  describe "with the standalone Tailwind binary" do
+    @describetag :standalone
+
+    test "classes the build does not generate are unknown", %{tmp_dir: dir} do
+      template =
+        ~s|<div class="flex-col hover:flex tap-target bg-primary md:w-1/2 [&_svg]:size-4 flex-cols hovr:flex" />|
+
+      files = %{"lib/app_web/live/page_live.ex" => live(template)}
+
+      findings =
+        lint(dir, files,
+          rules: [no_unknown_classes: :error],
+          settings: [tailwind_bin: standalone_bin()]
+        )
+
+      assert tokens(findings) == [~s("flex-cols"), ~s("hovr:flex")]
+      # No suggestions this way, but a known base marks a variant problem.
+      assert Enum.at(findings, 1).message =~
+               "uses a variant this project's Tailwind does not know"
+    end
+  end
+
+  describe "colocated CSS" do
+    test "declares classes for its file", %{tmp_dir: dir} do
+      template = """
+      <style :type={Phoenix.LiveView.ColocatedCSS}>
+        .ledger-row { display: grid; }
+      </style>
+      <div class="ledger-row ledger-cell" />
+      """
+
+      assert tokens(unknown(dir, template)) == [~s("ledger-cell")]
+    end
+  end
+
   describe "without a Tailwind to ask" do
     test "the grammar, @utility names and class selectors answer", %{tmp_dir: dir} do
       findings =

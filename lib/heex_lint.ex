@@ -85,7 +85,9 @@ defmodule HeexLint do
           {[diagnostics | all], [errors | failures]}
         end)
 
-      warnings = project.warnings ++ Enum.flat_map(Map.values(prepared), & &1.warnings)
+      warnings =
+        project.warnings ++
+          Enum.flat_map(Map.values(prepared), & &1.warnings) ++ Tailwind.warnings(oracle)
 
       %{
         diagnostics:

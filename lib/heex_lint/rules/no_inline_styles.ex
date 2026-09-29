@@ -57,7 +57,10 @@ defmodule HeexLint.Rules.NoInlineStyles do
     style_elements =
       for {_template, elements} <- file.elements,
           element <- elements,
-          element.type == :tag and element.name == "style" do
+          element.type == :tag and element.name == "style",
+          # Colocated CSS is bundled into the app's stylesheet, like a
+          # single-file component's own <style> block.
+          not HeexLint.Element.colocated_css?(element) do
         %{
           position: {element.line, element.column},
           message: Rule.message(@messages.style_element, %{}, nil, options, file)

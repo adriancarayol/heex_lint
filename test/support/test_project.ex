@@ -224,6 +224,9 @@ defmodule HeexLint.TestProject do
     dir
   end
 
+  @doc "The standalone Tailwind binary for CLI-path tests."
+  def standalone_bin, do: Path.expand("../fixtures/bin/tailwindcss", __DIR__)
+
   @doc "The messages of diagnostics for `rule`."
   def messages(diagnostics, rule \\ nil) do
     for d <- diagnostics, rule == nil or d.rule == rule, do: d.message

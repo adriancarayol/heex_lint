@@ -65,6 +65,18 @@ defmodule HeexLint.Rules.NoInlineStylesTest do
              "A <style> element injects CSS outside the design system. Use classes, or declare the rule in your theme CSS."
   end
 
+  test "colocated CSS is not an inline <style>", %{tmp_dir: dir} do
+    assert styles(
+             dir,
+             ~s|<style :type={Phoenix.LiveView.ColocatedCSS}>.a { color: red; }</style>|
+           ) == []
+  end
+
+  test "readable maps spread onto an element are checked", %{tmp_dir: dir} do
+    [finding] = styles(dir, ~s|<div {%{style: "color: red", id: "x"}} />|)
+    assert finding.message =~ "Inline style sets color."
+  end
+
   test "allow exempts properties, in either spelling", %{tmp_dir: dir} do
     template = ~s|<div style="transform: translateX(10px); color: red; background-color: red" />|
     findings = styles(dir, template, allow: ["transform", "backgroundColor"])

@@ -65,11 +65,21 @@ defmodule HeexLint.Rules.NoUnknownClasses do
         do: Path.relative_to(project.theme_file, project.root),
         else: "your theme CSS"
 
+    # A template's colocated CSS declares classes for the file the way the
+    # theme does for everything.
+    own =
+      for {_template, elements} <- file.elements,
+          element <- elements,
+          HeexLint.Element.colocated_css?(element),
+          class <- Theme.parse_class_selectors(element.text || ""),
+          into: MapSet.new(),
+          do: class
+
     candidates =
       for {site, string} <-
             NoRawColors.class_strings(file, Keyword.delete(options, :scan_all_strings)),
           {token, position} <- Rule.tokens(string),
-          not settled?(theme, token),
+          not settled?(theme, own, token),
           (exemption = Policy.decide(policy, site && site.component, token)) != :ok,
           do: {site, string, token, position, elem(exemption, 3)}
 
@@ -147,12 +157,12 @@ defmodule HeexLint.Rules.NoUnknownClasses do
   end
 
   # What the project's CSS settles without asking Tailwind.
-  defp settled?(theme, token) do
+  defp settled?(theme, own, token) do
     base = Classes.normalize(token)
     bare = String.replace(base, ~r/\/[\w.%]+$/, "")
 
     base == "" or String.starts_with?(base, "[") or Classes.marker?(token) or
-      MapSet.member?(theme.classes, bare)
+      MapSet.member?(theme.classes, bare) or MapSet.member?(own, bare)
   end
 
   # Without Tailwind: the grammar plus @utility names.

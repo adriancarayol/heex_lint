@@ -82,6 +82,34 @@ defmodule HeexLint.Collector do
   end
 
   @doc """
+  Collects `key` ("class" or "style") from a root attribute that spreads a
+  readable map or keyword list onto the element: `{%{class: "p-4"}}`.
+  Nil when the root is not one, or does not set `key`.
+  """
+  @spec root(HeexLint.Element.value(), String.t(), map(), keyword()) :: t() | nil
+  def root({:expr, code, position}, key, context, opts) do
+    with {:ok, ast} <- Code.parse(code),
+         pairs when is_list(pairs) <- root_pairs(ast),
+         {_key, value} <- Enum.find(pairs, fn {k, _v} -> Code.name(k) == key end) do
+      text = %{
+        lines: code |> String.split("\n") |> List.to_tuple(),
+        locate: locator(position, context.template.indentation),
+        file: context.template.file
+      }
+
+      context |> state(opts, text, :template) |> visit(value) |> result()
+    else
+      _ -> nil
+    end
+  end
+
+  def root(_value, _key, _context, _opts), do: nil
+
+  defp root_pairs({:%{}, _, pairs}), do: pairs
+  defp root_pairs(list) when is_list(list), do: if(Keyword.keyword?(list), do: list)
+  defp root_pairs(_), do: nil
+
+  @doc """
   Collects from Elixir code in the file itself, such as a merge-function
   call or an attr default. `clause` is the enclosing function clause, if any.
   """

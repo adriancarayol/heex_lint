@@ -25,7 +25,7 @@ This page maps each part to its Phoenix counterpart.
 | --- | --- |
 | JSX, Vue and Svelte templates | HEEx: `~H` sigils and `.heex` files, through LiveView's tokenizer. |
 | `className` | `class` and other class attributes (`input_class`...). |
-| Components from `components.json` / `components/ui` | Function components in modules under `components/`, or `ui` module prefixes. |
+| Components from `components.json` / `components/ui`, plus `ui` and `componentImports` | Function components in modules under `components/`, plus `ui` module prefixes and `component_imports`. |
 | Import resolution, re-exports, barrels | `import`, `alias` and `use MyAppWeb, :html` expansion. |
 | Variants from `cva`/`tv` and string-union props | `attr :variant, values: [...]` and `attr :size, values: [...]`. |
 | Wrappers forwarding `className`, render props | Components forwarding `@class` or global attributes (`{@rest}`). Slots belong to their component. |

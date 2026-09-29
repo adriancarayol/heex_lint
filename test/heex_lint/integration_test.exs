@@ -95,7 +95,9 @@ defmodule HeexLint.IntegrationTest do
            ]
   end
 
-  test "the ui setting chooses the design system", %{tmp_dir: dir} do
+  test "ui and component_imports add to the design system; ignore_imports removes", %{
+    tmp_dir: dir
+  } do
     files = %{
       "lib/app_web/live/page_live.ex" => live(~s(<.button class="bg-pink-500">x</.button>)),
       "lib/app_web/components/core_components.ex" => core_components()
@@ -103,7 +105,8 @@ defmodule HeexLint.IntegrationTest do
 
     rules = [no_restyle: {:error, allow: ["layout"]}]
     assert [_] = lint(dir, files, rules: rules, settings: [ui: "AppWeb.CoreComponents"])
-    assert lint(dir, files, rules: rules, settings: [ui: "AppWeb.Other"]) == []
+    # ui adds to the components directory; it does not replace it.
+    assert [_] = lint(dir, files, rules: rules, settings: [ui: "AppWeb.Other"])
 
     assert lint(dir, files,
              rules: rules,

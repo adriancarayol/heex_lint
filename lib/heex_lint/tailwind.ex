@@ -63,6 +63,10 @@ defmodule HeexLint.Tailwind do
   def status(nil), do: {:none, "not started"}
   def status(pid), do: GenServer.call(pid, :status, @timeout)
 
+  @doc "The warnings an oracle collected, such as a theme that could not be built."
+  def warnings(nil), do: []
+  def warnings(pid), do: GenServer.call(pid, :warnings, @timeout)
+
   ## Server
 
   @impl true
@@ -76,7 +80,8 @@ defmodule HeexLint.Tailwind do
        pending: %{},
        next: 1,
        cache: %{},
-       reason: nil
+       reason: nil,
+       warnings: []
      }}
   end
 
@@ -85,6 +90,8 @@ defmodule HeexLint.Tailwind do
     state = ensure_strategy(state)
     {:reply, {state.strategy, state.reason}, state}
   end
+
+  def handle_call(:warnings, _from, state), do: {:reply, Enum.reverse(state.warnings), state}
 
   def handle_call({:unknown, entry, tokens}, from, state) do
     state = ensure_strategy(state)
@@ -95,7 +102,7 @@ defmodule HeexLint.Tailwind do
         {:reply, nil, state}
 
       :standalone ->
-        state = cache(state, entry, missing, standalone(state.project, entry, missing))
+        state = run_standalone(state, entry, missing)
         {:reply, answer(state, entry, tokens), state}
 
       :node when missing == [] ->
@@ -175,17 +182,12 @@ defmodule HeexLint.Tailwind do
                     GenServer.reply(from, nil)
 
                     warn(
+                      %{state | strategy: :none},
                       "The Tailwind theme at #{entry} could not be built (#{reason}); no_unknown_classes is using the class grammar."
                     )
 
-                    %{state | strategy: :none}
-
                   _bin ->
-                    state = %{state | strategy: :standalone}
-
-                    state =
-                      cache(state, entry, missing, standalone(state.project, entry, missing))
-
+                    state = run_standalone(%{state | strategy: :standalone}, entry, missing)
                     GenServer.reply(from, answer(state, entry, tokens))
                     state
                 end
@@ -197,7 +199,18 @@ defmodule HeexLint.Tailwind do
     end
   end
 
-  defp cache(state, _entry, _missing, nil), do: %{state | strategy: :none}
+  defp run_standalone(state, entry, missing) do
+    case standalone(state.project, entry, missing) do
+      {:ok, results} ->
+        cache(state, entry, missing, results)
+
+      {:error, message} ->
+        warn(
+          %{state | strategy: :none},
+          message <> " no_unknown_classes is using the class grammar."
+        )
+    end
+  end
 
   defp cache(state, entry, missing, results) do
     by_token = Map.new(results, &{&1.token, &1})
@@ -280,7 +293,7 @@ defmodule HeexLint.Tailwind do
     end
   end
 
-  defp standalone(_project, _entry, []), do: []
+  defp standalone(_project, _entry, []), do: {:ok, []}
 
   defp standalone(project, entry, tokens) do
     bin = standalone_binary(project)
@@ -313,17 +326,17 @@ defmodule HeexLint.Tailwind do
           css = File.read!(output)
           known? = fn candidate -> String.contains?(css, "." <> css_escape(candidate)) end
 
-          for token <- tokens, not known?.(token) do
-            {variants, base} = Classes.split_variants(token)
-            %{token: token, suggestion: nil, base_known: variants != [] and known?.(base)}
-          end
+          results =
+            for token <- tokens, not known?.(token) do
+              {variants, base} = Classes.split_variants(token)
+              %{token: token, suggestion: nil, base_known: variants != [] and known?.(base)}
+            end
+
+          {:ok, results}
 
         {out, _status} ->
-          warn(
-            "The Tailwind theme at #{entry} could not be built with #{bin}: #{String.slice(out, 0, 300)}"
-          )
-
-          nil
+          {:error,
+           "The Tailwind theme at #{entry} could not be built with #{bin}: #{String.slice(out, 0, 300)}."}
       end
     after
       File.rm_rf(dir)
@@ -350,5 +363,5 @@ defmodule HeexLint.Tailwind do
     end)
   end
 
-  defp warn(message), do: IO.puts(:stderr, "warning: " <> message)
+  defp warn(state, message), do: %{state | warnings: [message | state.warnings]}
 end
