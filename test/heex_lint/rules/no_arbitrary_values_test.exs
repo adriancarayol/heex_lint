@@ -114,7 +114,13 @@ defmodule HeexLint.Rules.NoArbitraryValuesTest do
   test "exact replacements are editor suggestions that rewrite the literal", %{tmp_dir: dir} do
     [finding] = arbitrary(dir, ~s(<div class="flex p-[12px]" />))
 
-    assert [%{replacement: "p-3", fix: %{old: "flex p-[12px]", new: "flex p-3"}}] =
+    assert [%{replacement: "p-3", exact: true, fix: %{old: "flex p-[12px]", new: "flex p-3"}}] =
              finding.suggestions
+  end
+
+  test "a font size step also sets a line height, so it is not exact", %{tmp_dir: dir} do
+    [text, radius] = arbitrary(dir, ~s(<div class="text-[14px] rounded-[10px]" />))
+    assert [%{replacement: "text-sm", exact: false}] = text.suggestions
+    assert [%{replacement: "rounded-lg", exact: true}] = radius.suggestions
   end
 end

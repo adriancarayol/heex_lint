@@ -221,10 +221,13 @@ See [placeholders](docs/rules.md#your-own-words).
 ## Suggestions and fixes
 
 Findings carry suggestions: the nearest theme tokens, an exact scale step
-(`p-[13px]` → `p-3.25`), or a spelling correction. `--format json` includes
-them, and `mix heex_lint --fix` applies the ones with a single unambiguous
-replacement, rewriting only the class inside its literal. In GitHub Actions,
-`--format github` turns findings into annotations on the pull request.
+(`p-[13px]` → `p-3.25`), the variable shorthand (`bg-[var(--x)]` →
+`bg-(--x)`), or a spelling correction. `--format json` includes them, with
+`exact: true` on the ones that generate the same CSS. `mix heex_lint --fix`
+applies only those, rewriting just the class inside its literal; a nearest
+color or a spelling correction is a choice left to you or your agent. In
+GitHub Actions, `--format github` turns findings into annotations on the pull
+request.
 
 ## Exceptions
 

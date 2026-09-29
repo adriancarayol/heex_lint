@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- `mix heex_lint --fix` applies only suggestions that generate the same CSS
+  (spacing and radius steps, the variable shorthand). Nearest colors, font
+  size steps (which add a line height) and spelling corrections stay
+  suggestions; JSON output marks each with `exact`.
+
 ## 0.2.0
 
 Rule parity with [@shadcn/lint](https://github.com/shadcn-ui/lint) 0.2.0.

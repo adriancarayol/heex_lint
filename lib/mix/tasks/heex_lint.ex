@@ -18,8 +18,8 @@ defmodule Mix.Tasks.HeexLint do
     * `--format` - `text` (default), `json`, or `github` for GitHub Actions
       annotations
     * `--max-warnings` - fail when there are more warnings than this
-    * `--fix` - apply suggestions that have exactly one replacement, such
-      as an exact scale step or a spelling correction, then lint again
+    * `--fix` - apply the suggestions that generate the same CSS, such as
+      an exact scale step or the variable shorthand, then lint again
 
   Exits with status 1 when there are errors, unreadable templates, or more
   warnings than `--max-warnings`.
@@ -158,7 +158,10 @@ defmodule Mix.Tasks.HeexLint do
             column: d.column,
             message: d.message,
             suggestions:
-              Enum.map(d.suggestions, &%{message: &1.message, replacement: &1.replacement})
+              Enum.map(
+                d.suggestions,
+                &%{message: &1.message, replacement: &1.replacement, exact: &1[:exact] == true}
+              )
           }
         end),
       failures:

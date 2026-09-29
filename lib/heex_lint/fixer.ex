@@ -1,19 +1,21 @@
 defmodule HeexLint.Fixer do
   @moduledoc """
   Applies suggestions to files. A suggestion rewrites one class inside a
-  literal's own source text, never re-serializing it; a diagnostic with
-  more than one suggestion is a choice, so only single suggestions apply.
+  literal's own source text, never re-serializing it. Only exact
+  suggestions apply: rewrites that generate the same CSS, such as an exact
+  scale step or the variable shorthand. A nearest color or a spelling
+  correction is a choice, left to the reader.
   """
 
   alias HeexLint.Diagnostic
 
-  @doc "Whether `diagnostic` has exactly one applicable suggestion."
+  @doc "Whether `diagnostic` has exactly one suggestion, and it is exact."
   @spec fixable?(Diagnostic.t()) :: boolean()
-  def fixable?(%Diagnostic{suggestions: [%{fix: %{}}]}), do: true
+  def fixable?(%Diagnostic{suggestions: [%{fix: %{}, exact: true}]}), do: true
   def fixable?(_), do: false
 
   @doc """
-  Applies every single suggestion in `diagnostics`, one per literal, and
+  Applies every exact suggestion in `diagnostics`, one per literal, and
   returns how many were applied.
   """
   @spec apply([Diagnostic.t()]) :: non_neg_integer()

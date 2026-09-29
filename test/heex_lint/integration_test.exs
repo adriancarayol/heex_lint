@@ -98,16 +98,27 @@ defmodule HeexLint.IntegrationTest do
              []
   end
 
-  test "--fix applies single suggestions to the literal", %{tmp_dir: dir} do
-    files = %{
-      "lib/app_web/live/page_live.ex" => live(~s(<div class="flex p-[12px] text-primry" />))
-    }
+  test "--fix applies only suggestions that generate the same CSS", %{tmp_dir: dir} do
+    template = """
+    <div class="flex p-[12px]" />
+    <div class="bg-neutral-900" />
+    <div class="text-[14px]" />
+    <div class="hover:px-[var(--gutter)]" />
+    """
 
-    result = run(dir, files, rules: [no_arbitrary_values: :error, no_raw_colors: :error])
-    assert HeexLint.Fixer.apply(result.diagnostics) == 1
+    files = %{"lib/app_web/live/page_live.ex" => live(template)}
 
-    assert File.read!(Path.join(dir, "lib/app_web/live/page_live.ex")) =~
-             ~s(class="flex p-3 text-primry")
+    result =
+      run(dir, files, rules: [no_arbitrary_values: :error, no_raw_colors: :error])
+
+    # The nearest color and the font size (which adds a line height) stay
+    # suggestions; the spacing step and the variable shorthand apply.
+    assert HeexLint.Fixer.apply(result.diagnostics) == 2
+    contents = File.read!(Path.join(dir, "lib/app_web/live/page_live.ex"))
+    assert contents =~ ~s(class="flex p-3")
+    assert contents =~ ~s(class="bg-neutral-900")
+    assert contents =~ ~s(class="text-[14px]")
+    assert contents =~ ~s|class="hover:px-(--gutter)"|
   end
 
   test "unparsable templates are failures, not crashes", %{tmp_dir: dir} do

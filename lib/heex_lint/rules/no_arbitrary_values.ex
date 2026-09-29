@@ -178,7 +178,10 @@ defmodule HeexLint.Rules.NoArbitraryValues do
               string,
               token,
               [replacement],
-              &Messages.interpolate(@messages.use_scale, %{"replacement" => &1})
+              &Messages.interpolate(@messages.use_scale, %{"replacement" => &1}),
+              # A font size step also sets a line height, so only spacing
+              # and radius steps generate the same CSS.
+              exact: scale_kind != :text
             )
 
           shorthand = parts && variable_shorthand(token, parts) ->
@@ -186,7 +189,8 @@ defmodule HeexLint.Rules.NoArbitraryValues do
               string,
               token,
               [shorthand],
-              &Messages.interpolate(@messages.use_variable, %{"replacement" => &1})
+              &Messages.interpolate(@messages.use_variable, %{"replacement" => &1}),
+              exact: true
             )
 
           true ->

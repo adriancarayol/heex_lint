@@ -51,7 +51,8 @@ defmodule Mix.Tasks.HeexLintTest do
     assert output =~ "[no_raw_colors]"
     assert output =~ "[no_arbitrary_values]"
     assert output =~ "2 errors in"
-    assert output =~ "2 can be fixed with --fix."
+    # The nearest color is a suggestion; the scale step is exact.
+    assert output =~ "1 can be fixed with --fix."
   end
 
   test "warnings pass unless over --max-warnings", %{tmp_dir: dir} do

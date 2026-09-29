@@ -27,6 +27,7 @@ defmodule HeexLint.Rule do
   @type suggestion :: %{
           message: String.t(),
           replacement: String.t(),
+          exact: boolean(),
           fix:
             %{
               file: String.t(),
@@ -65,9 +66,17 @@ defmodule HeexLint.Rule do
   @doc """
   Suggestions that replace `token` with each replacement inside the
   literal it came from. None when the literal cannot be rewritten safely.
+
+  `exact: true` marks replacements that generate the same CSS, such as an
+  exact scale step or the variable shorthand; only those are applied by
+  `mix heex_lint --fix`. Nearest colors and spelling corrections are
+  suggestions for a person or an agent to choose.
   """
-  @spec suggestions(map(), String.t(), [String.t()], (String.t() -> String.t())) :: [suggestion()]
-  def suggestions(string, token, replacements, describe) do
+  @spec suggestions(map(), String.t(), [String.t()], (String.t() -> String.t()), keyword()) ::
+          [suggestion()]
+  def suggestions(string, token, replacements, describe, opts \\ []) do
+    exact = Keyword.get(opts, :exact, false)
+
     Enum.flat_map(replacements, fn replacement ->
       case string[:literal] do
         %{raw: raw} = literal ->
@@ -78,6 +87,7 @@ defmodule HeexLint.Rule do
               %{
                 message: describe.(replacement),
                 replacement: replacement,
+                exact: exact,
                 fix: %{file: literal.file, from: literal.from, old: raw, new: replaced}
               }
             ]
