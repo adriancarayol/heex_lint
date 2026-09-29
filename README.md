@@ -136,6 +136,16 @@ rules: `no_arbitrary_values` still keeps `p-[13px]` off the scale.
 
 See [docs/how-it-works.md](docs/how-it-works.md) for details and limits.
 
+## Documentation
+
+- [Rules](docs/rules.md): shared options, contracts, placeholders and categories.
+- [Configuring your design system](docs/design-systems.md): variants, contracts, messages, shared policies.
+- [How it works](docs/how-it-works.md): components, themes, values, and what it cannot see.
+- [Adding linting to an existing project](docs/adoption.md).
+- [Troubleshooting](docs/troubleshooting.md).
+- [API reference](docs/api.md).
+- [Parity with @shadcn/lint](docs/parity.md).
+
 ## Configuration
 
 Create `.heex_lint.exs` in your project root. Every key is optional; without

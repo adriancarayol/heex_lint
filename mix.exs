@@ -55,10 +55,15 @@ defmodule HeexLint.MixProject do
       main: "readme",
       extras: [
         "README.md",
+        "SETUP.md",
         "docs/rules.md",
+        "docs/design-systems.md",
         "docs/how-it-works.md",
         "docs/adoption.md",
-        "docs/parity.md"
+        "docs/troubleshooting.md",
+        "docs/api.md",
+        "docs/parity.md",
+        "CHANGELOG.md"
       ],
       source_ref: "v#{@version}"
     ]
