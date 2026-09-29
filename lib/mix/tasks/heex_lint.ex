@@ -5,16 +5,20 @@ defmodule Mix.Tasks.HeexLint do
   Lints Tailwind classes in HEEx templates.
 
       $ mix heex_lint
-      $ mix heex_lint lib/my_app_web/components
+      $ mix heex_lint lib/my_app_web/live
       $ mix heex_lint --format json
+      $ mix heex_lint --fix
 
-  Files default to the config's `:inputs` (see `HeexLint.Config`).
+  Files default to the config's `:inputs` (see `HeexLint.Config`); the whole
+  project is read either way, so components resolve across files.
 
   ## Options
 
     * `--config` - path to the config file (default `.heex_lint.exs`)
     * `--format` - `text` (default) or `json`
     * `--max-warnings` - fail when there are more warnings than this
+    * `--fix` - apply suggestions that have exactly one replacement, such
+      as an exact scale step or a spelling correction, then lint again
 
   Exits with status 1 when there are errors, unreadable templates, or more
   warnings than `--max-warnings`.
@@ -22,16 +26,33 @@ defmodule Mix.Tasks.HeexLint do
 
   use Mix.Task
 
-  alias HeexLint.Config
+  alias HeexLint.{Config, Fixer}
 
-  @switches [config: :string, format: :string, max_warnings: :integer]
+  @switches [config: :string, format: :string, max_warnings: :integer, fix: :boolean]
 
   @impl true
   def run(argv) do
     {options, paths, _invalid} = OptionParser.parse(argv, strict: @switches)
 
     config = Config.load(Keyword.get(options, :config, ".heex_lint.exs"))
-    result = HeexLint.run(config, if(paths == [], do: nil, else: paths))
+    paths = if paths == [], do: nil, else: paths
+    result = HeexLint.run(config, paths)
+
+    result =
+      if Keyword.get(options, :fix, false) do
+        case Fixer.apply(result.diagnostics) do
+          0 ->
+            result
+
+          count ->
+            Mix.shell().info("Applied #{count} #{if count == 1, do: "fix", else: "fixes"}.")
+            HeexLint.run(config, paths)
+        end
+      else
+        result
+      end
+
+    for warning <- result.warnings, do: Mix.shell().error("warning: " <> warning)
 
     case Keyword.get(options, :format, "text") do
       "json" -> IO.puts(json(result))
@@ -85,17 +106,15 @@ defmodule Mix.Tasks.HeexLint do
     errors = Enum.count(result.diagnostics, &(&1.severity == :error))
     warnings = Enum.count(result.diagnostics, &(&1.severity == :warning))
     failures = length(result.failures)
+    fixable = Enum.count(result.diagnostics, &Fixer.fixable?/1)
 
     parts =
-      [
-        {errors, "error"},
-        {warnings, "warning"},
-        {failures, "unparsable template"}
-      ]
+      [{errors, "error"}, {warnings, "warning"}, {failures, "unparsable template"}]
       |> Enum.reject(&(elem(&1, 0) == 0))
       |> Enum.map_join(", ", fn {n, word} -> "#{n} #{plural(n, word)}" end)
 
-    "\n#{parts} in #{result.files} #{plural(result.files, "file")}."
+    fix_hint = if fixable > 0, do: "\n#{fixable} can be fixed with --fix.", else: ""
+    "\n#{parts} in #{result.files} #{plural(result.files, "file")}.#{fix_hint}"
   end
 
   defp plural(1, word), do: word
@@ -111,13 +130,16 @@ defmodule Mix.Tasks.HeexLint do
             file: Path.relative_to_cwd(d.file),
             line: d.line,
             column: d.column,
-            message: d.message
+            message: d.message,
+            suggestions:
+              Enum.map(d.suggestions, &%{message: &1.message, replacement: &1.replacement})
           }
         end),
       failures:
         Enum.map(result.failures, fn {file, message} ->
           %{file: Path.relative_to_cwd(file), message: message}
         end),
+      warnings: result.warnings,
       files: result.files
     })
   end

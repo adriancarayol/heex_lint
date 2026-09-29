@@ -1,142 +1,230 @@
 defmodule HeexLint do
   @moduledoc """
-  An agent-first linter for Tailwind classes in Phoenix HEEx templates.
+  An agent-first linter for Tailwind classes in Phoenix HEEx templates, with
+  rule parity with [@shadcn/lint](https://github.com/shadcn-ui/lint).
 
-  Run it with `mix heex_lint`, or call `run/2` and `lint_source/3` directly.
-  See `HeexLint.Config` for configuration.
+  Run it with `mix heex_lint`, or call `run/3`. See `HeexLint.Config` for
+  configuration and the `HeexLint.Rules.*` modules for each rule.
   """
 
-  alias HeexLint.{ClassName, Config, Diagnostic, Element, Rule, Template, Theme, Value}
+  alias HeexLint.{Config, Diagnostic, Messages, Project, Rule, Sites, Suppressions, Tailwind}
+
+  # Class helpers known in the Elixir ecosystem, on top of the configured ones.
+  @default_merge_functions ["cn", "Tails.classes", "TwMerge.merge", "Twix.tw"]
+
+  @oracle_rules [HeexLint.Rules.NoUnknownClasses, HeexLint.Rules.NoRawColors]
 
   @type result :: %{
           diagnostics: [Diagnostic.t()],
           failures: [{String.t(), String.t()}],
+          warnings: [String.t()],
           files: non_neg_integer()
         }
 
   @doc """
   Lints the files matched by the config's inputs, or `paths` when given.
+  The whole project is read either way, so components resolve across files.
+
+  Options: `:root`, the project root (default: the current directory).
   """
-  @spec run(Config.t(), [String.t()] | nil) :: result()
-  def run(%Config{} = config, paths \\ nil) do
-    files = files(paths || config.inputs)
-
-    {parsed, failures} =
-      files
-      |> Task.async_stream(&parse_file/1, timeout: :infinity, ordered: true)
-      |> Enum.map(fn {:ok, result} -> result end)
-      |> Enum.split_with(&match?({:ok, _}, &1))
-
-    elements = Enum.flat_map(parsed, fn {:ok, elements} -> elements end)
-
-    %{
-      diagnostics: lint(elements, config),
-      failures: Enum.map(failures, fn {:error, failure} -> failure end),
-      files: length(files)
-    }
+  @spec run(Config.t(), [String.t()] | nil, keyword()) :: result()
+  def run(%Config{} = config, paths \\ nil, opts \\ []) do
+    root = Path.expand(Keyword.get(opts, :root, File.cwd!()))
+    project_files = files(config.inputs, root)
+    targets = if paths, do: files(paths, root), else: project_files
+    project = Project.load(root, Enum.uniq(project_files ++ targets), config.settings)
+    lint(project, config, targets)
   end
 
-  @doc """
-  Lints `contents` as if it were the file `file`. Useful in tests and editors.
-  """
-  @spec lint_source(String.t(), String.t(), Config.t()) ::
-          {:ok, [Diagnostic.t()]} | {:error, String.t()}
-  def lint_source(file, contents, %Config{} = config) do
-    case parse(file, contents) do
-      {:ok, elements} -> {:ok, lint(elements, config)}
-      {:error, {_file, message}} -> {:error, message}
-    end
-  end
+  @doc false
+  def lint(project, config, targets) do
+    rules_by_file =
+      Map.new(targets, &{&1, Config.rules_for(config, Path.relative_to(&1, project.root))})
 
-  defp lint(elements, config) do
-    context = %{
-      theme: Theme.load(config.theme),
-      class_attribute?: class_attribute_matcher(config.class_attributes),
-      inline_variables: inline_variables(elements)
-    }
+    pairs =
+      rules_by_file
+      |> Map.values()
+      |> List.flatten()
+      |> Enum.map(fn {m, _s, o} -> {m, o} end)
+      |> Enum.uniq()
 
-    context = Map.put(context, :color_usage, color_usage(elements, context))
+    oracle =
+      if project.entry && Enum.any?(pairs, fn {module, _} -> module in @oracle_rules end) do
+        {:ok, pid} = Tailwind.start_link(project)
+        pid
+      end
 
-    for element <- elements,
-        {rule, severity, options} <- config.rules,
-        {{line, column}, message} <- rule.check(element, Map.put(context, :options, options)) do
-      %Diagnostic{
-        rule: rule.name(),
-        severity: severity,
-        file: element.file,
-        line: line,
-        column: column,
-        message: if(config.note, do: message <> " " <> config.note, else: message)
+    project = %{project | oracle: oracle}
+
+    # The project is large; tasks read it from persistent_term, which never
+    # copies it onto their heaps.
+    key = {__MODULE__, make_ref()}
+
+    try do
+      # One recognized project per distinct recognition setting, per run.
+      recognized =
+        pairs
+        |> Enum.map(fn {_module, options} -> Config.recognition(config, options) end)
+        |> Enum.uniq()
+        |> Map.new(&{&1, Project.recognize(project, &1)})
+
+      prepared = Map.new(pairs, &{&1, prepare(recognized, config, &1)})
+      :persistent_term.put(key, {project, config, prepared})
+
+      {diagnostics, failures} =
+        targets
+        |> Task.async_stream(
+          fn path ->
+            {project, config, prepared} = :persistent_term.get(key)
+            lint_file(project, config, prepared, path, Map.fetch!(rules_by_file, path))
+          end,
+          timeout: :infinity,
+          ordered: true
+        )
+        |> Enum.reduce({[], []}, fn {:ok, {diagnostics, errors}}, {all, failures} ->
+          {[diagnostics | all], [errors | failures]}
+        end)
+
+      warnings = project.warnings ++ Enum.flat_map(Map.values(prepared), & &1.warnings)
+
+      %{
+        diagnostics:
+          diagnostics
+          |> Enum.reverse()
+          |> List.flatten()
+          |> Enum.uniq_by(&{&1.file, &1.line, &1.column, &1.rule, &1.message})
+          |> Enum.sort_by(&{&1.file, &1.line, &1.column}),
+        failures: failures |> Enum.reverse() |> List.flatten(),
+        warnings: Enum.uniq(warnings),
+        files: length(targets)
       }
+    after
+      :persistent_term.erase(key)
+      Tailwind.stop(oracle)
     end
-    |> Enum.uniq()
-    |> Enum.sort_by(&{&1.file, &1.line, &1.column})
   end
 
-  defp files(patterns) do
+  # Each distinct {rule, options} compiles once, against the project as its
+  # recognition options see it.
+  defp prepare(recognized, config, {module, options}) do
+    recognition = Config.recognition(config, options)
+    scoped = Map.fetch!(recognized, recognition)
+
+    placeholder_warnings =
+      for text <- message_texts(options),
+          warning <- Messages.check(text, Atom.to_string(module.name())),
+          do: warning
+
+    case module.prepare(options, scoped) do
+      {:ok, state, warnings} ->
+        %{
+          state: state,
+          error: nil,
+          warnings: warnings ++ placeholder_warnings,
+          project: scoped,
+          recognition: recognition
+        }
+
+      {:error, message} ->
+        %{
+          state: nil,
+          error: message,
+          warnings: placeholder_warnings,
+          project: scoped,
+          recognition: recognition
+        }
+    end
+  end
+
+  defp message_texts(options) do
+    [
+      options[:message]
+      | Enum.map(List.wrap(options[:contracts]), &Map.get(Map.new(&1), :message))
+    ]
+    |> Enum.flat_map(fn
+      text when is_binary(text) -> [text]
+      table when is_map(table) or is_list(table) -> for {_k, v} <- table, is_binary(v), do: v
+      _ -> []
+    end)
+  end
+
+  defp lint_file(project, config, prepared, path, rules) do
+    source = Map.fetch!(project.sources, path)
+
+    if source.error do
+      {[], [{path, source.error}]}
+    else
+      {diagnostics, errors} =
+        rules
+        |> Enum.group_by(fn {module, _severity, options} ->
+          prepared[{module, options}].recognition
+        end)
+        |> Enum.reduce({[], []}, fn {recognition, group}, {diagnostics, errors} ->
+          [{module, _, options} | _] = group
+          scoped = prepared[{module, options}].project
+
+          collected =
+            Sites.collect(scoped, source,
+              merge_functions: (recognition[:merge_functions] || []) ++ @default_merge_functions,
+              variant_functions: recognition[:variant_functions] || []
+            )
+
+          file = %{
+            project: scoped,
+            source: source,
+            sites: collected.sites,
+            elements: collected.elements,
+            note: config.settings[:note]
+          }
+
+          found =
+            Enum.flat_map(group, fn {module, severity, options} ->
+              case prepared[{module, options}] do
+                %{error: message} when is_binary(message) ->
+                  [diagnostic(module, severity, path, Rule.config_error(message))]
+
+                %{state: state} ->
+                  file
+                  |> module.check(state, options)
+                  |> Enum.map(&diagnostic(module, severity, path, &1))
+              end
+            end)
+
+          {diagnostics ++ found, Enum.uniq(errors ++ Enum.map(collected.errors, &{path, &1}))}
+        end)
+
+      {Suppressions.apply(diagnostics, source), errors}
+    end
+  end
+
+  defp diagnostic(module, severity, path, finding) do
+    {line, column} = finding.position
+
+    %Diagnostic{
+      rule: module.name(),
+      severity: severity,
+      file: path,
+      line: line,
+      column: column,
+      message: finding.message,
+      suggestions: Map.get(finding, :suggestions, [])
+    }
+  end
+
+  @doc false
+  def files(patterns, root) do
     patterns
     |> Enum.flat_map(fn pattern ->
-      if File.dir?(pattern),
-        do: Path.wildcard(Path.join(pattern, "**/*.{ex,exs,heex}")),
-        else: Path.wildcard(pattern)
+      full = Path.expand(pattern, root)
+
+      cond do
+        File.dir?(full) -> Path.wildcard(Path.join(full, "**/*.{ex,exs,heex}"))
+        File.regular?(full) -> [full]
+        true -> Path.wildcard(full)
+      end
     end)
-    |> Enum.reject(&String.contains?(&1, ["/_build/", "/deps/", "_build/", "deps/"]))
+    |> Enum.reject(&String.contains?(&1, ["/_build/", "/deps/", "/node_modules/"]))
     |> Enum.uniq()
     |> Enum.sort()
-  end
-
-  defp parse_file(file), do: parse(file, File.read!(file))
-
-  defp parse(file, contents) do
-    with {:ok, templates} <- Template.from_file(file, contents) do
-      Enum.reduce_while(templates, {:ok, []}, fn template, {:ok, acc} ->
-        case Element.from_template(template) do
-          {:ok, elements} -> {:cont, {:ok, acc ++ elements}}
-          {:error, message} -> {:halt, {:error, {file, message}}}
-        end
-      end)
-    else
-      {:error, message} -> {:error, {file, message}}
-    end
-  end
-
-  defp class_attribute_matcher(names) do
-    fn name ->
-      Enum.any?(names, fn
-        %Regex{} = regex -> Regex.match?(regex, name)
-        exact -> exact == name
-      end)
-    end
-  end
-
-  # CSS variables set in `style` attributes, such as `--progress` in `style="--progress: 40%"`.
-  defp inline_variables(elements) do
-    for element <- elements,
-        %{name: "style", value: value} <- element.attributes,
-        items <- Value.strings(value, element.indentation),
-        [variable] <- Regex.scan(~r/--[\w-]+(?=\s*:)/, Value.text(items)),
-        into: MapSet.new(),
-        do: variable
-  end
-
-  # How often each utility prefix is used with each theme variable, such as
-  # `{"text", "(--muted)"} => 12` for `text-(--muted)` and `text-[var(--muted)]`.
-  # Suggestions prefer the tokens a project already uses for the same job.
-  defp color_usage(elements, context) do
-    for element <- elements,
-        {:static, raw, _} <- Rule.class_tokens(element, context),
-        %ClassName{utility: utility} = ClassName.parse(raw),
-        [_, prefix, variable] <-
-          [
-            Regex.run(
-              ~r/^([a-z-]+?)-(?:\((--[\w-]+)\)|\[(?:color:)?var\((--[\w-]+)\)\])(?:\/.*)?$/,
-              utility
-            )
-          ]
-          |> Enum.reject(&is_nil/1)
-          |> Enum.map(&(&1 |> Enum.reject(fn part -> part == "" end) |> Enum.take(3))),
-        reduce: %{} do
-      usage -> Map.update(usage, {prefix, "(#{variable})"}, 1, &(&1 + 1))
-    end
   end
 end

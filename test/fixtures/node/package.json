@@ -1,0 +1,9 @@
+{
+  "name": "heex-lint-test-fixture",
+  "private": true,
+  "description": "Tailwind for HeexLint's oracle tests. Install with `npm install` in this directory.",
+  "dependencies": {
+    "@tailwindcss/node": "^4.1.0",
+    "tailwindcss": "^4.1.0"
+  }
+}

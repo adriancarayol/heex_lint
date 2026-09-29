@@ -1,83 +1,96 @@
 defmodule HeexLint.Rule do
   @moduledoc """
-  A lint rule. Rules inspect one element at a time and return findings as
-  `{position, message}` pairs; the runner turns them into diagnostics.
+  A lint rule.
 
-  The context passed to `check/2` has:
+  `prepare/2` runs once per distinct option set and compiles what the rule
+  needs, such as its policy; a `{:error, message}` there is a
+  configuration error, reported at the top of every file the rule checks.
+  `check/3` runs once per file and returns findings.
 
-    * `:theme` - the `HeexLint.Theme`
-    * `:options` - the rule's options from the config
-    * `:class_attribute?` - a function telling whether an attribute name holds classes
+  The file context holds:
+
+    * `:project` - the `HeexLint.Project`
+    * `:source` - the `HeexLint.Project.Source`
+    * `:sites` - the file's `HeexLint.Sites`
+    * `:elements` - `{template, elements}` for each template
+    * `:note` - the shared note appended to messages
   """
 
-  alias HeexLint.{Element, Theme, Value}
+  alias HeexLint.{Collector, Grammar.Classes, Messages}
 
-  @type context :: %{
-          theme: Theme.t(),
-          options: keyword(),
-          class_attribute?: (String.t() -> boolean())
+  @type finding :: %{
+          required(:position) => {pos_integer(), pos_integer()},
+          required(:message) => String.t(),
+          optional(:suggestions) => [suggestion()]
         }
 
-  @type finding :: {Value.position(), String.t()}
+  @type suggestion :: %{
+          message: String.t(),
+          replacement: String.t(),
+          fix:
+            %{
+              file: String.t(),
+              from: {pos_integer(), pos_integer()},
+              old: String.t(),
+              new: String.t()
+            }
+            | nil
+        }
 
-  @doc "The rule's name, as used in the config."
   @callback name() :: atom()
-
-  @doc "Returns findings for `element`."
-  @callback check(Element.t(), context()) :: [finding()]
+  @callback prepare(keyword(), HeexLint.Project.t()) ::
+              {:ok, term(), [String.t()]} | {:error, String.t()}
+  @callback check(map(), term(), keyword()) :: [finding()]
 
   @doc """
-  Returns the class tokens of every class attribute on `element`.
+  The component as messages show it: `.button` for a function component.
   """
-  @spec class_tokens(Element.t(), context()) :: [
-          {:static | :partial, String.t(), Value.position()}
-        ]
-  def class_tokens(%Element{} = element, context) do
-    element.attributes
-    |> Enum.filter(&(is_binary(&1.name) and context.class_attribute?.(&1.name)))
-    |> Enum.flat_map(&(&1.value |> Value.strings(element.indentation) |> Value.tokens()))
+  @spec display(String.t() | nil) :: String.t()
+  def display(nil), do: ""
+  def display(""), do: ""
+  def display(name), do: if(String.contains?(name, "."), do: name, else: "." <> name)
+
+  @doc """
+  The class tokens of a collected string, with positions.
+  """
+  def tokens(string), do: Collector.tokens(string)
+
+  @doc """
+  Renders a message, with the rule's `message` option and the shared note.
+  """
+  def message(builtin, data, override, options, file) do
+    Messages.render(builtin, data, override, Keyword.get(options, :message), file[:note])
   end
 
   @doc """
-  Whether `class` matches one of the `patterns` in the rule's `:allow` option.
-
-  Patterns are strings, where `*` matches any run of characters, or regexes.
+  Suggestions that replace `token` with each replacement inside the
+  literal it came from. None when the literal cannot be rewritten safely.
   """
-  @spec allowed?(String.t(), keyword()) :: boolean()
-  def allowed?(class, options) do
-    options
-    |> Keyword.get(:allow, [])
-    |> Enum.any?(fn
-      %Regex{} = regex -> Regex.match?(regex, class)
-      pattern -> Regex.match?(glob(pattern), class)
+  @spec suggestions(map(), String.t(), [String.t()], (String.t() -> String.t())) :: [suggestion()]
+  def suggestions(string, token, replacements, describe) do
+    Enum.flat_map(replacements, fn replacement ->
+      case string[:literal] do
+        %{raw: raw} = literal ->
+          replaced = Classes.replace_class(raw, token, replacement)
+
+          if replaced != raw do
+            [
+              %{
+                message: describe.(replacement),
+                replacement: replacement,
+                fix: %{file: literal.file, from: literal.from, old: raw, new: replaced}
+              }
+            ]
+          else
+            []
+          end
+
+        _ ->
+          []
+      end
     end)
   end
 
-  @doc """
-  Returns the rule's custom `:message` with `{{placeholders}}` filled from
-  `bindings`, or `default` when the rule has no custom message.
-  """
-  @spec message(context(), String.t(), keyword()) :: String.t()
-  def message(context, default, bindings) do
-    case Keyword.get(context.options, :message) do
-      nil ->
-        default
-
-      template ->
-        Enum.reduce(bindings, template, fn {key, value}, acc ->
-          String.replace(acc, "{{#{key}}}", to_string(value))
-        end)
-    end
-  end
-
-  @doc """
-  Where the theme lives, for messages.
-  """
-  @spec theme_file(context()) :: String.t()
-  def theme_file(%{theme: %Theme{file: nil}}), do: "your Tailwind stylesheet"
-  def theme_file(%{theme: %Theme{file: file}}), do: Path.relative_to_cwd(file)
-
-  defp glob(pattern) do
-    ~r/^#{pattern |> Regex.escape() |> String.replace("\\*", ".*")}$/
-  end
+  @doc "A configuration error's finding, at the top of the file."
+  def config_error(message), do: %{position: {1, 1}, message: message}
 end

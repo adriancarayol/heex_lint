@@ -1,107 +1,245 @@
 # HeexLint
 
-An agent-first linter for Tailwind classes in Phoenix HEEx templates.
+**Write design system rules that agents can verify, for Phoenix.**
 
-You define what your design system allows. When code breaks a rule, the error
-says what's wrong and what to use instead, drawn from your own theme:
+HeexLint is an agent-first linter for Tailwind classes in HEEx templates, with
+rule parity with [`@shadcn/lint`](https://github.com/shadcn-ui/lint).
+
+You define what's allowed. When code breaks a rule, the error explains what's
+wrong and suggests a fix based on your components, variants and theme:
 
 ```text
-lib/my_app_web/components/core_components.ex:536:66 error "text-zinc-600" is a raw Tailwind
-palette color, so it ignores the theme and its dark mode. Use the closest theme color:
-text-(--muted) (#5f5f5f), ... Theme colors are in assets/css/app.css. [no_raw_colors]
+lib/my_app_web/live/settings_live.ex:42:23 error "p-4" is not allowed on <.button>:
+<.button> owns its spacing. Use a size (sm, lg), or margin here or gap on the parent
+for space around it. Add a size in lib/my_app_web/components/core_components.ex only if
+the design explicitly calls for one. [no_restyle]
 ```
 
-Inspired by [`@shadcn/lint`](https://github.com/shadcn-ui/lint), which does the
-same for React, Vue and Svelte.
+Works with any Tailwind v4 project. It reads your function components, their
+`attr` declarations, and your theme's `@theme` tokens. No rewrite required.
 
-## Installation
+## Quickstart
+
+Add it to your dev and test dependencies:
 
 ```elixir
 def deps do
   [
-    {:heex_lint, "~> 0.1", only: [:dev, :test], runtime: false}
+    {:heex_lint, github: "adriancarayol/heex_lint", only: [:dev, :test], runtime: false}
   ]
 end
 ```
 
-Run it, and add it to your `precommit` alias so agents check their own work:
+Run it:
 
 ```sh
 mix heex_lint
 ```
 
+With no configuration, the [recommended rules](#configuration) run. Add it to
+your `precommit` alias, and tell your agents in `AGENTS.md`:
+
 ```elixir
 precommit: ["compile --warnings-as-errors", "format", "heex_lint", "test"]
 ```
 
-## What it reads
-
-- `~H` sigils in `.ex`/`.exs` files and `.heex` templates, with exact file, line and column.
-- `class` attributes (and `*_class` attributes) on HTML tags, components and slots.
-- Class expressions as Elixir code: list items, `@flag && "..."`, `if`/`case`/`cond`
-  branches, `~w(...)`, interpolation and `<>`. Conditions are skipped, so
-  `if(@size == "sm", do: "p-2")` only yields `p-2`.
-- Your theme: CSS custom properties in `assets/css/app.css` and its local `@import`s.
-  `@theme` colors become utilities (`bg-brand`); other color variables are suggested
-  through the shorthand (`bg-(--surface)`).
+```md
+After making changes, run `mix precommit` and fix all errors.
+```
 
 ## Rules
 
-| Rule | What it catches |
-| --- | --- |
-| `no_raw_colors` | Default palette colors like `bg-zinc-100` or `text-white`. Suggests the theme colors that look closest, preferring those the project already uses with the same utility. |
-| `no_arbitrary_values` | Arbitrary values like `p-[13px]`, `text-[11px]`, `bg-[#fff]`. Suggests the exact spacing step, the nearest font size or radius, or the closest theme color. Variable references like `bg-(--surface)` are allowed. |
-| `no_inline_styles` | `style` attributes and `<style>` elements. Setting CSS variables (`style="--progress: 40%"`) is allowed. |
-| `require_static_classes` | Classes built at runtime, like `"bg-#{@color}"`, which Tailwind can't see. Plain CSS classes from your stylesheet (`"toast--#{@kind}"`) are allowed. |
-| `no_unknown_variables` | Classes reading a CSS variable the theme doesn't define, like `bg-(--surfce)`. Suggests close names. |
+| Rule                                                     | What it catches                                                   |
+| -------------------------------------------------------- | ----------------------------------------------------------------- |
+| [`no_restyle`](lib/heex_lint/rules/no_restyle.ex)             | Restyling a design-system component with `class`.               |
+| [`no_raw_colors`](lib/heex_lint/rules/no_raw_colors.ex)       | Raw palette colors, undeclared tokens, and raw SVG colors.      |
+| [`no_arbitrary_values`](lib/heex_lint/rules/no_arbitrary_values.ex) | Arbitrary values such as `p-[13px]`.                      |
+| [`no_inline_styles`](lib/heex_lint/rules/no_inline_styles.ex) | Inline styles and `<style>` elements.                           |
+| [`no_unknown_classes`](lib/heex_lint/rules/no_unknown_classes.ex) | Classes your Tailwind cannot generate, such as `rounded-huge`. |
+| [`require_static_classes`](lib/heex_lint/rules/require_static_classes.ex) | Component classes the linter cannot read, such as `"bg-#{@color}"`. |
+| [`no_unknown_variables`](lib/heex_lint/rules/no_unknown_variables.ex) | Classes reading CSS variables the theme never defines. *HeexLint addition.* |
+
+Each rule's module documents its examples and options. The shared options,
+class categories and placeholders are in [docs/rules.md](docs/rules.md).
+
+## You decide what can change
+
+A `Button` that allows margin and width, but controls its own padding:
+
+```elixir
+no_restyle: {:error, allow: ["layout"], contracts: [
+  [pattern: "^button$", allow: ["w-full", "mt-*", "mb-*"]]
+]}
+```
+
+```heex
+<%!-- Allowed: a size, and the page controls placement and full width. --%>
+<.button size="lg" class="mt-4 md:w-full">Save</.button>
+
+<%!-- Error: padding and shape belong to the button. --%>
+<.button class="p-4 hover:rounded-full">Save</.button>
+```
+
+Give each part of a component its own rules. Let card titles change
+typography, but keep their font family and weight; let card content change
+spacing, but keep its typography:
+
+```elixir
+no_restyle: {:error, allow: ["layout"], contracts: [
+  [pattern: "^card_title$", allow: ["layout", "typography"], deny: ["font-*"]],
+  [pattern: "^card_content$", allow: ["layout", "spacing"]]
+]}
+```
+
+Opening up spacing doesn't have to mean allowing arbitrary values. Combine
+rules: `no_arbitrary_values` still keeps `p-[13px]` off the scale.
+
+## How it reads your project
+
+- **Components.** A design-system component is a function component in one of
+  your component modules: by default, modules under a `components/` directory,
+  where Phoenix puts `CoreComponents`. `<.button>` resolves through the
+  module's imports, including what `use MyAppWeb, :html` brings in, and
+  `<Layouts.app>` through its aliases. Set `ui` to choose the modules yourself.
+- **Variants.** `attr :variant, values: ~w(primary ghost)` gives the variants a
+  finding suggests; `attr :size, values: ...` the sizes a spacing finding offers.
+- **Wrappers.** A component that forwards its `class` (`class={["w-full", @class]}`)
+  or its global attributes (`{@rest}` with `attr :rest, :global`) to a
+  design-system component gets that component's contract and suggestions.
+- **Theme.** The stylesheet that imports Tailwind, found under the project (or
+  `theme`). Colors are the `--color-*` tokens in `@theme` (and a utility's own
+  namespace, such as `--background-color-*`); scales come from `--spacing`,
+  `--text-*` and `--radius-*`, over Tailwind's defaults.
+- **Values.** Strings, lists, `if`/`case`/`cond`, `&&`/`||`, `~w(...)`,
+  interpolation and `<>`. `@name` follows `assign(assigns, :name, ...)` in the
+  rendering function; a function component's received `class` is its own
+  input, allowed as-is, with its authored default checked. One hop further
+  into body variables, module attributes, same-module helpers such as
+  `defp button_variant("primary"), do: "..."`, map lookups, and merge
+  functions (`cn`, `Tails.classes`, `TwMerge.merge`...).
+- **Tailwind.** `no_unknown_classes` asks your installed Tailwind v4: through
+  Node when `tailwindcss` is in `node_modules`, or through the standalone
+  `tailwind` binary Phoenix installs in `_build/`. Without either it falls
+  back to the class grammar.
+
+See [docs/how-it-works.md](docs/how-it-works.md) for details and limits.
 
 ## Configuration
 
-Everything is optional. Create `.heex_lint.exs` in the project root:
+Create `.heex_lint.exs` in your project root. Every key is optional; without
+`rules`, this recommended set applies:
 
 ```elixir
 [
-  inputs: ["lib/**/*.{ex,heex}"],
-  theme: "assets/css/app.css",
-  class_attributes: ["class", ~r/_class$/],
-  # Appended to every message.
-  note: "See DESIGN.md for the design rules.",
+  inputs: ["lib/**/*.{ex,exs,heex}"],
+  settings: [
+    # theme: "assets/css/app.css",
+    # ui: "MyAppWeb.CoreComponents",
+    # note: "See DESIGN.md for design rules and approved exceptions."
+  ],
   rules: [
+    no_restyle: {:error, allow: ["layout"]},
     no_raw_colors: :error,
-    no_arbitrary_values: {:error, allow: ["grid-cols-[*"]},
-    no_inline_styles: {:warning, allow: ["view-transition-name"]},
+    no_arbitrary_values: {:error, allow: ["layout"]},
+    no_inline_styles: :error,
     require_static_classes: :error,
-    no_unknown_variables: {:error, allow: ["--radix-*"]}
+    no_unknown_classes: :warning,
+    no_unknown_variables: :error
+  ],
+  # Components own their appearance.
+  overrides: [
+    [
+      files: ["**/components/**"],
+      rules: [no_restyle: :off, no_arbitrary_values: :off, require_static_classes: :off]
+    ]
   ]
 ]
 ```
 
-A rule is `:error`, `:warning`, `:off` or `{severity, options}`. Every rule
-takes `:allow` patterns (`*` matches anything, or use a regex) and a custom
-`:message` with placeholders such as `{{class}}` and `{{suggestion}}`. See each
-rule's docs for its options.
+A rule is `:error`, `:warning`, `:off` or `{severity, options}`. Overrides
+apply to matching files in order; one that sets only a severity keeps the
+options set before it.
 
-Custom rules are modules implementing `HeexLint.Rule`, listed by module name
-under `rules`.
+### Settings
 
-## Command line
+| Setting             | What it does                                                               |
+| ------------------- | -------------------------------------------------------------------------- |
+| `theme`             | The Tailwind stylesheet. Discovered when not set.                          |
+| `ui`                | Design-system module prefixes: `"MyAppWeb.UI"` matches it and `MyAppWeb.UI.*`. |
+| `component_imports` | Regexes on module names that are also the design system.                   |
+| `ignore_imports`    | Regexes on module names that never are. Takes precedence.                  |
+| `merge_functions`   | Functions whose arguments contain classes, such as `"classes"`.            |
+| `variant_functions` | Functions whose map values contain classes.                                |
+| `note`              | Appended to every rule's message.                                          |
+| `tailwind_bin`      | The standalone Tailwind binary, when it is not in `_build/`.               |
 
-```sh
-mix heex_lint                          # lint the configured inputs
-mix heex_lint lib/my_app_web/components
-mix heex_lint --format json            # for editors and agents
-mix heex_lint --max-warnings 0
+A rule's own `ui`, `component_imports`, `ignore_imports`, `merge_functions`
+or `variant_functions` option wins over the shared setting.
+
+### Your own words
+
+Every rule accepts `message`, with placeholders from the finding:
+
+```elixir
+no_raw_colors: {:error, message: ~s(Use a theme color for "{{className}}". See {{file}}.)}
 ```
 
-The task exits with status 1 on errors, unparsable templates, or more warnings
-than `--max-warnings`.
+`no_restyle` also takes one message per category, and contracts can bring
+their own:
+
+```elixir
+no_restyle: {:error, allow: ["layout"], message: %{
+  spacing: "Use a {{component}} size: {{sizes|none defined}}.",
+  default: "Use a {{component}} variant: {{variants|none defined}}."
+}}
+```
+
+See [placeholders](docs/rules.md#your-own-words).
+
+## Suggestions and fixes
+
+Findings carry suggestions: the nearest theme tokens, an exact scale step
+(`p-[13px]` → `p-3.25`), or a spelling correction. `--format json` includes
+them, and `mix heex_lint --fix` applies the ones with a single unambiguous
+replacement, rewriting only the class inside its literal.
+
+## Exceptions
+
+Document an intentional exception next to the code:
+
+```heex
+<%!-- heex-lint-disable-next-line no_raw_colors -- Partner brand color, approved by design. --%>
+<span class="bg-amber-400">Sponsor</span>
+```
+
+`heex-lint-disable-line` and `heex-lint-disable-file` work too, in HEEx or
+Elixir comments. `grep -rn "heex-lint-disable"` finds them all.
+
+## Adopting it
+
+Start with warnings, fix the common patterns, then promote rules to errors.
+`mix heex_lint --max-warnings 287` fails CI when the count grows. See
+[docs/adoption.md](docs/adoption.md).
+
+## Parity with @shadcn/lint
+
+The six rules, the policy engine (`allow`, `deny`, contracts, categories,
+groups, patterns, entry validation), messages and placeholders, theme reading
+and the Tailwind oracle follow `@shadcn/lint` 0.2, down to its message text.
+The class grammar is [cn](https://github.com/shadcn-ui/cn) 0.3.2's, and the
+grammar, color, length and theme parsers are verified against the reference
+implementation. What changes for Phoenix is how components, variants,
+wrappers and values are found. See [docs/parity.md](docs/parity.md).
 
 ## Acknowledgements
 
-The HEEx tokenizer is vendored from [Phoenix LiveView](https://github.com/phoenixframework/phoenix_live_view)
-(MIT), so HeexLint has no runtime dependencies and doesn't break when LiveView
-moves its private modules. The default color palette comes from
-[Tailwind CSS](https://github.com/tailwindlabs/tailwindcss) (MIT).
+- [@shadcn/lint](https://github.com/shadcn-ui/lint) and
+  [cn](https://github.com/shadcn-ui/cn) (MIT), whose rules, messages and
+  grammar this ports.
+- The HEEx tokenizer is vendored from
+  [Phoenix LiveView](https://github.com/phoenixframework/phoenix_live_view) (MIT).
+- The default palette and scales come from
+  [Tailwind CSS](https://github.com/tailwindlabs/tailwindcss) (MIT).
 
 ## License
 

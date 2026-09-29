@@ -7,11 +7,14 @@ defmodule HeexLint.Element do
     * `{:string, value, {line, column}}` - a quoted value, positioned at its first character
     * `{:expr, code, {line, column}}` - a `{...}` value, positioned at the first character of `code`
     * `nil` - a boolean attribute
+
+  A root attribute such as `{@rest}` has the name `:root`. `parent` is the
+  index of the enclosing element in the template, or nil.
   """
 
   alias HeexLint.{TagHandler, Template, Tokenizer}
 
-  defstruct [:file, :type, :name, :line, :column, indentation: 0, attributes: []]
+  defstruct [:file, :type, :name, :line, :column, :index, :parent, indentation: 0, attributes: []]
 
   @type value ::
           {:string, String.t(), {pos_integer(), pos_integer()}}
@@ -19,7 +22,7 @@ defmodule HeexLint.Element do
           | nil
 
   @type attribute :: %{
-          name: String.t(),
+          name: String.t() | :root,
           value: value(),
           line: pos_integer(),
           column: pos_integer()
@@ -31,6 +34,8 @@ defmodule HeexLint.Element do
           name: String.t(),
           line: pos_integer(),
           column: pos_integer(),
+          index: non_neg_integer(),
+          parent: non_neg_integer() | nil,
           indentation: non_neg_integer(),
           attributes: [attribute()]
         }
@@ -64,42 +69,46 @@ defmodule HeexLint.Element do
 
     lines = String.split(template.source, ~r/\r?\n/)
 
-    elements =
+    {elements, _stack} =
       tokens
       |> Tokenizer.finalize(template.file, cont, template.source)
-      |> Enum.flat_map(fn
-        {type, name, attrs, meta} when type in @types ->
-          [
-            %__MODULE__{
-              file: template.file,
-              type: type,
-              name: name,
-              line: meta.line,
-              column: meta.column,
-              indentation: template.indentation,
-              attributes: Enum.map(attrs, &attribute(&1, template, lines))
-            }
-          ]
+      |> Enum.reduce({[], []}, fn
+        {type, name, attrs, meta}, {elements, stack} when type in @types ->
+          index = length(elements)
 
-        _token ->
-          []
+          element = %__MODULE__{
+            file: template.file,
+            type: type,
+            name: name,
+            line: meta.line,
+            column: meta.column,
+            index: index,
+            parent: List.first(stack),
+            indentation: template.indentation,
+            attributes: Enum.map(attrs, &attribute(&1, template, lines))
+          }
+
+          stack = if meta[:closing] in [:self, :void], do: stack, else: [index | stack]
+          {[element | elements], stack}
+
+        {:close, _type, name, _meta}, {elements, stack} ->
+          # Pop to the matching element, so a stray close cannot desync.
+          case Enum.find_index(stack, fn i ->
+                 Enum.at(elements, length(elements) - 1 - i).name == name
+               end) do
+            nil -> {elements, stack}
+            position -> {elements, Enum.drop(stack, position + 1)}
+          end
+
+        _token, acc ->
+          acc
       end)
 
-    {:ok, elements}
+    {:ok, Enum.reverse(elements)}
   rescue
     error in [Tokenizer.ParseError, EEx.SyntaxError] ->
       {:error, Exception.message(error)}
   end
-
-  @doc """
-  Returns the attributes of `element` whose name matches `names` (a list of names or a regex).
-  """
-  @spec attributes(t(), [String.t()] | Regex.t()) :: [attribute()]
-  def attributes(%__MODULE__{attributes: attrs}, %Regex{} = regex),
-    do: Enum.filter(attrs, &(is_binary(&1.name) and Regex.match?(regex, &1.name)))
-
-  def attributes(%__MODULE__{attributes: attrs}, names),
-    do: Enum.filter(attrs, &(&1.name in names))
 
   @doc """
   The name of the element as written in the template, such as `div`, `.button` or `:item`.
@@ -108,6 +117,10 @@ defmodule HeexLint.Element do
   def display_name(%__MODULE__{type: :local_component, name: name}), do: "." <> name
   def display_name(%__MODULE__{type: :slot, name: name}), do: ":" <> name
   def display_name(%__MODULE__{name: name}), do: name
+
+  @doc "Whether the element is a component or slot rather than an HTML tag."
+  @spec component?(t()) :: boolean()
+  def component?(%__MODULE__{type: type}), do: type != :tag
 
   defp attribute({name, value, meta}, template, lines) do
     %{

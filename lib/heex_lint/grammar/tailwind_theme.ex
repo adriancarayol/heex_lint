@@ -1,9 +1,11 @@
-# Generated from tailwindcss/theme.css (v4.3.3, MIT License, Copyright (c) Tailwind Labs, Inc.).
-defmodule HeexLint.Palette do
+# Generated from tailwindcss@4.3.3 (MIT License, Copyright (c) Tailwind Labs, Inc.)
+# through @shadcn/lint's src/grammar/tailwind-theme.ts. Do not edit by hand.
+defmodule HeexLint.Grammar.TailwindTheme do
   @moduledoc false
 
-  # The default Tailwind v4 color palette, as the CSS values Tailwind emits.
-  @colors %{
+  # The default palette and scales, as Tailwind's theme.css declares them.
+
+  @palette %{
     "red-50" => "oklch(97.1% 0.013 17.38)",
     "red-100" => "oklch(93.6% 0.032 17.717)",
     "red-200" => "oklch(88.5% 0.062 18.334)",
@@ -294,11 +296,72 @@ defmodule HeexLint.Palette do
     "white" => "#fff"
   }
 
-  @names @colors |> Map.keys() |> Enum.map(&(&1 |> String.split("-") |> hd())) |> Enum.uniq()
+  @font_sizes %{
+    "xs" => "0.75rem",
+    "sm" => "0.875rem",
+    "base" => "1rem",
+    "lg" => "1.125rem",
+    "xl" => "1.25rem",
+    "2xl" => "1.5rem",
+    "3xl" => "1.875rem",
+    "4xl" => "2.25rem",
+    "5xl" => "3rem",
+    "6xl" => "3.75rem",
+    "7xl" => "4.5rem",
+    "8xl" => "6rem",
+    "9xl" => "8rem",
+    "shadow-2xs" => "0px 1px 0px rgb(0 0 0 / 0.15)",
+    "shadow-xs" => "0px 1px 1px rgb(0 0 0 / 0.2)",
+    "shadow-sm" =>
+      "0px 1px 0px rgb(0 0 0 / 0.075), 0px 1px 1px rgb(0 0 0 / 0.075), 0px 2px 2px rgb(0 0 0 / 0.075)",
+    "shadow-md" =>
+      "0px 1px 1px rgb(0 0 0 / 0.1), 0px 1px 2px rgb(0 0 0 / 0.1), 0px 2px 4px rgb(0 0 0 / 0.1)",
+    "shadow-lg" =>
+      "0px 1px 2px rgb(0 0 0 / 0.1), 0px 3px 2px rgb(0 0 0 / 0.1), 0px 4px 8px rgb(0 0 0 / 0.1)"
+  }
 
-  @doc "Returns the CSS value of a default palette color such as `zinc-500`, or nil."
-  def value(name), do: Map.get(@colors, name)
+  @radii %{
+    "xs" => "0.125rem",
+    "sm" => "0.25rem",
+    "md" => "0.375rem",
+    "lg" => "0.5rem",
+    "xl" => "0.75rem",
+    "2xl" => "1rem",
+    "3xl" => "1.5rem",
+    "4xl" => "2rem"
+  }
 
-  @doc "The palette color names, such as `zinc` and `white`."
-  def names, do: @names
+  @containers %{
+    "3xs" => "16rem",
+    "2xs" => "18rem",
+    "xs" => "20rem",
+    "sm" => "24rem",
+    "md" => "28rem",
+    "lg" => "32rem",
+    "xl" => "36rem",
+    "2xl" => "42rem",
+    "3xl" => "48rem",
+    "4xl" => "56rem",
+    "5xl" => "64rem",
+    "6xl" => "72rem",
+    "7xl" => "80rem"
+  }
+
+  @doc "The Tailwind version these values come from."
+  def version, do: "4.3.3"
+
+  @doc "The default spacing unit."
+  def spacing, do: "0.25rem"
+
+  @doc "The default palette, such as `zinc-500`, as CSS values."
+  def palette, do: @palette
+
+  @doc "Tailwind's default font sizes (`--text-*`)."
+  def font_sizes, do: @font_sizes
+
+  @doc "Tailwind's default radii (`--radius-*`)."
+  def radii, do: @radii
+
+  @doc "Tailwind's default container sizes (`--container-*`)."
+  def containers, do: @containers
 end

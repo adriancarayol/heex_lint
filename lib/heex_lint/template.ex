@@ -1,64 +1,71 @@
 defmodule HeexLint.Template do
   @moduledoc """
-  A HEEx template found in a source file, with the position of its first character.
+  A HEEx template found in a source file, with the position of its first
+  character and the function that renders it.
 
-  Templates come from `.heex` files and from `~H` sigils in `.ex`/`.exs` files.
-  Positions are kept absolute so every diagnostic points at the real file.
+  Templates come from `.heex` files and from `~H` sigils in `.ex`/`.exs`
+  files. Positions are kept absolute so every diagnostic points at the real
+  file.
+
+  `kind` says where the template's assigns come from:
+
+    * `:component` - a function component; assigns are the caller's attributes
+    * `:render` - a LiveView or LiveComponent `render/1`; assigns are socket state
   """
 
-  defstruct [:file, :source, line: 1, column: 1, indentation: 0]
+  defstruct [
+    :file,
+    :source,
+    :module,
+    :function,
+    :clause,
+    :elements,
+    line: 1,
+    column: 1,
+    indentation: 0,
+    kind: :component
+  ]
 
   @type t :: %__MODULE__{
           file: String.t(),
           source: String.t(),
+          module: String.t() | nil,
+          function: String.t() | nil,
+          clause: map() | nil,
+          elements: {:ok, [HeexLint.Element.t()]} | {:error, String.t()} | nil,
           line: pos_integer(),
           column: pos_integer(),
-          indentation: non_neg_integer()
+          indentation: non_neg_integer(),
+          kind: :component | :render
         }
 
   @heredocs [~s("""), ~s(''')]
 
   @doc """
-  Returns the templates in `file`, whose contents are `contents`.
+  The template's elements, parsed once and kept on the template.
   """
-  @spec from_file(String.t(), String.t()) :: {:ok, [t()]} | {:error, String.t()}
-  def from_file(file, contents) do
-    case Path.extname(file) do
-      ".heex" -> {:ok, [%__MODULE__{file: file, source: contents}]}
-      ext when ext in [".ex", ".exs"] -> sigils(file, contents)
-      _ -> {:ok, []}
-    end
-  end
+  @spec elements(t()) :: {:ok, [HeexLint.Element.t()]} | {:error, String.t()}
+  def elements(%__MODULE__{elements: nil} = template),
+    do: HeexLint.Element.from_template(template)
 
-  defp sigils(file, contents) do
-    case Code.string_to_quoted(contents, columns: true, token_metadata: true, file: file) do
-      {:ok, ast} ->
-        {_, templates} =
-          Macro.prewalk(ast, [], fn
-            {:sigil_H, meta, [{:<<>>, string_meta, [source]}, _modifiers]} = node, acc
-            when is_binary(source) ->
-              meta = Keyword.put(meta, :indentation, string_meta[:indentation])
-              {node, [sigil(file, source, meta) | acc]}
+  def elements(%__MODULE__{elements: elements}), do: elements
 
-            node, acc ->
-              {node, acc}
-          end)
+  @doc "Parses the template's elements and keeps them on it."
+  @spec parse(t()) :: t()
+  def parse(%__MODULE__{elements: nil} = template),
+    do: %{template | elements: HeexLint.Element.from_template(template)}
 
-        {:ok, Enum.reverse(templates)}
+  def parse(template), do: template
 
-      {:error, {meta, message, token}} ->
-        {:error, "#{file}:#{meta[:line]}: #{format_error(message)}#{token}"}
-    end
-  end
-
-  defp format_error({prefix, suffix}), do: "#{prefix}#{suffix}"
-  defp format_error(message), do: message
-
-  # Heredoc sigils start on the line after the opening delimiter and have their
-  # indentation stripped by the compiler; single-line sigils start after `~H"`.
-  defp sigil(file, source, meta) do
+  @doc """
+  Builds the template for a `~H` sigil from its AST metadata.
+  """
+  @spec from_sigil(String.t(), String.t(), keyword(), keyword()) :: t()
+  def from_sigil(file, source, meta, string_meta) do
     if meta[:delimiter] in @heredocs do
-      indentation = meta[:indentation] || 0
+      # Heredocs start on the line after the opening delimiter and have
+      # their indentation stripped by the compiler.
+      indentation = string_meta[:indentation] || 0
 
       %__MODULE__{
         file: file,

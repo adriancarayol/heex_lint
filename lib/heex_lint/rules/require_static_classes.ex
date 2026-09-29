@@ -1,35 +1,46 @@
 defmodule HeexLint.Rules.RequireStaticClasses do
   @moduledoc """
-  Reports classes built at runtime, such as `"bg-\#{@color}"` or `"w-" <> @width`.
+  Keeps component class values readable by the linter. If a class is built
+  from an unknown value, the other rules cannot check it; this rule reports
+  that unreadable part.
 
-  Tailwind scans source files for complete class names, so a class assembled
-  at runtime never gets CSS. Whole runtime values (`class={@class}`) are fine,
-  and so are plain CSS classes the stylesheet defines (`"toast--\#{@kind}"` when
-  it has `.toast--error`).
+      <.button class={"bg-\#{@color}"}>Save</.button>
+      Dynamically built class on <.button> cannot be checked. Use static class strings.
+
+  Static strings and choices between complete classes pass, and so do
+  same-function assigns, variables and local helpers the linter can read.
+  A function component forwarding the `class` it received is allowed; its
+  authored default is still checked.
+
+  Only recognized design-system components and their forwarding wrappers
+  are checked. Turn the rule off inside your component directory, where
+  components call their own helpers.
 
   ## Options
 
-    * `:message` - a custom message. Placeholders: `{{class}}`.
+    * `:message` - replaces the text. `{{component}}` names the component.
   """
 
   @behaviour HeexLint.Rule
 
-  alias HeexLint.{Rule, Theme}
+  alias HeexLint.Rule
+
+  @dynamic "Dynamically built class on <{{component}}> cannot be checked. Use static class strings."
 
   @impl true
   def name, do: :require_static_classes
 
   @impl true
-  def check(element, context) do
-    for {:partial, class, position} <- Rule.class_tokens(element, context),
-        not Theme.class_prefix?(context.theme, static_prefix(class)) do
-      default =
-        "\"#{class}\" is built at runtime, so Tailwind never sees the full class and generates no CSS for it. " <>
-          "Write every class out in full, for example with a case that maps each value to a complete class name."
+  def prepare(_options, _project), do: {:ok, nil, []}
 
-      {position, Rule.message(context, default, class: class)}
+  @impl true
+  def check(file, _state, options) do
+    for site <- file.sites,
+        site.kind == :class,
+        site.component != nil,
+        position <- site.unresolved do
+      data = %{"component" => Rule.display(site.component)}
+      %{position: position, message: Rule.message(@dynamic, data, nil, options, file)}
     end
   end
-
-  defp static_prefix(class), do: class |> String.split("\#{…}") |> hd()
 end

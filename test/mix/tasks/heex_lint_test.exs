@@ -3,19 +3,17 @@ defmodule Mix.Tasks.HeexLintTest do
   use ExUnit.Case
 
   import ExUnit.CaptureIO
-
-  alias HeexLint.LintHelpers
+  import HeexLint.TestProject
 
   @moduletag :tmp_dir
 
-  setup %{tmp_dir: dir} do
-    File.mkdir_p!(Path.join(dir, "lib"))
-    File.write!(Path.join(dir, ".heex_lint.exs"), inspect(theme: LintHelpers.theme()))
-    :ok
+  defp setup_project(dir, template, rules) do
+    run(dir, %{"lib/app_web/live/page_live.ex" => live(template)}, rules: [])
+    File.write!(Path.join(dir, ".heex_lint.exs"), inspect(rules: rules))
   end
 
   # Runs the task in `dir`, returning its exit status and printed output.
-  defp run_task(dir, args) do
+  defp task(dir, args) do
     File.cd!(dir, fn ->
       stderr =
         capture_io(:stderr, fn ->
@@ -36,50 +34,49 @@ defmodule Mix.Tasks.HeexLintTest do
     :exit, reason -> reason
   end
 
-  defp write(dir, file, contents), do: File.write!(Path.join([dir, "lib", file]), contents)
-
-  test "passes on clean templates", %{tmp_dir: dir} do
-    write(dir, "page.html.heex", ~s|<p class="p-4 text-(--ink)">x</p>|)
-
-    assert {:ok, output, ""} = run_task(dir, [])
-    assert output =~ "No problems in 1 file."
+  test "passes on clean projects", %{tmp_dir: dir} do
+    setup_project(dir, ~s(<div class="bg-primary" />), no_raw_colors: :error)
+    assert {:ok, output, _} = task(dir, [])
+    assert output =~ ~r/No problems in \d+ files./
   end
 
   test "prints diagnostics and exits with status 1", %{tmp_dir: dir} do
-    write(dir, "page.html.heex", ~s(<p class="text-white p-[13px]">x</p>))
-
-    assert {{:shutdown, 1}, output, _} = run_task(dir, [])
-    assert output =~ "lib/page.html.heex:1:11"
-    assert output =~ "[no_raw_colors]"
-    assert output =~ "[no_arbitrary_values]"
-    assert output =~ "2 errors in 1 file."
-  end
-
-  test "passes when only warnings are under --max-warnings", %{tmp_dir: dir} do
-    File.write!(
-      Path.join(dir, ".heex_lint.exs"),
-      inspect(theme: LintHelpers.theme(), rules: [no_raw_colors: :warning])
+    setup_project(dir, ~s(<div class="bg-neutral-900 p-[12px]" />),
+      no_raw_colors: :error,
+      no_arbitrary_values: :error
     )
 
-    write(dir, "page.html.heex", ~s(<p class="text-white">x</p>))
-
-    assert {:ok, output, _} = run_task(dir, [])
-    assert output =~ "1 warning in 1 file."
-    assert {{:shutdown, 1}, _, _} = run_task(dir, ["--max-warnings", "0"])
+    assert {{:shutdown, 1}, output, _} = task(dir, [])
+    assert output =~ "lib/app_web/live/page_live.ex:6:17"
+    assert output =~ "[no_raw_colors]"
+    assert output =~ "[no_arbitrary_values]"
+    assert output =~ "2 errors in"
+    assert output =~ "2 can be fixed with --fix."
   end
 
-  test "prints JSON", %{tmp_dir: dir} do
-    write(dir, "page.html.heex", ~s(<p class="text-white">x</p>))
-
-    assert {{:shutdown, 1}, output, _} = run_task(dir, ["--format", "json"])
-    assert %{"diagnostics" => [diagnostic], "files" => 1} = JSON.decode!(output)
-    assert %{"rule" => "no_raw_colors", "line" => 1, "column" => 11} = diagnostic
+  test "warnings pass unless over --max-warnings", %{tmp_dir: dir} do
+    setup_project(dir, ~s(<div class="bg-neutral-900" />), no_raw_colors: :warning)
+    assert {:ok, output, _} = task(dir, [])
+    assert output =~ "1 warning in"
+    assert {{:shutdown, 1}, _, _} = task(dir, ["--max-warnings", "0"])
   end
 
-  test "reports unparsable templates", %{tmp_dir: dir} do
-    write(dir, "broken.html.heex", ~s(<p class="x></p>))
+  test "JSON output carries suggestions", %{tmp_dir: dir} do
+    setup_project(dir, ~s(<div class="bg-neutral-900" />), no_raw_colors: :error)
+    assert {{:shutdown, 1}, output, _} = task(dir, ["--format", "json"])
+    assert %{"diagnostics" => [diagnostic]} = JSON.decode!(output)
 
-    assert {{:shutdown, 1}, _, stderr} = run_task(dir, [])
-    assert stderr =~ "could not parse template"
+    assert %{
+             "rule" => "no_raw_colors",
+             "line" => 6,
+             "suggestions" => [%{"replacement" => "bg-primary"}]
+           } = diagnostic
+  end
+
+  test "--fix applies suggestions and lints again", %{tmp_dir: dir} do
+    setup_project(dir, ~s(<div class="p-[12px]" />), no_arbitrary_values: :error)
+    assert {:ok, output, _} = task(dir, ["--fix"])
+    assert output =~ "Applied 1 fix."
+    assert File.read!(Path.join(dir, "lib/app_web/live/page_live.ex")) =~ ~s(class="p-3")
   end
 end

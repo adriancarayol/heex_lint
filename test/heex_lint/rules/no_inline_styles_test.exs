@@ -1,46 +1,106 @@
 defmodule HeexLint.Rules.NoInlineStylesTest do
   use ExUnit.Case, async: true
 
-  import HeexLint.LintHelpers
+  import HeexLint.TestProject
 
-  test "reports each property of a static style" do
-    diagnostics = lint(~s(<div style="color: red; margin-top: 4px">x</div>), :no_inline_styles)
+  @moduletag :tmp_dir
 
-    assert positions(diagnostics) == [{1, 13}, {1, 25}]
-
-    assert Enum.map(diagnostics, & &1.message)
-           |> Enum.all?(&(&1 =~ "Style with Tailwind classes"))
+  defp styles(dir, template, options \\ [], extra \\ %{}) do
+    files = Map.merge(%{"lib/app_web/live/page_live.ex" => live(template)}, extra)
+    lint(dir, files, rules: [no_inline_styles: {:error, options}])
   end
 
-  test "reports properties in expressions and runtime styles" do
+  test "ordinary properties are reported one by one", %{tmp_dir: dir} do
+    [color, margin] = styles(dir, ~s(<div style="color: red; margin-top: 4px">x</div>))
+
+    assert color.message ==
+             "Inline style sets color. Style through classes; use CSS custom properties for dynamic values."
+
+    assert margin.message =~ "Inline style sets margin-top."
+    assert {color.line, color.column} == {6, 17}
+  end
+
+  test "custom properties pass unless they hardcode a color", %{tmp_dir: dir} do
     template = """
-    <div style={"width: \#{@percent}%"}>x</div>
-    <div style={@style}>x</div>
+    <div class="w-(--panel-width)" style={"--panel-width: \#{@width}px"} />
+    <div style="--label-color: var(--color-primary)" />
+    <div style="--label-color: #ec4899" />
+    <div style="--shadow: 0 0 4px rgb(0 0 0 / 0.5)" />
+    <div style="--bg: url(data:image/png;base64,iVBORw0KGgo=)" />
     """
 
-    assert [width, dynamic] = lint(template, :no_inline_styles)
-    assert width.message =~ "sets width"
-    assert dynamic.message =~ "runtime value"
+    [hex, shadow] = styles(dir, template)
+
+    assert hex.message ==
+             "Custom property --label-color hardcodes a color. Define it as a theme token instead of injecting a raw value."
+
+    assert shadow.message =~ "Custom property --shadow hardcodes a color."
   end
 
-  test "allows custom properties and allowed properties" do
+  test "style values that cannot be read are reported", %{tmp_dir: dir} do
+    [finding] = styles(dir, ~s(<div style={@style} />))
+
+    assert finding.message ==
+             "Dynamic style object cannot be checked. Build it from CSS custom properties only."
+  end
+
+  test "a component forwarding its received style is allowed, and its default is checked", %{
+    tmp_dir: dir
+  } do
+    component =
+      component_module("Panel", "panel", ~s(attr :style, :string, default: "color: red"), """
+      <div style={@style} />
+      """)
+
+    [finding] =
+      lint(dir, %{"lib/app_web/panel.ex" => component}, rules: [no_inline_styles: :error])
+
+    assert finding.message =~ "Inline style sets color."
+  end
+
+  test "<style> elements are reported", %{tmp_dir: dir} do
+    [finding] = styles(dir, ~s(<style>.panel { color: red; }</style>))
+
+    assert finding.message ==
+             "A <style> element injects CSS outside the design system. Use classes, or declare the rule in your theme CSS."
+  end
+
+  test "allow exempts properties, in either spelling", %{tmp_dir: dir} do
+    template = ~s|<div style="transform: translateX(10px); color: red; background-color: red" />|
+    findings = styles(dir, template, allow: ["transform", "backgroundColor"])
+
+    assert Enum.map(findings, & &1.message) == [
+             "Inline style sets color. Style through classes; use CSS custom properties for dynamic values."
+           ]
+  end
+
+  test "deny brings back the color check an allow exempted", %{tmp_dir: dir} do
+    template = ~s(<div style="--tone: #ffffff; --other: #ffffff; --gap: 4px" />)
+    [finding] = styles(dir, template, allow: ["--*"], deny: ["--tone"])
+    assert finding.message =~ "Custom property --tone hardcodes a color."
+  end
+
+  test "contracts match the component name as written", %{tmp_dir: dir} do
     template = """
-    <div style={"--progress: \#{@percent}%"}>x</div>
-    <div style="view-transition-name: card">x</div>
+    <.card style="transform: rotate(2deg)" />
+    <div style="transform: rotate(2deg)" />
     """
 
-    assert lint(template, :no_inline_styles, rule: [allow: ["view-transition-name"]]) == []
+    [finding] = styles(dir, template, contracts: [[pattern: "^card$", allow: ["transform"]]])
+    assert finding.line == 7
   end
 
-  test "reports custom properties when they are not allowed" do
-    assert [_] =
-             lint(~s(<div style="--x: 1">x</div>), :no_inline_styles,
-               rule: [allow_custom_properties: false]
-             )
+  test "a class-shaped entry is a configuration error", %{tmp_dir: dir} do
+    findings = styles(dir, ~s(<div />), allow: ["bg-red-500"])
+    assert Enum.all?(findings, &(&1.message =~ ~s(entry "bg-red-500" is not a CSS property name)))
   end
 
-  test "reports <style> elements" do
-    assert [%{message: message}] = lint("<style>p { color: red }</style>", :no_inline_styles)
-    assert message =~ "<style> elements"
+  test "custom messages", %{tmp_dir: dir} do
+    [finding] =
+      styles(dir, ~s(<div style="color: red" />),
+        message: "Use a class instead of {{property|inline CSS}}."
+      )
+
+    assert finding.message == "Use a class instead of color."
   end
 end

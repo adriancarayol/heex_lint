@@ -1,7 +1,7 @@
 defmodule HeexLint.MixProject do
   use Mix.Project
 
-  @version "0.1.0"
+  @version "0.2.0"
   @source_url "https://github.com/adriancarayol/heex_lint"
 
   def project do
@@ -13,7 +13,8 @@ defmodule HeexLint.MixProject do
       elixirc_paths: elixirc_paths(Mix.env()),
       deps: deps(),
       aliases: aliases(),
-      description: "An agent-first linter for Tailwind classes in Phoenix HEEx templates.",
+      description:
+        "An agent-first linter for Tailwind classes in Phoenix HEEx templates, with rule parity with @shadcn/lint.",
       package: package(),
       docs: docs(),
       source_url: @source_url
@@ -44,12 +45,22 @@ defmodule HeexLint.MixProject do
   defp package do
     [
       licenses: ["MIT"],
-      files: ~w(lib mix.exs README.md LICENSE .formatter.exs),
+      files: ~w(lib priv docs mix.exs README.md CHANGELOG.md LICENSE .formatter.exs),
       links: %{"GitHub" => @source_url}
     ]
   end
 
   defp docs do
-    [main: "readme", extras: ["README.md"], source_ref: "v#{@version}"]
+    [
+      main: "readme",
+      extras: [
+        "README.md",
+        "docs/rules.md",
+        "docs/how-it-works.md",
+        "docs/adoption.md",
+        "docs/parity.md"
+      ],
+      source_ref: "v#{@version}"
+    ]
   end
 end
