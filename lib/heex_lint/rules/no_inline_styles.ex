@@ -125,6 +125,9 @@ defmodule HeexLint.Rules.NoInlineStyles do
 
   # Declarations of a style attribute. A `;` inside quotes or parentheses is
   # part of the value.
+  @doc false
+  def __declarations__(string), do: declarations(string)
+
   # Each declaration's property, its value as CSS text, and what the value's
   # holes can hold: `--tone: \#{@tone}` checks the strings @tone reads as.
   defp declarations(%{items: items} = string) do
