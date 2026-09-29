@@ -3,6 +3,23 @@
 HeexLint follows [`@shadcn/lint`](https://github.com/shadcn-ui/lint) 0.2.0.
 This page maps each part to its Phoenix counterpart.
 
+## Verified
+
+[`scripts/parity/run.sh`](../scripts/parity) lints 552 classes (a sample of
+Tailwind's class list plus colors, tokens, typos, arbitrary values, variants
+and markers) on a plain element, a Button with variants and sizes, and a
+CardTitle, with @shadcn/lint's own ESLint rules on a React project and with
+HeexLint on the equivalent Phoenix project, and diffs every finding:
+
+| Configuration | Findings | Differences |
+| --- | --- | --- |
+| `no-restyle` and `no-arbitrary-values` with `allow: ["layout"]`, `no-raw-colors` | 1804 | 0 |
+| `deny`, contracts, per-category messages, placeholders with fallbacks, group and exact-class allows | 1743 | 0 |
+
+The grammar (Tailwind 4.3's full class list, 46k classes with variants),
+colors, lengths, edit distance and theme reading are checked against the
+reference the same way.
+
 ## The same
 
 | @shadcn/lint | HeexLint |

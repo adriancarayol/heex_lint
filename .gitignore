@@ -24,3 +24,9 @@ heex_lint-*.tar
 
 /test/fixtures/node/node_modules/
 /test/fixtures/bin/
+/scripts/parity/shadcn-lint/
+/scripts/parity/node_modules/
+/scripts/parity/package.json
+/scripts/parity/package-lock.json
+/scripts/parity/*_out.tsv
+/scripts/parity/fixture/app/

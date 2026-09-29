@@ -239,10 +239,13 @@ Start with warnings, fix the common patterns, then promote rules to errors.
 The six rules, the policy engine (`allow`, `deny`, contracts, categories,
 groups, patterns, entry validation), messages and placeholders, theme reading
 and the Tailwind oracle follow `@shadcn/lint` 0.2, down to its message text.
-The class grammar is [cn](https://github.com/shadcn-ui/cn) 0.3.2's, and the
-grammar, color, length and theme parsers are verified against the reference
-implementation. What changes for Phoenix is how components, variants,
-wrappers and values are found. See [docs/parity.md](docs/parity.md).
+The class grammar is [cn](https://github.com/shadcn-ui/cn) 0.3.2's.
+
+A parity check runs @shadcn/lint's own rules and HeexLint over equivalent
+React and Phoenix projects: across 552 classes on elements and components,
+with and without contracts and custom messages, their 3,547 findings are
+identical. What changes for Phoenix is how components, variants, wrappers and
+values are found. See [docs/parity.md](docs/parity.md).
 
 ## Acknowledgements
 
