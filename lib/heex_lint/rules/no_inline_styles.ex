@@ -98,22 +98,22 @@ defmodule HeexLint.Rules.NoInlineStyles do
 
     declarations =
       for string <- site.strings,
-          {property, value, position} <- declarations(string),
-          finding = judge(property, value, position, component, policy, options, file),
+          {property, value, filled, position} <- declarations(string),
+          finding = judge(property, value, filled, position, component, policy, options, file),
           finding != nil,
           do: finding
 
     dynamic ++ declarations
   end
 
-  defp judge(property, value, position, component, policy, options, file) do
+  defp judge(property, value, filled, position, component, policy, options, file) do
     {exempt, words} = decide(policy, component, property)
 
     message =
       cond do
         exempt -> nil
         not String.starts_with?(property, "--") -> @messages.inline_style
-        raw_color?(value) -> @messages.custom_prop_color
+        raw_color?(value) or Enum.any?(filled, &raw_color?/1) -> @messages.custom_prop_color
         true -> nil
       end
 
@@ -125,7 +125,11 @@ defmodule HeexLint.Rules.NoInlineStyles do
 
   # Declarations of a style attribute. A `;` inside quotes or parentheses is
   # part of the value.
-  defp declarations(%{items: items}) do
+  # Each declaration's property, its value as CSS text, and what the value's
+  # holes can hold: `--tone: \#{@tone}` checks the strings @tone reads as.
+  defp declarations(%{items: items} = string) do
+    holes = Map.get(string, :holes, %{})
+
     items
     |> split_declarations()
     |> Enum.flat_map(fn declaration ->
@@ -144,7 +148,8 @@ defmodule HeexLint.Rules.NoInlineStyles do
 
             position = declaration |> Enum.at(leading) |> position_of()
             value = binary_part(text, colon + 1, byte_size(text) - colon - 1)
-            [{property, value, position}]
+            filled = for {:interp, at} <- declaration, value <- Map.get(holes, at, []), do: value
+            [{property, value, filled, position}]
           end
 
         :nomatch ->

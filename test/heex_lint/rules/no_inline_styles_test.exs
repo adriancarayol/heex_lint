@@ -37,6 +37,29 @@ defmodule HeexLint.Rules.NoInlineStylesTest do
     assert shadow.message =~ "Custom property --shadow hardcodes a color."
   end
 
+  test "a raw color laundered through an assign or lookup is still seen", %{tmp_dir: dir} do
+    module = """
+    defmodule AppWeb.ToneLive do
+      use AppWeb, :live_view
+
+      @tones %{warn: "#f59e0b", info: "var(--color-primary)"}
+
+      def render(assigns) do
+        assigns = assign(assigns, :tone, Map.fetch!(@tones, assigns.level))
+
+        ~H\"\"\"
+        <div class="text-(--tone)" style={"--tone: \#{@tone}; --size: \#{@size}px"} />
+        \"\"\"
+      end
+    end
+    """
+
+    [finding] =
+      lint(dir, %{"lib/app_web/live/tone_live.ex" => module}, rules: [no_inline_styles: :error])
+
+    assert finding.message =~ "Custom property --tone hardcodes a color."
+  end
+
   test "style values that cannot be read are reported", %{tmp_dir: dir} do
     [finding] = styles(dir, ~s(<div style={@style} />))
 

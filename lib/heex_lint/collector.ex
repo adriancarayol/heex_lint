@@ -37,6 +37,7 @@ defmodule HeexLint.Collector do
   @type string_value :: %{
           value: String.t(),
           items: [item()],
+          holes: %{{pos_integer(), pos_integer()} => [String.t()]},
           literal:
             %{file: String.t(), from: {pos_integer(), pos_integer()}, raw: String.t()} | nil
         }
@@ -61,7 +62,7 @@ defmodule HeexLint.Collector do
   def attribute({:string, text, position}, context, _opts) do
     items = chars(text, position, context.template.indentation)
     literal = %{file: context.template.file, from: position, raw: text}
-    %__MODULE__{strings: [%{value: text, items: items, literal: literal}]}
+    %__MODULE__{strings: [%{value: text, items: items, literal: literal, holes: %{}}]}
   end
 
   def attribute({:expr, code, position}, context, opts) do
@@ -319,8 +320,21 @@ defmodule HeexLint.Collector do
   # A string with runtime parts: text glued to a runtime value is no class
   # of its own and leaves the value unresolved; a value standing alone is
   # read on its own. In a style, holes stay holes in the CSS text.
-  defp template(%{kind: :style} = state, items, _exprs, _meta) do
-    push(state, raw_text(items), items, nil)
+  # In a style, a hole is not unreadable: the CSS text around it still
+  # names its properties. What the hole can hold is kept, one hop deep, so a
+  # raw color laundered through a variable or lookup table is still seen.
+  defp template(%{kind: :style} = state, items, exprs, _meta) do
+    positions = for {:interp, position} <- items, do: position
+
+    holes =
+      positions
+      |> Enum.zip(exprs)
+      |> Map.new(fn {position, expr} ->
+        inner = visit(%{state | strings: [], unresolved: [], kind: :class}, expr)
+        {position, Enum.map(inner.strings, & &1.value)}
+      end)
+
+    push(state, raw_text(items), items, nil, holes)
   end
 
   defp template(state, items, exprs, meta) do
@@ -348,8 +362,9 @@ defmodule HeexLint.Collector do
   defp nested(state, nil), do: state
   defp nested(state, expr), do: visit(state, expr)
 
-  defp push(state, value, items, literal) do
-    %{state | strings: [%{value: value, items: items, literal: literal} | state.strings]}
+  defp push(state, value, items, literal, holes \\ %{}) do
+    string = %{value: value, items: items, literal: literal, holes: holes}
+    %{state | strings: [string | state.strings]}
   end
 
   defp unresolved(state, meta) do
