@@ -10,10 +10,12 @@ with HeexLint, on equivalent projects, and diffs every finding:
 
 `cases.txt` holds 552 classes: a sample of Tailwind's class list plus
 colors, tokens, typos, arbitrary values, variants and markers. Each is
-written on a plain element, on Button and on CardTitle, and checked with
-`no-restyle`, `no-raw-colors` and `no-arbitrary-values` under two
-configurations: the recommended options, and one with `deny`, contracts,
-per-category messages, placeholders and exact-class allows.
+written on a plain element, on Button and on CardTitle, and checked under
+three configurations: `no-restyle`, `no-raw-colors` and `no-arbitrary-values`
+with the recommended options; the same with `deny`, contracts, per-category
+messages, placeholders and exact-class allows; and `no-unknown-classes` with
+`no-raw-colors`. Both linters ask the same installed Tailwind 4.3.3; the
+script builds @shadcn/lint so its Tailwind worker is there.
 
 Messages are compared after naming the components the same way (`<.button>`
 and `<Button>`) and the component and theme files by placeholder.

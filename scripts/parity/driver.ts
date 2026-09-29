@@ -4,7 +4,8 @@ import * as fs from "node:fs"
 import * as path from "node:path"
 import { Linter } from "eslint"
 import parser from "@typescript-eslint/parser"
-import { plugin } from "./shadcn-lint/packages/lint/src/index"
+// The built package, whose Tailwind worker no-unknown-classes needs.
+import { plugin } from "./shadcn-lint/packages/lint/dist/index.js"
 
 const fixture = path.resolve(__dirname, "fixture")
 const cases = fs.readFileSync(path.join(__dirname, "cases.txt"), "utf8").split("\n").filter(Boolean)
@@ -39,7 +40,12 @@ const config: any = [
     languageOptions: { parser, parserOptions: { ecmaFeatures: { jsx: true } } },
     plugins: { shadcn: plugin },
     rules:
-      process.env.CONFIG === "2"
+      process.env.CONFIG === "3"
+        ? {
+            "shadcn/no-unknown-classes": "error",
+            "shadcn/no-raw-colors": "error",
+          }
+        : process.env.CONFIG === "2"
         ? {
             "shadcn/no-restyle": [
               "error",

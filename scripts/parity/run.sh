@@ -19,7 +19,13 @@ git -C shadcn-lint checkout -q "$commit"
 
 if [ ! -d node_modules ]; then
   npm init -y >/dev/null
-  npm i -q -D cn@0.3.2 @eslint/core@0.17.0 eslint@9 @typescript-eslint/parser@8 typescript tsx@4 >/dev/null
+  npm i -q -D cn@0.3.2 @eslint/core@0.17.0 eslint@9 @typescript-eslint/parser@8 typescript tsx@4 \
+    tsdown@0.12 tailwindcss@4.3.3 @tailwindcss/node@4.3.3 >/dev/null
+fi
+
+# The built package carries the Tailwind worker no-unknown-classes needs.
+if [ ! -f shadcn-lint/packages/lint/dist/tailwind-worker.js ]; then
+  (cd shadcn-lint/packages/lint && NODE_PATH="$here/node_modules" "$here/node_modules/.bin/tsdown" >/dev/null)
 fi
 
 # The React fixture uses the same theme as HeexLint's test project.
@@ -27,7 +33,7 @@ fi
   'File.write!(System.fetch_env!("OUT"), HeexLint.TestProject.theme())')
 
 status=0
-for config in 1 2; do
+for config in 1 2 3; do
   CONFIG=$config npx tsx driver.ts 2>/dev/null
   sed -i 's|fixture/FILE|FILE|g; s|fixture/THEME|THEME|g' ref_out.tsv
   (cd "$root" && CONFIG=$config MIX_ENV=test mix run "$here/driver.exs")

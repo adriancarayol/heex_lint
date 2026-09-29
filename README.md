@@ -242,9 +242,9 @@ and the Tailwind oracle follow `@shadcn/lint` 0.2, down to its message text.
 The class grammar is [cn](https://github.com/shadcn-ui/cn) 0.3.2's.
 
 A parity check runs @shadcn/lint's own rules and HeexLint over equivalent
-React and Phoenix projects: across 552 classes on elements and components,
-with and without contracts and custom messages, their 3,547 findings are
-identical. What changes for Phoenix is how components, variants, wrappers and
+React and Phoenix projects, asking the same Tailwind: across 552 classes on
+elements and components, with and without contracts and custom messages,
+their 4,618 findings are identical. What changes for Phoenix is how components, variants, wrappers and
 values are found. See [docs/parity.md](docs/parity.md).
 
 ## Acknowledgements

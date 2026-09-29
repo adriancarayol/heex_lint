@@ -13,8 +13,12 @@ HeexLint on the equivalent Phoenix project, and diffs every finding:
 
 | Configuration | Findings | Differences |
 | --- | --- | --- |
-| `no-restyle` and `no-arbitrary-values` with `allow: ["layout"]`, `no-raw-colors` | 1804 | 0 |
-| `deny`, contracts, per-category messages, placeholders with fallbacks, group and exact-class allows | 1743 | 0 |
+| `no-restyle` and `no-arbitrary-values` with `allow: ["layout"]`, `no-raw-colors` | 1795 | 0 |
+| `deny`, contracts, per-category messages, placeholders with fallbacks, group and exact-class allows | 1734 | 0 |
+| `no-unknown-classes` with `no-raw-colors`, asking Tailwind 4.3.3 (suggestions and typo ownership) | 1089 | 0 |
+
+Both linters ask the same installed Tailwind, so `no-raw-colors` hands a
+typo of another utility (`text-smal`) to `no-unknown-classes` the same way.
 
 The grammar (Tailwind 4.3's full class list, 46k classes with variants),
 colors, lengths, edit distance and theme reading are checked against the
