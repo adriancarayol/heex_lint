@@ -8,6 +8,7 @@
   file: findings in them are reported at the call in the template, and
   their fixes edit the helper. Before, their positions were read from the
   template, which gave wrong locations and garbled messages.
+- `no_raw_colors` accepts `fill-none` and `stroke-none`, which paint nothing.
 
 ## 0.2.1
 

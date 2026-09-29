@@ -13,7 +13,8 @@ defmodule HeexLint.Rules.NoRawColors do
       <div class="bg-highlight"> "bg-highlight" is not a declared theme color...
       <path fill="#ec4899" />    fill="#ec4899" hardcodes a color...
 
-  `white`, `black`, `transparent`, `current` and `inherit` are accepted.
+  `white`, `black`, `transparent`, `current` and `inherit` are accepted,
+  as are `fill-none` and `stroke-none`.
   Arbitrary colors such as `bg-[#333]` belong to `no_arbitrary_values`.
 
   ## Options
@@ -210,6 +211,8 @@ defmodule HeexLint.Rules.NoRawColors do
       declared == nil -> nil
       ProjectClassifier.category_of(theme, token) != "color" -> nil
       value == nil or MapSet.member?(@named, value) -> nil
+      # fill-none and stroke-none paint nothing.
+      value == "none" and parts.prefix in ["fill-", "stroke-"] -> nil
       # A class the project's CSS declares with @utility is its vocabulary.
       Theme.declares_utility?(theme, token) -> nil
       true -> undeclared_verdict(context, token)

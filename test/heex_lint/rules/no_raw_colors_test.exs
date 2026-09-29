@@ -66,6 +66,10 @@ defmodule HeexLint.Rules.NoRawColorsTest do
     assert colors(dir, template) == []
   end
 
+  test "fill-none and stroke-none paint nothing", %{tmp_dir: dir} do
+    assert colors(dir, ~s|<svg class="fill-none stroke-none" />|) == []
+  end
+
   test "a palette name the theme declares is one of its tokens", %{tmp_dir: dir} do
     css = theme() <> "\n@theme { --color-amber-500: #f59e0b; }\n"
     assert colors(dir, ~s(<div class="bg-amber-500" />), [], %{"assets/css/app.css" => css}) == []
