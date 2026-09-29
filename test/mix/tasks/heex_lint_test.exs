@@ -62,6 +62,22 @@ defmodule Mix.Tasks.HeexLintTest do
     assert {{:shutdown, 1}, _, _} = task(dir, ["--max-warnings", "0"])
   end
 
+  test "--quiet prints errors only, and warnings still count", %{tmp_dir: dir} do
+    setup_project(dir, ~s(<div class="bg-neutral-900 flex-cols" />),
+      no_raw_colors: :warning,
+      no_unknown_classes: :error
+    )
+
+    assert {{:shutdown, 1}, output, _} = task(dir, ["--quiet"])
+    assert output =~ "[no_unknown_classes]"
+    refute output =~ "[no_raw_colors]"
+    assert output =~ "1 error, 1 warning in"
+
+    File.write!(Path.join(dir, ".heex_lint.exs"), inspect(rules: [no_raw_colors: :warning]))
+    assert {{:shutdown, 1}, _, _} = task(dir, ["--quiet", "--max-warnings", "0"])
+    assert {:ok, _, _} = task(dir, ["--quiet", "--max-warnings", "1"])
+  end
+
   test "JSON output carries suggestions", %{tmp_dir: dir} do
     setup_project(dir, ~s(<div class="bg-neutral-900" />), no_raw_colors: :error)
     assert {{:shutdown, 1}, output, _} = task(dir, ["--format", "json"])

@@ -244,7 +244,8 @@ Elixir comments. `grep -rn "heex-lint-disable"` finds them all.
 ## Adopting it
 
 Start with warnings, fix the common patterns, then promote rules to errors.
-`mix heex_lint --max-warnings 287` fails CI when the count grows. See
+`mix heex_lint --max-warnings 287` fails CI when the count grows; add
+`--quiet` to print only errors while the existing warnings are triaged. See
 [docs/adoption.md](docs/adoption.md).
 
 ## Parity with @shadcn/lint

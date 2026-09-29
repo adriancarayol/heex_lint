@@ -18,6 +18,7 @@ defmodule Mix.Tasks.HeexLint do
     * `--format` - `text` (default), `json`, or `github` for GitHub Actions
       annotations
     * `--max-warnings` - fail when there are more warnings than this
+    * `--quiet` - print errors only; warnings still count for `--max-warnings`
     * `--fix` - apply the suggestions that generate the same CSS, such as
       an exact scale step or the variable shorthand, then lint again
 
@@ -29,7 +30,13 @@ defmodule Mix.Tasks.HeexLint do
 
   alias HeexLint.{Config, Fixer}
 
-  @switches [config: :string, format: :string, max_warnings: :integer, fix: :boolean]
+  @switches [
+    config: :string,
+    format: :string,
+    max_warnings: :integer,
+    fix: :boolean,
+    quiet: :boolean
+  ]
 
   @impl true
   def run(argv) do
@@ -55,10 +62,16 @@ defmodule Mix.Tasks.HeexLint do
 
     for warning <- result.warnings, do: Mix.shell().error("warning: " <> warning)
 
+    # --quiet prints errors only; warnings still count for --max-warnings.
+    shown =
+      if Keyword.get(options, :quiet, false),
+        do: %{result | diagnostics: Enum.filter(result.diagnostics, &(&1.severity == :error))},
+        else: result
+
     case Keyword.get(options, :format, "text") do
-      "json" -> IO.puts(json(result))
-      "github" -> github(result)
-      _ -> text(result)
+      "json" -> IO.puts(json(shown))
+      "github" -> github(shown)
+      _ -> text(shown, result)
     end
 
     errors = Enum.count(result.diagnostics, &(&1.severity == :error))
@@ -70,7 +83,7 @@ defmodule Mix.Tasks.HeexLint do
     end
   end
 
-  defp text(result) do
+  defp text(result, counted) do
     for {file, message} <- result.failures do
       Mix.shell().error("#{Path.relative_to_cwd(file)}: could not parse template: #{message}")
     end
@@ -98,7 +111,7 @@ defmodule Mix.Tasks.HeexLint do
       )
     end
 
-    IO.puts(summary(result))
+    IO.puts(summary(counted))
   end
 
   defp summary(%{diagnostics: [], failures: [], files: files}),

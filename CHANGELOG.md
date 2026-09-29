@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.1
+
+- `mix heex_lint --quiet` prints errors only, as ESLint's `--quiet` does;
+  warnings still count for `--max-warnings`, so a precommit step can keep
+  a warning cap without printing every existing warning.
+
 ## 0.2.0
 
 Rule parity with [@shadcn/lint](https://github.com/shadcn-ui/lint) 0.2.0.
