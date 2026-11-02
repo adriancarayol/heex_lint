@@ -162,18 +162,11 @@ defmodule HeexLint.Rules.NoRawColors do
             {:%{}, meta, entries}, acc ->
               {{:%{}, meta, without_plain_keys(entries)}, acc}
 
-            # But the keys of a map given to a merge function are classes, as
-            # in cn(%{"bg-red-500" => @on}).
-            {callee, meta, args} = node, acc when is_list(args) ->
-              if HeexLint.Sites.helper_name(callee) in merge,
-                do: {{callee, meta, Enum.map(args, &class_map/1)}, acc},
-                else: {node, acc}
-
             node, acc ->
               {node, acc}
           end)
 
-        strings
+        strings ++ class_map_keys(file, merge)
       else
         []
       end
@@ -206,9 +199,56 @@ defmodule HeexLint.Rules.NoRawColors do
     end)
   end
 
-  # Unwraps a map into its entries, so the walk reads its keys too.
-  defp class_map({:%{}, _meta, entries}), do: entries
-  defp class_map(arg), do: arg
+  # But the keys of a map a merge function reads are classes, as in
+  # cn(%{"bg-red-500" => on}), however the map reaches the call. Calls outside
+  # a function have no variables to follow; the same call read twice is one
+  # finding.
+  defp class_map_keys(file, merge) do
+    source = file.source
+    opts = [merge_functions: merge]
+    context = %{project: file.project, source: source}
+
+    in_functions =
+      for module <- source.modules,
+          clauses <- Map.values(module.functions),
+          clause <- clauses,
+          call <- merge_calls(clause.body, merge),
+          context = Map.merge(context, %{module: module.name, clause: clause}),
+          key <- Collector.map_keys(call, context, opts),
+          do: key
+
+    anywhere =
+      for call <- merge_calls(source.ast, merge),
+          key <- Collector.map_keys(call, context, opts),
+          do: key
+
+    in_functions ++ anywhere
+  end
+
+  defp merge_calls(ast, merge) do
+    {_, calls} =
+      Macro.prewalk(ast, [], fn
+        {:sigil_H, _, _}, acc ->
+          {nil, acc}
+
+        # A function head is a pattern, not a call.
+        {kind, meta, [_head | body]}, acc when kind in [:def, :defp, :defmacro, :defmacrop] ->
+          {{kind, meta, [nil | body]}, acc}
+
+        {:|>, _, [_left, {callee, _, args}]} = node, acc when is_list(args) ->
+          {node, if(merge_function?(callee, merge), do: [node | acc], else: acc)}
+
+        {callee, _, args} = node, acc when is_list(args) ->
+          {node, if(merge_function?(callee, merge), do: [node | acc], else: acc)}
+
+        node, acc ->
+          {node, acc}
+      end)
+
+    calls
+  end
+
+  defp merge_function?(callee, merge), do: HeexLint.Sites.helper_name(callee) in merge
 
   defp theme_file(%{theme_file: nil}), do: "your theme CSS"
   defp theme_file(%{theme_file: file, root: root}), do: Path.relative_to(file, root)

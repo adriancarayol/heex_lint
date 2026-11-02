@@ -327,6 +327,81 @@ defmodule HeexLint.Rules.NoRawColorsTest do
       assert [finding] = scanned(dir, ~S|cn(%{"bg-pink-500" => on})|)
       assert finding.message =~ ~s("bg-pink-500")
     end
+
+    test "class map keys count however the map reaches the merge function", %{tmp_dir: dir} do
+      for body <- [
+            ~S|cn(["p-1", %{"bg-pink-500" => on}])|,
+            ~S|cn(if on, do: %{"bg-pink-500" => on})|,
+            ~S|cn(on && %{"bg-pink-500" => on})|,
+            ~S/%{"bg-pink-500" => on} |> cn()/,
+            ~S/["p-1", %{"bg-pink-500" => on}] |> cn()/,
+            ~S|cn(Map.merge(map, %{"bg-pink-500" => on}))|,
+            ~S|tones = %{"bg-pink-500" => on}; cn(tones)|
+          ] do
+        assert [finding] = scanned(dir, body), body
+        assert finding.message =~ ~s("bg-pink-500")
+      end
+    end
+
+    test "class map keys count through module attributes and functions", %{tmp_dir: dir} do
+      module = """
+      defmodule AppWeb.Tones do
+        import AppWeb.Cn
+
+        @tones %{"bg-pink-500" => true}
+
+        def a, do: cn(@tones)
+        def b, do: cn(@tones)
+        def c, do: cn(tones())
+
+        defp tones, do: %{"text-pink-500" => true}
+
+        def cn_head, do: cn(%{"border-pink-500" => true}) |> layer()
+
+        defp layer(%{"fill-pink-500" => value}), do: value
+      end
+      """
+
+      helper = "defmodule AppWeb.Cn do\n  def cn(value), do: value\nend\n"
+
+      findings =
+        lint(dir, %{"lib/app_web/tones.ex" => module, "lib/app_web/cn.ex" => helper},
+          rules: [no_raw_colors: {:error, scan_all_strings: true}]
+        )
+
+      assert length(findings) == 3
+      assert Enum.any?(findings, &(&1.message =~ "bg-pink-500"))
+      assert Enum.any?(findings, &(&1.message =~ "text-pink-500"))
+      assert Enum.any?(findings, &(&1.message =~ "border-pink-500"))
+    end
+
+    test "no_arbitrary_values reads class map keys too", %{tmp_dir: dir} do
+      rules = [no_arbitrary_values: {:error, scan_all_strings: true}]
+
+      assert [_] = scanned(dir, ~S|tones = %{"p-[13px]" => on}; cn(tones)|, rules)
+    end
+
+    test "a map that never reaches a merge function stays plain", %{tmp_dir: dir} do
+      assert scanned(dir, ~S|tones = %{"bg-pink-500" => on}; tones|) == []
+      assert scanned(dir, ~S|tones = %{"bg-pink-500" => on}; Map.keys(tones)|) == []
+    end
+
+    test "a merge function's own head is a pattern", %{tmp_dir: dir} do
+      module = """
+      defmodule AppWeb.Cn do
+        def cn(%{"bg-pink-500" => value}), do: value
+        def cn(%{"text-pink-500" => value}) when is_binary(value), do: value
+      end
+      """
+
+      assert lint(dir, %{"lib/app_web/cn.ex" => module},
+               rules: [no_raw_colors: {:error, scan_all_strings: true}]
+             ) == []
+    end
+
+    test "class map keys stay out of the default scan", %{tmp_dir: dir} do
+      assert scanned(dir, ~S|cn(["p-1", %{"bg-pink-500" => on}])|, no_raw_colors: :error) == []
+    end
   end
 
   test "a color function over one theme variable is not a raw color" do

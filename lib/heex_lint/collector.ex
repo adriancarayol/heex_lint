@@ -120,6 +120,18 @@ defmodule HeexLint.Collector do
     state |> visit(ast) |> result()
   end
 
+  @doc """
+  The string keys of the maps a merge-function call in Elixir code reads, as
+  in `cn(["p-1", %{"bg-red-500" => on}])`. It follows the same branches,
+  variables and hops as `expression/3`. Only `scan_all_strings` asks for them:
+  no class site reads map keys yet.
+  """
+  @spec map_keys(Macro.t(), map(), keyword()) :: [string_value()]
+  def map_keys(ast, context, opts \\ []) do
+    state = %{state(context, opts, file_text(context), :body) | map_keys: []}
+    Enum.reverse(visit(state, ast).map_keys)
+  end
+
   # A hop into a function body reads the module's file. For an embedded .heex
   # template that is another file, so what it finds is reported at the call;
   # `origin` keeps the real positions for fixes, which name their own file.
@@ -163,7 +175,8 @@ defmodule HeexLint.Collector do
       seen: MapSet.new(),
       depth: 0,
       strings: [],
-      unresolved: []
+      unresolved: [],
+      map_keys: nil
     }
   end
 
@@ -298,6 +311,13 @@ defmodule HeexLint.Collector do
        when {mod, fun} in [{:Map, :get}, {:Map, :fetch!}, {:Keyword, :get}, {:Keyword, :fetch!}],
        do: lookup(state, map, key, List.first(rest), meta)
 
+  defp visit(%{map_keys: keys} = state, {:%{}, _, entries}) when is_list(keys),
+    do: map_entries(state, entries)
+
+  defp visit(%{map_keys: keys} = state, {{:., _, [{:__aliases__, _, [:Map]}, :merge]}, _, args})
+       when is_list(keys) and is_list(args),
+       do: Enum.reduce(args, state, &visit(&2, &1))
+
   defp visit(state, {_, _, args} = node) when is_list(args), do: call(state, node)
 
   defp visit(state, node), do: unresolved(state, meta_of(node))
@@ -310,6 +330,20 @@ defmodule HeexLint.Collector do
   end
 
   defp visit_clauses(state, _), do: state
+
+  defp map_entries(state, [{:|, _, [map, entries]}]),
+    do: state |> visit(map) |> map_entries(entries)
+
+  defp map_entries(state, entries) do
+    Enum.reduce(entries, state, fn
+      {{:__block__, meta, [key]}, _value}, acc when is_binary(key) ->
+        [string] = literal(%{acc | strings: []}, key, meta).strings
+        %{acc | map_keys: [string | acc.map_keys]}
+
+      _entry, acc ->
+        acc
+    end)
+  end
 
   ## Strings
 

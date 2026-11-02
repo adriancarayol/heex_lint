@@ -28,8 +28,11 @@
   findings and adds none.
 - `scan_all_strings` skips plain string map keys such as
   `%{"fill-color" => 1}`, in `no_raw_colors` and `no_arbitrary_values`. Map
-  values, and class map keys like `cn(%{"bg-red-500" => @on})`, are still
-  checked. This removes findings and adds none.
+  values are still checked, and so are the keys of a map that reaches a merge
+  function in Elixir code, directly or through a list, branch, pipe, variable,
+  module attribute or same-module function. A merge call in a template, such
+  as `<div class={cn(%{"bg-red-500" => @on})} />`, still has its map keys
+  unread, as before. This removes findings and adds none.
 
 ## 0.2.2
 
