@@ -26,6 +26,8 @@ Each configuration also runs `themed_cases.txt` under each theme in `themes/`:
 - `full_reset`: `--*: initial` with `--spacing` and `--color-primary`,
 - `scoped_values`: `--radius-card: var(--radius)`, with `--radius` set on
   `:root` and on `.compact`.
+- `explicit_imports`: `tailwindcss/theme.css` by path with `--animate-*: initial`,
+  where Tailwind's animations stay motion classes.
 
 The drivers take the configuration, the theme and the class list from the
 `CONFIG`, `THEME` and `CASES` environment variables.

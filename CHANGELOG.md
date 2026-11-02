@@ -16,7 +16,10 @@
   `no_raw_colors` reports it as undeclared, and `no_restyle` as color rather
   than effects or typography. `--spacing` set after a reset keeps the numeric
   spacing scale. A `deny` or `allow` reaching a category now reaches the
-  declared classes too.
+  declared classes too. After `--animate-*: initial`, `animate-spin` is
+  unrecognized under `@import "tailwindcss"`, but stays a motion class when
+  the theme imports `tailwindcss/theme.css` or `tailwindcss/index.css` by
+  path, as in @shadcn/lint.
 - `--text-primary` beside `--color-primary` makes `text-primary` a font size,
   and `no_raw_colors` does not check it. The grammar's answer now wins over a
   color token of the same name for `text-*`, as it already did for `shadow-*`.

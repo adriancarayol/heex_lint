@@ -83,8 +83,6 @@ defmodule HeexLint.Theme do
   # `:root, :host` is how Tailwind writes its own theme.
   @root_selector ~r/^(?::root|html|:host)$/
 
-  @tailwind_package "/node_modules/tailwindcss/"
-
   @skip_dirs MapSet.new(~w(
     node_modules dist build out coverage public .next .git .turbo .registry
     _build deps .elixir_ls .lexical cover tmp
@@ -327,6 +325,9 @@ defmodule HeexLint.Theme do
           nil ->
             {%{acc | missing_imports: acc.missing_imports ++ [spec]}, seen}
 
+          target when spec == "tailwindcss" ->
+            {read_tailwind_entry(target, seen, acc), seen}
+
           target ->
             read(target, seen, acc, from_package or package_file?(target))
         end
@@ -336,7 +337,7 @@ defmodule HeexLint.Theme do
     acc = %{acc | variables: MapSet.union(acc.variables, all_variable_names(css))}
 
     if from_package do
-      {%{acc | theme_names: MapSet.union(acc.theme_names, package_animations(css, file))}, seen}
+      {%{acc | theme_names: MapSet.union(acc.theme_names, package_animations(css))}, seen}
     else
       {values, scoped_names, theme_names, declarations} = parse_declarations(css)
 
@@ -356,11 +357,22 @@ defmodule HeexLint.Theme do
     end
   end
 
+  # For `@import "tailwindcss"` @shadcn/lint follows the package's exports to
+  # its JavaScript entry, so Tailwind's stylesheets add no animations and
+  # `--animate-*: initial` removes the grammar's defaults. Any other path into
+  # the package reads a stylesheet like any package's. So this walk keeps no
+  # animations and marks nothing seen: a later `tailwindcss/theme.css` still
+  # counts. It adds no declarations, being all inside node_modules, so that
+  # later read cannot put any over the ones read in between.
+  defp read_tailwind_entry(target, seen, acc) do
+    {walked, _seen} = read(target, seen, acc, true)
+    %{walked | theme_names: acc.theme_names}
+  end
+
   # A package's own @theme animations are generated all the same:
-  # tw-animate-css declares --animate-in there. Tailwind's are the grammar's
-  # defaults, which `--animate-*: initial` has to be able to remove.
-  defp package_animations(css, file) do
-    if String.contains?(css, "--animate-") and not String.contains?(file, @tailwind_package) do
+  # tw-animate-css declares --animate-in there.
+  defp package_animations(css) do
+    if String.contains?(css, "--animate-") do
       {_values, _scoped_names, theme_names, _declarations} = parse_declarations(css)
       MapSet.filter(theme_names, &String.starts_with?(&1, "animate-"))
     else
@@ -379,7 +391,7 @@ defmodule HeexLint.Theme do
 
   defp finalize(%__MODULE__{} = theme) do
     {tokens, scoped} = apply_token_declarations(theme.declarations, MapSet.new(), %{})
-    theme = %{theme | tokens: tokens, scoped: scoped}
+    theme = %{theme | tokens: tokens, scoped: scoped, files: Enum.uniq(theme.files)}
 
     %{
       theme

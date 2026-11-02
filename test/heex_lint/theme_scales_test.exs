@@ -395,6 +395,43 @@ defmodule HeexLint.ThemeScalesTest do
       assert ProjectClassifier.group_of(read, "animate-spin") == nil
       assert ProjectClassifier.group_of(read, "animate-mine") == "animate"
     end
+
+    @tailwind %{
+      "node_modules/tailwindcss/package.json" => ~s({"name":"tailwindcss","style":"index.css"}),
+      "node_modules/tailwindcss/index.css" => ~s(@import "./theme.css";),
+      "node_modules/tailwindcss/theme.css" => ~s(@theme default { --animate-spin: spin 1s; })
+    }
+
+    for {name, imports} <- [
+          {"theme.css", ~s(@import "tailwindcss/theme.css";)},
+          {"theme", ~s(@import "tailwindcss/theme";)},
+          {"index.css", ~s(@import "tailwindcss/index.css";)},
+          {"theme.css after the bare import",
+           ~s(@import "tailwindcss";\n@import "tailwindcss/theme.css";)},
+          {"theme.css before the bare import",
+           ~s(@import "tailwindcss/theme.css";\n@import "tailwindcss";)}
+        ] do
+      test "an explicit #{name} keeps Tailwind's --animate-* after a reset", %{tmp_dir: dir} do
+        read = theme(dir, unquote(imports) <> "\n@theme { --animate-*: initial; }", @tailwind)
+
+        assert ProjectClassifier.group_of(read, "animate-spin") == "animate"
+        assert read.files == Enum.uniq(read.files)
+      end
+    end
+
+    test "a bare import inside a package drops Tailwind's --animate-* too", %{tmp_dir: dir} do
+      read =
+        theme(
+          dir,
+          ~s(@import "kit";\n@theme { --animate-*: initial; }),
+          Map.merge(@tailwind, %{
+            "node_modules/kit/package.json" => ~s({"name":"kit","style":"kit.css"}),
+            "node_modules/kit/kit.css" => ~s(@import "tailwindcss";)
+          })
+        )
+
+      assert ProjectClassifier.group_of(read, "animate-spin") == nil
+    end
   end
 
   describe "the namespaces cn does not read" do

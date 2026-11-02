@@ -43,3 +43,5 @@ p-[4px]
 p-[16px]
 text-[2rem]
 tracking-[0.1em]
+animate-spin
+animate-none
