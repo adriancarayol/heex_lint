@@ -54,9 +54,10 @@ project a file belongs to: when several do, the one declaring the most color
 tokens wins, then the one nearest the root. In an umbrella, each app (each
 directory with a `mix.exs`) finds its own, so files are checked against their
 app's tokens, and `no_unknown_classes` asks that app's Tailwind. Set `theme`
-to use one stylesheet everywhere. Its `@import`s are followed;
+to use one stylesheet everywhere. Its `@import`s are followed past symlinks;
 files under `node_modules` contribute `@utility` names, class selectors and
-`--animate-*` names from `@theme`, not tokens.
+`--animate-*` names from `@theme`, not tokens. A workspace package linked into
+`node_modules` really lives outside it, so it counts as your own.
 
 Color tokens are the `--color-*` declarations in `@theme`, with resets
 (`--color-*: initial`) applied in cascade order:
@@ -96,8 +97,8 @@ them. A `--radius-card` in `@theme` makes `rounded-card` a shape class,
 with the declared ones, so `rounded-lg` is unclassified until the theme declares
 it again, and `--*: initial` resets every scale but colors and fonts. Setting
 `--spacing` after a reset brings the numeric spacing scale back. Only `@theme`
-blocks count, from the same stylesheets as your tokens: packages under
-`node_modules` contribute no scales.
+blocks count, from the same stylesheets as your tokens: installed packages
+contribute no scales, and a linked workspace package does.
 
 Suggestions use token values: variables resolve from `:root`, dark-mode
 blocks are skipped, and colors compare in OKLab. The radius and text scales

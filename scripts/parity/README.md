@@ -28,6 +28,8 @@ Each configuration also runs `themed_cases.txt` under each theme in `themes/`:
   `:root` and on `.compact`.
 - `explicit_imports`: `tailwindcss/theme.css` by path with `--animate-*: initial`,
   where Tailwind's animations stay motion classes.
+- `workspace_package`: a package in `workspace_kit/`, linked into `node_modules`
+  the way pnpm links one, whose tokens, scales and resets count as the project's.
 
 The drivers take the configuration, the theme and the class list from the
 `CONFIG`, `THEME` and `CASES` environment variables.

@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- A workspace package linked into `node_modules`, as pnpm and npm workspaces
+  do, counts as your own, as in @shadcn/lint: imports resolve to their real
+  path, and a package can import itself by name. Its tokens, scales and resets
+  now apply. **This adds findings:** its colors become the tokens
+  `no_raw_colors` checks against, its `--radius-*: initial` makes `rounded-lg`
+  unrecognized, and its `--radius-card` makes `rounded-card` a shape class that
+  `no_restyle` reports. A stylesheet reached through a link and by its real path
+  is read once.
 - The grammar reads the scales your theme declares, the way `cn build`
   registers them (cn 0.4.0). `--radius-card` makes `rounded-card` a shape
   class, and `--tracking-*`, `--leading-*`, `--blur-*`, `--ease-*`,

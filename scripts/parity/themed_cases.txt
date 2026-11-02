@@ -45,3 +45,5 @@ text-[2rem]
 tracking-[0.1em]
 animate-spin
 animate-none
+shadow-foo
+text-display

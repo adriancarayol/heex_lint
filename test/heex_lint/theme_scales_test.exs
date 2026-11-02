@@ -315,6 +315,113 @@ defmodule HeexLint.ThemeScalesTest do
     end
   end
 
+  describe "a workspace package linked into node_modules" do
+    @kit_css "@theme { --radius-*: initial; --radius-card: 1px; --color-brand: #111; }"
+
+    defp link_kit(dir, files) do
+      for {path, contents} <- files do
+        full = Path.join([dir, "packages/kit", path])
+        File.mkdir_p!(Path.dirname(full))
+        File.write!(full, contents)
+      end
+
+      File.mkdir_p!(Path.join(dir, "node_modules"))
+      File.ln_s!("../packages/kit", Path.join(dir, "node_modules/kit"))
+    end
+
+    test "counts as the project's own", %{tmp_dir: dir} do
+      link_kit(dir, %{
+        "package.json" => ~s({"name":"kit","exports":{"./theme.css":"./theme.css"}}),
+        "theme.css" => @kit_css
+      })
+
+      read = theme(dir, ~s(@import "kit/theme.css";))
+
+      assert ProjectClassifier.group_of(read, "rounded-card") == "rounded"
+      assert ProjectClassifier.group_of(read, "rounded-lg") == nil
+      assert MapSet.member?(read.tokens, "brand")
+    end
+
+    test "reads a stylesheet reached through the link and directly only once", %{tmp_dir: dir} do
+      link_kit(dir, %{
+        "package.json" => ~s({"name":"kit"}),
+        "theme.css" => "@theme { --radius-card: 1px; }"
+      })
+
+      read =
+        theme(
+          dir,
+          """
+          @import "kit/theme.css";
+          @import "./between.css";
+          @import "./packages/kit/theme.css";
+          """,
+          %{"between.css" => "@theme { --radius-card: 2px; }"}
+        )
+
+      assert read.values["radius-card"] == "2px"
+      assert read.files == Enum.uniq(read.files)
+    end
+
+    test "reaches its own files by name, from where it really lives", %{tmp_dir: dir} do
+      # Outside the project, so no node_modules above it links it back.
+      kit = Path.join(dir, "elsewhere/kit")
+      File.mkdir_p!(kit)
+      File.write!(Path.join(kit, "package.json"), ~s({"name":"kit"}))
+      File.write!(Path.join(kit, "theme.css"), ~s(@import "kit/more.css";\n@import "./near.css";))
+      File.write!(Path.join(kit, "more.css"), "@theme { --radius-more: 1px; }")
+      File.write!(Path.join(kit, "near.css"), "@theme { --radius-near: 1px; }")
+
+      app = Path.join(dir, "app")
+      File.mkdir_p!(Path.join(app, "node_modules"))
+      File.ln_s!(kit, Path.join(app, "node_modules/kit"))
+
+      read = theme(app, ~s(@import "kit/theme.css";))
+
+      assert ProjectClassifier.group_of(read, "rounded-more") == "rounded"
+      assert ProjectClassifier.group_of(read, "rounded-near") == "rounded"
+      assert read.missing_imports == []
+    end
+
+    test "a link to a store under node_modules stays a package", %{tmp_dir: dir} do
+      store = Path.join(dir, "node_modules/.pnpm/kit@1/node_modules/kit")
+      File.mkdir_p!(store)
+      File.write!(Path.join(store, "package.json"), ~s({"name":"kit","style":"kit.css"}))
+      File.write!(Path.join(store, "kit.css"), "@theme { --radius-kit: 1px; }")
+      File.ln_s!(".pnpm/kit@1/node_modules/kit", Path.join(dir, "node_modules/kit"))
+
+      read = theme(dir, ~s(@import "kit";))
+
+      assert read.missing_imports == []
+      assert ProjectClassifier.group_of(read, "rounded-kit") == nil
+    end
+
+    test "a relative link out of the project counts, one into a package does not", %{tmp_dir: dir} do
+      File.mkdir_p!(Path.join(dir, "shared"))
+      File.write!(Path.join(dir, "shared/own.css"), "@theme { --radius-own: 1px; }")
+      File.ln_s!("shared/own.css", Path.join(dir, "own.css"))
+
+      File.mkdir_p!(Path.join(dir, "node_modules/kit"))
+      File.write!(Path.join(dir, "node_modules/kit/kit.css"), "@theme { --radius-kit: 1px; }")
+      File.ln_s!("node_modules/kit/kit.css", Path.join(dir, "kit.css"))
+
+      read = theme(dir, ~s(@import "./own.css";\n@import "./kit.css";))
+
+      assert ProjectClassifier.group_of(read, "rounded-own") == "rounded"
+      assert ProjectClassifier.group_of(read, "rounded-kit") == nil
+    end
+
+    test "a link that loops is no stylesheet", %{tmp_dir: dir} do
+      File.ln_s!("b.css", Path.join(dir, "a.css"))
+      File.ln_s!("a.css", Path.join(dir, "b.css"))
+
+      read = theme(dir, ~s(@import "./a.css";\n@theme { --radius-card: 1px; }))
+
+      assert read.missing_imports == ["./a.css"]
+      assert ProjectClassifier.group_of(read, "rounded-card") == "rounded"
+    end
+  end
+
   describe "resets" do
     @reset """
     @import "tailwindcss";

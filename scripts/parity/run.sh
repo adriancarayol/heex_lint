@@ -23,7 +23,7 @@ commit="9231259"
 deps="cn@0.4.0 @eslint/core@0.17.0 eslint@9.39.5 @typescript-eslint/parser@8.72.1 typescript@5.9.3 tsx@4.23.15 tsdown@0.12.9 tailwindcss@4.3.3 @tailwindcss/node@4.3.3"
 configs="1 2 3"
 # Every theme but the default runs the shorter themed_cases.txt.
-themes="scales radius_reset full_reset scoped_values explicit_imports"
+themes="scales radius_reset full_reset scoped_values explicit_imports workspace_package"
 
 # The same bytes order on every machine, so known_gaps/ does not depend on it.
 export LC_ALL=C
@@ -43,6 +43,11 @@ if [ "$(cat node_modules/.parity-deps 2>/dev/null || true)" != "$deps" ]; then
   npm i -q -D $deps >/dev/null
   echo "$deps" > node_modules/.parity-deps
 fi
+
+# A workspace package, linked the way pnpm links one: the theme of that name
+# imports it by name, and both linters have to see past the link.
+mkdir -p node_modules
+ln -sfn ../workspace_kit node_modules/parity-workspace-kit
 
 # The built package carries the Tailwind worker no-unknown-classes needs.
 dist=shadcn-lint/packages/lint/dist

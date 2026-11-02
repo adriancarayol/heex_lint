@@ -4,10 +4,11 @@ defmodule HeexLint.Theme do
   `@theme`, the scales, and the classes its CSS defines.
 
   Ported from @shadcn/lint's `src/project/theme.ts` (MIT). Imports are
-  followed; files under `node_modules` contribute `@utility` names, class
-  selectors and `--animate-*` theme names but not tokens, since Tailwind's
-  own palette is not the project's vocabulary. Dark-mode blocks are skipped,
-  so values are the light theme's.
+  followed past symlinks; files under `node_modules` contribute `@utility`
+  names, class selectors and `--animate-*` theme names but not tokens, since
+  Tailwind's own palette is not the project's vocabulary. A workspace package
+  linked into `node_modules` really lives outside it, so it counts as the
+  project's own. Dark-mode blocks are skipped, so values are the light theme's.
 
   `load/1` also applies the scales the stylesheets declare to cn's grammar,
   once per read, and `signature` tells two reads of an edited file apart.
@@ -780,24 +781,28 @@ defmodule HeexLint.Theme do
 
   @doc """
   Resolves an `@import` the way Tailwind's bundler does: relative paths,
-  then packages under `node_modules` through their `style` export.
+  then a package naming itself, then packages under `node_modules` through
+  their `style` export. The answer is the file's real path, symlinks resolved.
   """
   @spec resolve_stylesheet(String.t(), String.t()) :: String.t() | nil
   def resolve_stylesheet(base, "tailwindcss"),
     do: resolve_stylesheet(base, "tailwindcss/index.css")
 
   def resolve_stylesheet(base, id) do
-    cond do
-      Regex.match?(~r/^(?:https?:|data:)/, id) ->
-        nil
+    target =
+      cond do
+        Regex.match?(~r/^(?:https?:|data:)/, id) ->
+          nil
 
-      String.starts_with?(id, ".") or Path.type(id) == :absolute ->
-        full = Path.expand(id, base)
-        stylesheet_at(Path.dirname(full), Path.basename(full))
+        String.starts_with?(id, ".") or Path.type(id) == :absolute ->
+          full = Path.expand(id, base)
+          stylesheet_at(Path.dirname(full), Path.basename(full))
 
-      true ->
-        resolve_package(base, id)
-    end
+        true ->
+          resolve_package(base, id)
+      end
+
+    target && real_path(target)
   end
 
   defp resolve_package(base, id) do
@@ -835,15 +840,21 @@ defmodule HeexLint.Theme do
   end
 
   defp package_directory(base, name) do
-    base
-    |> Path.expand()
-    |> Stream.iterate(&Path.dirname/1)
-    |> Enum.take(32)
-    |> Enum.uniq()
-    |> Enum.find_value(fn dir ->
-      candidate = Path.join([dir, "node_modules", name])
-      if File.regular?(Path.join(candidate, "package.json")), do: candidate
-    end)
+    ancestors = base |> Path.expand() |> Stream.iterate(&Path.dirname/1) |> Enum.take(32)
+    ancestors = Enum.uniq(ancestors)
+
+    self_package_directory(ancestors, name) ||
+      Enum.find_value(ancestors, fn dir ->
+        candidate = Path.join([dir, "node_modules", name])
+        if File.regular?(Path.join(candidate, "package.json")), do: candidate
+      end)
+  end
+
+  # A package importing itself by name: from its real path, a workspace
+  # package may have no node_modules above it that links it back.
+  defp self_package_directory(ancestors, name) do
+    dir = Enum.find(ancestors, &File.regular?(Path.join(&1, "package.json")))
+    if dir && read_package_json(dir)["name"] == name, do: dir
   end
 
   defp read_package_json(dir) do
@@ -904,4 +915,33 @@ defmodule HeexLint.Theme do
   end
 
   defp existing_file(path), do: if(File.regular?(path), do: path)
+
+  # Elixir has no realpath. The path exists, since `File.regular?/1` followed
+  # its links, so the budget only guards against a link changing mid-walk.
+  defp real_path(path) do
+    [root | segments] = Path.split(path)
+    follow(segments, root, 64) || path
+  end
+
+  defp follow([], real, _budget), do: real
+  defp follow(_segments, _real, 0), do: nil
+  defp follow(["." | rest], real, budget), do: follow(rest, real, budget)
+  defp follow([".." | rest], real, budget), do: follow(rest, Path.dirname(real), budget)
+
+  defp follow([segment | rest], real, budget) do
+    candidate = Path.join(real, segment)
+
+    case File.read_link(candidate) do
+      {:ok, link} ->
+        if Path.type(link) == :absolute do
+          [root | segments] = Path.split(link)
+          follow(segments ++ rest, root, budget - 1)
+        else
+          follow(Path.split(link) ++ rest, real, budget - 1)
+        end
+
+      {:error, _} ->
+        follow(rest, candidate, budget)
+    end
+  end
 end
