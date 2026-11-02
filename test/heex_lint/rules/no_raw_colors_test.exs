@@ -84,6 +84,37 @@ defmodule HeexLint.Rules.NoRawColorsTest do
     assert finding.message =~ ~s("text-surface" is not a declared theme color.)
   end
 
+  describe "divide-* falls back to --border-color-*, as in Tailwind" do
+    @border_token %{
+      "assets/css/app.css" => theme() <> "\n@theme { --border-color-edge: #e5e5e5; }\n"
+    }
+
+    test "a border color token is a divide color", %{tmp_dir: dir} do
+      assert colors(dir, ~s(<ul class="divide-y divide-edge" />), [], @border_token) == []
+      assert colors(dir, ~s(<ul class="hover:divide-edge/50" />), [], @border_token) == []
+    end
+
+    test "a mistyped divide class is offered the border color token", %{tmp_dir: dir} do
+      [finding] = colors(dir, ~s(<ul class="divide-edgee" />), [], @border_token)
+
+      assert finding.message =~ ~s(Did you mean "divide-edge"?)
+      assert [%{replacement: "divide-edge"}] = finding.suggestions
+    end
+
+    test "its own namespace still counts, and only divide falls back", %{tmp_dir: dir} do
+      css =
+        theme() <> "\n@theme { --divide-color-line: #e5e5e5; --border-color-edge: #e5e5e5; }\n"
+
+      extra = %{"assets/css/app.css" => css}
+
+      assert colors(dir, ~s(<ul class="divide-line divide-edge" />), [], extra) == []
+      assert [ring] = colors(dir, ~s(<div class="ring-edge" />), [], extra)
+      assert ring.message =~ ~s("ring-edge" is not a declared theme color)
+      assert [border] = colors(dir, ~s(<div class="border-line" />), [], extra)
+      assert border.message =~ ~s("border-line" is not a declared theme color)
+    end
+  end
+
   test "theme namespaces that share a color prefix are not colors", %{tmp_dir: dir} do
     css = theme() <> "\n@theme { --text-stat-label: 13px; --shadow-card-glow: 0 0 4px #000; }\n"
 

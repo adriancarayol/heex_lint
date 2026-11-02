@@ -18,6 +18,9 @@
   class lists, so their values reach no class rule, and a component passing
   `@class` only through `data-class` no longer counts as forwarding it. This
   removes findings and adds none.
+- `no_raw_colors` accepts `--border-color-*` tokens for `divide-*`, the way
+  Tailwind falls back from `--divide-color-*`, and offers them for a mistyped
+  `divide-*` class. This removes findings and adds none.
 
 ## 0.2.2
 

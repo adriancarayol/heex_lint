@@ -62,6 +62,10 @@ defmodule HeexLint.Rules.NoRawColors do
     "stroke" => "stroke"
   }
 
+  # Namespaces a utility reads after its own and before --color-*, as in
+  # Tailwind 4.3.3: divide-* reads --divide-color-*, then --border-color-*.
+  @fallback_namespaces %{"divide-color" => ["border-color"]}
+
   @messages %{
     palette_class:
       ~s|"{{className}}" uses the raw Tailwind palette. Use a theme token, or define one for this color.|,
@@ -316,20 +320,23 @@ defmodule HeexLint.Rules.NoRawColors do
     end
   end
 
-  # The tokens this utility can name: --color-* plus its own namespace.
+  # The tokens this utility can name: --color-* plus its own namespace and
+  # the ones it falls back to.
   defp tokens_for(theme, prefix) do
     declared = Theme.color_tokens(theme)
 
     own =
       case color_namespace(prefix) do
-        nil -> nil
-        namespace -> Map.get(theme.scoped, namespace)
+        nil ->
+          MapSet.new()
+
+        namespace ->
+          [namespace | Map.get(@fallback_namespaces, namespace, [])]
+          |> Enum.map(&Map.get(theme.scoped, &1, MapSet.new()))
+          |> Enum.reduce(&MapSet.union/2)
       end
 
-    cond do
-      own == nil or MapSet.size(own) == 0 -> declared
-      true -> MapSet.union(declared || MapSet.new(), own)
-    end
+    if MapSet.size(own) == 0, do: declared, else: MapSet.union(declared || MapSet.new(), own)
   end
 
   @doc false

@@ -18,9 +18,6 @@
 > aspect-card	CardTitle	no_restyle	"aspect-card" is not allowed on <CardTitle>: the grammar does not recognize it. Fix the spelling, or use a class Tailwind generates.
 > blur-huge	Button	no_restyle	"blur-huge" is not allowed on <Button>: the grammar does not recognize it. Fix the spelling, or use a class Tailwind generates.
 > blur-huge	CardTitle	no_restyle	"blur-huge" is not allowed on <CardTitle>: the grammar does not recognize it. Fix the spelling, or use a class Tailwind generates.
-> divide-line	Button	no_raw_colors	"divide-line" is not a declared theme color. Use one of: primary. To add a color, declare --color-<name> in THEME first.
-> divide-line	CardTitle	no_raw_colors	"divide-line" is not a declared theme color. Use one of: primary. To add a color, declare --color-<name> in THEME first.
-> divide-line	div	no_raw_colors	"divide-line" is not a declared theme color. Use one of: primary. To add a color, declare --color-<name> in THEME first.
 > ease-snap	Button	no_restyle	"ease-snap" is not allowed on <Button>: the grammar does not recognize it. Fix the spelling, or use a class Tailwind generates.
 > ease-snap	CardTitle	no_restyle	"ease-snap" is not allowed on <CardTitle>: the grammar does not recognize it. Fix the spelling, or use a class Tailwind generates.
 > heading-2xs	Button	no_restyle	"heading-2xs" is not allowed on <Button>: your CSS declares it, and the grammar cannot tell what it changes. Use a variant, or put it on a parent element.
