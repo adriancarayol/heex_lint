@@ -1,0 +1,15 @@
+/* A token through a variable that :root and a narrower selector both set. */
+@import "tailwindcss";
+
+@theme {
+  --color-primary: #171717;
+  --radius-card: var(--radius);
+}
+
+:root {
+  --radius: 8px;
+}
+
+.compact {
+  --radius: 4px;
+}

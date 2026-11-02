@@ -1,5 +1,9 @@
 // Lints a generated page with @shadcn/lint's own rules and prints one
-// normalized line per finding: case index, element kind, rule, message.
+// normalized line per finding: class, element kind, rule, message.
+//
+// CONFIG picks the rule options, THEME the CSS file used as the project's
+// theme (the fixture's current one if unset), CASES the class list
+// (cases.txt if unset).
 import * as fs from "node:fs"
 import * as path from "node:path"
 import { Linter } from "eslint"
@@ -8,7 +12,13 @@ import parser from "@typescript-eslint/parser"
 import { plugin } from "./shadcn-lint/packages/lint/dist/index.js"
 
 const fixture = path.resolve(__dirname, "fixture")
-const cases = fs.readFileSync(path.join(__dirname, "cases.txt"), "utf8").split("\n").filter(Boolean)
+const cases = fs
+  .readFileSync(process.env.CASES ?? path.join(__dirname, "cases.txt"), "utf8")
+  .split("\n")
+  .filter(Boolean)
+const themeFile = path.join(fixture, "app/globals.css")
+fs.mkdirSync(path.dirname(themeFile), { recursive: true })
+if (process.env.THEME) fs.copyFileSync(process.env.THEME, themeFile)
 const kinds = ["div", "Button", "CardTitle"]
 const header = [
   `import { Button } from "@/components/ui/button"`,
@@ -18,10 +28,10 @@ const header = [
   `    <>`,
 ]
 const lines = [...header]
-const where: Record<number, [number, string]> = {}
-cases.forEach((token, i) => {
+const where: Record<number, [string, string]> = {}
+cases.forEach((token) => {
   kinds.forEach((kind) => {
-    where[lines.length + 1] = [i, kind]
+    where[lines.length + 1] = [token, kind]
     lines.push(
       kind === "div"
         ? `      <div className="${token}" />`
@@ -97,9 +107,9 @@ for (const m of messages) {
   }
   const rule = (m.ruleId ?? "").replace("shadcn/", "").replace(/-/g, "_")
   const message = m.message
-    .replace(/components\/ui\/\w+\.tsx/g, "FILE")
-    .replace(/app\/globals\.css/g, "THEME")
+    .replace(/(?:fixture\/)?components\/ui\/\w+\.tsx/g, "FILE")
+    .replace(/(?:fixture\/)?app\/globals\.css/g, "THEME")
   out.push(`${at[0]}\t${at[1]}\t${rule}\t${message}`)
 }
-fs.writeFileSync(path.join(__dirname, "ref_out.tsv"), out.sort().join("\n") + "\n")
+fs.writeFileSync(path.join(__dirname, "ref_out.tsv"), out.map((line) => line + "\n").join(""))
 console.log(messages.length, "findings")

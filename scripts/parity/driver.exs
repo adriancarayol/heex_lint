@@ -1,16 +1,28 @@
 # Lints the cases with HeexLint and prints them the way driver.ts does.
 # Run from the repository root: MIX_ENV=test mix run scripts/parity/driver.exs
+#
+# CONFIG picks the rule options, THEME the CSS file used as the project's
+# theme (HeexLint.TestProject's if unset), CASES the class list (cases.txt
+# if unset).
 
 here = Path.expand(".", __DIR__)
 dir = Path.join(System.tmp_dir!(), "heex_lint_parity_#{System.unique_integer([:positive])}")
 File.mkdir_p!(dir)
 
-cases = here |> Path.join("cases.txt") |> File.read!() |> String.split("\n", trim: true)
+cases =
+  (System.get_env("CASES") || Path.join(here, "cases.txt"))
+  |> File.read!()
+  |> String.split("\n", trim: true)
+
+theme =
+  case System.get_env("THEME") do
+    nil -> HeexLint.TestProject.theme()
+    path -> File.read!(path)
+  end
 
 {lines, where} =
   cases
-  |> Enum.with_index()
-  |> Enum.reduce({[], %{}}, fn {token, i}, {lines, where} ->
+  |> Enum.reduce({[], %{}}, fn token, {lines, where} ->
     Enum.reduce(["div", "Button", "CardTitle"], {lines, where}, fn kind, {lines, where} ->
       line =
         case kind do
@@ -19,11 +31,14 @@ cases = here |> Path.join("cases.txt") |> File.read!() |> String.split("\n", tri
           "CardTitle" -> ~s(<.card_title class="#{token}">x</.card_title>)
         end
 
-      {lines ++ [line], Map.put(where, length(lines), {i, kind})}
+      {lines ++ [line], Map.put(where, length(lines), {token, kind})}
     end)
   end)
 
-files = %{"lib/app_web/live/page_live.ex" => HeexLint.TestProject.live(Enum.join(lines, "\n"))}
+files = %{
+  "assets/css/app.css" => theme,
+  "lib/app_web/live/page_live.ex" => HeexLint.TestProject.live(Enum.join(lines, "\n"))
+}
 
 # The same Tailwind the React fixture resolves, so both linters can ask it.
 File.ln_s!(Path.join(here, "node_modules"), Path.join(dir, "node_modules"))
@@ -75,7 +90,7 @@ out =
   diagnostics
   |> Enum.filter(&String.ends_with?(&1.file, "page_live.ex"))
   |> Enum.map(fn d ->
-    {i, kind} = Map.get(where, d.line - 6, {"?", "?"})
+    {token, kind} = Map.get(where, d.line - 6, {"?", "?"})
 
     message =
       d.message
@@ -86,10 +101,10 @@ out =
       |> String.replace("lib/app_web/components/core_components.ex", "FILE")
       |> String.replace("assets/css/app.css", "THEME")
 
-    "#{i}\t#{kind}\t#{d.rule}\t#{message}"
+    "#{token}\t#{kind}\t#{d.rule}\t#{message}"
   end)
   |> Enum.sort()
 
-File.write!(Path.join(here, "ours_out.tsv"), Enum.join(out, "\n") <> "\n")
+File.write!(Path.join(here, "ours_out.tsv"), Enum.map_join(out, &(&1 <> "\n")))
 IO.puts("#{length(out)} findings")
 File.rm_rf!(dir)

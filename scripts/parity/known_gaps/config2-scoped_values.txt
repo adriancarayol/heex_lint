@@ -1,0 +1,8 @@
+< hover:rounded-card	Button	no_restyle	"hover:rounded-card" is not allowed on <Button>: <Button> owns its shape. Use a variant: default, destructive, outline. Add a new variant in FILE only if the design explicitly calls for a treatment none of these provides.
+< hover:rounded-card	CardTitle	no_restyle	"hover:rounded-card" is not allowed on <CardTitle>: <CardTitle> owns its shape. Add a variant in FILE only if the design explicitly calls for this treatment.
+< rounded-card	Button	no_restyle	"rounded-card" is not allowed on <Button>: <Button> owns its shape. Use a variant: default, destructive, outline. Add a new variant in FILE only if the design explicitly calls for a treatment none of these provides.
+< rounded-card	CardTitle	no_restyle	"rounded-card" is not allowed on <CardTitle>: <CardTitle> owns its shape. Add a variant in FILE only if the design explicitly calls for this treatment.
+> hover:rounded-card	Button	no_restyle	"hover:rounded-card" is not allowed on <Button>: the grammar does not recognize it. Fix the spelling, or use a class Tailwind generates.
+> hover:rounded-card	CardTitle	no_restyle	"hover:rounded-card" is not allowed on <CardTitle>: the grammar does not recognize it. Fix the spelling, or use a class Tailwind generates.
+> rounded-card	Button	no_restyle	"rounded-card" is not allowed on <Button>: the grammar does not recognize it. Fix the spelling, or use a class Tailwind generates.
+> rounded-card	CardTitle	no_restyle	"rounded-card" is not allowed on <CardTitle>: the grammar does not recognize it. Fix the spelling, or use a class Tailwind generates.

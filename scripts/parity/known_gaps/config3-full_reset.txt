@@ -1,0 +1,12 @@
+< shadow-lg	Button	no_raw_colors	"shadow-lg" is not a declared theme color. Use one of: primary. To add a color, declare --color-<name> in THEME first.
+< shadow-lg	CardTitle	no_raw_colors	"shadow-lg" is not a declared theme color. Use one of: primary. To add a color, declare --color-<name> in THEME first.
+< shadow-lg	div	no_raw_colors	"shadow-lg" is not a declared theme color. Use one of: primary. To add a color, declare --color-<name> in THEME first.
+< text-lg	Button	no_raw_colors	"text-lg" is not a declared theme color. Use one of: primary. To add a color, declare --color-<name> in THEME first.
+< text-lg	CardTitle	no_raw_colors	"text-lg" is not a declared theme color. Use one of: primary. To add a color, declare --color-<name> in THEME first.
+< text-lg	div	no_raw_colors	"text-lg" is not a declared theme color. Use one of: primary. To add a color, declare --color-<name> in THEME first.
+> shadow-lg	Button	no_unknown_classes	"shadow-lg" is not a class this project's Tailwind knows, so no CSS is generated for it. Fix the spelling, or declare it with @utility in THEME.
+> shadow-lg	CardTitle	no_unknown_classes	"shadow-lg" is not a class this project's Tailwind knows, so no CSS is generated for it. Fix the spelling, or declare it with @utility in THEME.
+> shadow-lg	div	no_unknown_classes	"shadow-lg" is not a class this project's Tailwind knows, so no CSS is generated for it. Fix the spelling, or declare it with @utility in THEME.
+> text-lg	Button	no_unknown_classes	"text-lg" is not a class this project's Tailwind knows, so no CSS is generated for it. Fix the spelling, or declare it with @utility in THEME.
+> text-lg	CardTitle	no_unknown_classes	"text-lg" is not a class this project's Tailwind knows, so no CSS is generated for it. Fix the spelling, or declare it with @utility in THEME.
+> text-lg	div	no_unknown_classes	"text-lg" is not a class this project's Tailwind knows, so no CSS is generated for it. Fix the spelling, or declare it with @utility in THEME.
