@@ -166,6 +166,22 @@ defmodule HeexLint.Grammar.Colors do
   @spec named_color?(String.t()) :: boolean()
   def named_color?(value), do: Map.has_key?(@named, value |> String.trim() |> String.downcase())
 
+  # A color function whose channels are one theme variable, with an optional
+  # literal or variable alpha: oklch(var(--primary-oklch) / 0.2). Literal
+  # channels and a var() fallback still hardcode a color.
+  @variable_channels ~r/(?<![\w-])(?:rgba?|hsla?|hwb|oklch|oklab|lab|lch|color)\(\s*var\(\s*--[\w-]+\s*\)\s*(?:\/\s*(?:[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?%?|var\(\s*--[\w-]+\s*\))\s*)?\)/i
+
+  @doc """
+  `value` with each color function over one theme variable blanked out.
+
+      iex> HeexLint.Grammar.Colors.without_variable_channel_colors("oklch(var(--x) / 0.2)")
+      " "
+      iex> HeexLint.Grammar.Colors.without_variable_channel_colors("oklch(var(--x, 0.5 0.1 200))")
+      "oklch(var(--x, 0.5 0.1 200))"
+  """
+  @spec without_variable_channel_colors(String.t()) :: String.t()
+  def without_variable_channel_colors(value), do: Regex.replace(@variable_channels, value, " ")
+
   @doc """
   Parses a CSS color into OKLab, or `nil` for anything that is not a literal
   color (variables, `color-mix()`, keywords such as `currentColor`).

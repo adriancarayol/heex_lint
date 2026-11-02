@@ -3,6 +3,8 @@ defmodule HeexLint.Rules.NoRawColorsTest do
 
   import HeexLint.TestProject
 
+  alias HeexLint.Rules.NoRawColors
+
   @moduletag :tmp_dir
 
   defp colors(dir, template, options \\ [], extra \\ %{}) do
@@ -264,5 +266,37 @@ defmodule HeexLint.Rules.NoRawColorsTest do
     files = %{"lib/app_web/tones.ex" => module}
     assert lint(dir, files, rules: [no_raw_colors: :error]) == []
     assert [_, _] = lint(dir, files, rules: [no_raw_colors: {:error, scan_all_strings: true}])
+  end
+
+  test "a color function over one theme variable is not a raw color" do
+    for value <- [
+          "oklch(var(--primary-oklch))",
+          "oklch(var(--x) / 0.2)",
+          "oklch(var(--x) / var(--alpha))",
+          "  hsl( var(--x) / 50% )  "
+        ] do
+      refute NoRawColors.raw_color_value?(value), value
+    end
+
+    for value <- [
+          "oklch(0.62 0.19 260)",
+          "oklch(var(--x, 0.62 0.19 260))",
+          "oklch(var(--x) var(--y))",
+          "oklch(var(--x) / red)",
+          "color-mix(var(--x))"
+        ] do
+      assert NoRawColors.raw_color_value?(value), value
+    end
+  end
+
+  test "SVG attributes over one theme variable pass, literals are reported", %{tmp_dir: dir} do
+    template = """
+    <svg><path fill="oklch(var(--primary-oklch))" stroke="oklch(var(--border-oklch) / 0.2)" /></svg>
+    """
+
+    assert colors(dir, template) == []
+
+    [finding] = colors(dir, ~s|<svg><path fill="oklch(var(--x, 0.5 0.1 200))" /></svg>|)
+    assert finding.message =~ ~s|fill="oklch(var(--x, 0.5 0.1 200))" hardcodes a color|
   end
 end

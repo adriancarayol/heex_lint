@@ -60,6 +60,26 @@ defmodule HeexLint.Rules.NoInlineStylesTest do
     assert finding.message =~ "Custom property --tone hardcodes a color."
   end
 
+  test "custom properties over one theme variable pass, also through holes", %{tmp_dir: dir} do
+    template = """
+    <div style="--tone: oklch(var(--ct-oklch)); --edge: oklch(var(--x) / 0.2)" />
+    <div style={"--tone: \#{"oklch(var(--ct-oklch) / 0.2)"}"} />
+    """
+
+    assert styles(dir, template) == []
+
+    # A fallback hardcodes the color, written directly or through a hole.
+    [direct] = styles(dir, ~s|<div style="--edge: oklch(var(--x, 0.5 0.1 200))" />|)
+    assert direct.message =~ "Custom property --edge hardcodes a color"
+
+    [hole] = styles(dir, ~S|<div style={"--edge: #{"oklch(var(--x, 0.5 0.1 200))"}"} />|)
+    assert hole.message =~ "Custom property --edge hardcodes a color"
+
+    # A hole is not a variable: nothing says what it holds.
+    [channel] = styles(dir, ~S|<div style={"--edge: oklch(#{@channels} / 0.2)"} />|)
+    assert channel.message =~ "Custom property --edge hardcodes a color"
+  end
+
   test "style values that cannot be read are reported", %{tmp_dir: dir} do
     [finding] = styles(dir, ~s(<div style={@style} />))
 

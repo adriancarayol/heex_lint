@@ -403,6 +403,7 @@ defmodule HeexLint.Rules.NoRawColors do
 
     cond do
       MapSet.member?(@attribute_allowed, trimmed) -> false
+      trimmed |> Colors.without_variable_channel_colors() |> String.trim() == "" -> false
       Regex.match?(@color_function, trimmed) -> true
       true -> Colors.named_color?(trimmed)
     end

@@ -21,6 +21,11 @@
 - `no_raw_colors` accepts `--border-color-*` tokens for `divide-*`, the way
   Tailwind falls back from `--divide-color-*`, and offers them for a mistyped
   `divide-*` class. This removes findings and adds none.
+- A color function whose channels are one theme variable, such as
+  `oklch(var(--primary-oklch) / 0.2)`, is no longer a raw color in
+  `no_raw_colors` SVG attributes and `no_inline_styles` custom properties.
+  Literal channels and a `var()` fallback are still reported. This removes
+  findings and adds none.
 
 ## 0.2.2
 

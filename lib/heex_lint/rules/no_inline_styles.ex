@@ -189,9 +189,10 @@ defmodule HeexLint.Rules.NoInlineStyles do
 
   @doc false
   # The value, or any leaf of it outside var(), read as a color. URL
-  # payloads, quoted strings and comments are not color values.
+  # payloads, quoted strings and comments are not color values, and a color
+  # function over one theme variable is a theme color.
   def raw_color?(value) do
-    text = color_value_text(value)
+    text = value |> color_value_text() |> Colors.without_variable_channel_colors()
 
     Regex.match?(@color_function, text) or Colors.parse(text) != nil or
       text
