@@ -30,8 +30,9 @@ defmodule HeexLint.Sites do
 
   @type t :: %__MODULE__{}
 
-  # class, className, input_class, classes, class:list...
-  @class_attribute ~r/^(class:list|[^:]*class(name)?s?)$/i
+  # class, className, input_class, classes, class:list... but a data-* or
+  # aria-* attribute is never a class list: `data-class` is a selector hook.
+  @class_attribute ~r/^(class:list|(?!data-|aria-)[^:]*class(name)?s?)$/i
 
   @doc "Whether an attribute name carries classes."
   @spec class_attribute?(String.t()) :: boolean()

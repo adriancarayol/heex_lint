@@ -14,6 +14,10 @@
   of the first by name. `--fix` writes that step.
 - Neither change adds findings: they change which step or token is suggested
   or fixed to.
+- `data-*` and `aria-*` attributes such as `data-class` are no longer read as
+  class lists, so their values reach no class rule, and a component passing
+  `@class` only through `data-class` no longer counts as forwarding it. This
+  removes findings and adds none.
 
 ## 0.2.2
 
