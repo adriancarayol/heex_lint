@@ -55,8 +55,8 @@ tokens wins, then the one nearest the root. In an umbrella, each app (each
 directory with a `mix.exs`) finds its own, so files are checked against their
 app's tokens, and `no_unknown_classes` asks that app's Tailwind. Set `theme`
 to use one stylesheet everywhere. Its `@import`s are followed;
-files under `node_modules` contribute `@utility` names and class selectors,
-not tokens.
+files under `node_modules` contribute `@utility` names, class selectors and
+`--animate-*` names from `@theme`, not tokens.
 
 Color tokens are the `--color-*` declarations in `@theme`, with resets
 (`--color-*: initial`) applied in cascade order:
@@ -71,6 +71,19 @@ Color tokens are the `--color-*` declarations in `@theme`, with resets
 - `bg-brand` is allowed: it names a declared token.
 - `bg-zinc-100` is reported: it uses a raw palette color.
 - `bg-highlight` is reported: it names an undeclared token.
+
+A class your CSS declares with `@utility` is classified by what its body sets,
+the way an arbitrary property is: `@utility heading-2xs { font-size: 0.75rem }`
+is typography, and `@utility max-w-chat { max-width: 48rem }` is layout. A body
+that sets more than one thing takes the first appearance it carries, in the
+order color, typography, spacing, shape, effects, motion, with layout last. A
+class declared with a plain selector has no body to read and stays
+`unclassified`.
+
+The same holds for a package your theme imports. With `@import
+"tw-animate-css"`, `animate-in` comes from the package's `@theme` and `fade-in`
+or `slide-in-from-top-1` from its `@utility` rules, which set the custom
+properties its enter and exit keyframes read, so all of them are `motion`.
 
 A utility's own namespace counts too: `--background-color-surface` declares
 `bg-surface` and nothing else. Theme namespaces that share a prefix with a

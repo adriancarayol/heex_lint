@@ -205,9 +205,12 @@ Under `no_restyle` with `allow: ["layout"]`:
 Margin, transforms and text alignment are layout. Padding and gap are
 spacing. Markers such as `group`, `group/name` and `peer` pass with layout
 allowed. `unclassified` is a reported category, not an allowance: allow a
-custom class by name, such as `allow: ["layout", "tap-target"]`. A class your
-CSS declares with `@utility`, or as a plain selector, is still unclassified —
-the rule cannot read what it changes — and is reported in words that do not
-call it a misspelling.
+custom class by name, such as `allow: ["layout", "legacy-card"]`. A class your
+CSS declares with `@utility` is classified by the properties its body sets, and
+so is one from a package your theme imports: `@utility tap-target { min-height:
+44px }` is layout, and tw-animate-css's `animate-in` and `fade-in` are motion.
+One your CSS declares some other way, such as a plain selector, is still
+unclassified — the rule cannot read what it changes — and is reported in words
+that do not call it a misspelling.
 
 The complete mapping is `HeexLint.Grammar.Categories`.

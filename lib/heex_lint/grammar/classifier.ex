@@ -17,17 +17,13 @@ defmodule HeexLint.Grammar.Classifier do
       nil
   """
 
-  alias HeexLint.Grammar.{Classes, Validators}
+  alias HeexLint.Grammar.{Categories, Classes, Validators}
 
   @config_path Path.expand("../../../priv/cn_config.json", __DIR__)
   @external_resource @config_path
 
   # The cn version this grammar comes from.
   @cn_version "0.3.2"
-
-  # tailwind-merge's prefix for arbitrary properties; two dots cannot
-  # collide with a plugin group.
-  @arbitrary_property_prefix "arbitrary.."
 
   # Tailwind still generates these utilities under their Tailwind 3 names,
   # so they read as the utilities they are.
@@ -189,7 +185,7 @@ defmodule HeexLint.Grammar.Classifier do
     content = String.slice(base, 1..-2//1)
 
     case :binary.match(content, ":") do
-      {colon, _} when colon > 0 -> @arbitrary_property_prefix <> binary_part(content, 0, colon)
+      {colon, _} when colon > 0 -> Categories.property_group(binary_part(content, 0, colon))
       _ -> nil
     end
   end

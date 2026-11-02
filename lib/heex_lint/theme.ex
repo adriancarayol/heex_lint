@@ -4,10 +4,10 @@ defmodule HeexLint.Theme do
   `@theme`, the scales, and the classes its CSS defines.
 
   Ported from @shadcn/lint's `src/project/theme.ts` (MIT). Imports are
-  followed; files under `node_modules` contribute `@utility` names and class
-  selectors but not tokens, since Tailwind's own palette is not the
-  project's vocabulary. Dark-mode blocks are skipped, so values are the
-  light theme's.
+  followed; files under `node_modules` contribute `@utility` names, class
+  selectors and `--animate-*` theme names but not tokens, since Tailwind's
+  own palette is not the project's vocabulary. Dark-mode blocks are skipped,
+  so values are the light theme's.
   """
 
   alias HeexLint.Grammar.{Classes, Colors, Lengths, TailwindTheme}
@@ -17,6 +17,7 @@ defmodule HeexLint.Theme do
             tokens: MapSet.new(),
             scoped: %{},
             utilities: MapSet.new(),
+            utility_properties: [],
             classes: MapSet.new(),
             values: %{},
             scoped_names: MapSet.new(),
@@ -34,12 +35,19 @@ defmodule HeexLint.Theme do
   @typedoc "Steps in the order they were declared, which breaks ties between equal values."
   @type scale :: [{String.t(), float()}]
 
+  @typedoc """
+  Each `@utility`, with the CSS properties its body sets, in the order the
+  utilities were read: the first prefix that matches a class answers for it.
+  """
+  @type utility_properties :: [{String.t(), [String.t()]}]
+
   @type t :: %__MODULE__{
           file: String.t() | nil,
           tailwind: boolean(),
           tokens: MapSet.t(String.t()),
           scoped: %{String.t() => MapSet.t(String.t())},
           utilities: MapSet.t(String.t()),
+          utility_properties: utility_properties(),
           classes: MapSet.t(String.t()),
           values: %{String.t() => String.t()},
           scoped_names: MapSet.t(String.t()),
@@ -188,12 +196,31 @@ defmodule HeexLint.Theme do
   prefix (`@utility tab-*`).
   """
   @spec declares_utility?(t(), String.t()) :: boolean()
-  def declares_utility?(%__MODULE__{utilities: utilities}, token) do
+  def declares_utility?(%__MODULE__{} = theme, token),
+    do: utility_properties_of(theme, token) != nil
+
+  @doc """
+  The properties set by the `@utility` that generates `token`, by name and
+  then by prefix, or `nil` when no `@utility` declares it. An empty list is
+  a body that sets nothing a category can be read from.
+  """
+  @spec utility_properties_of(t(), String.t()) :: [String.t()] | nil
+  def utility_properties_of(%__MODULE__{utility_properties: utilities}, token) do
     base = token |> Classes.normalize() |> String.replace(Classes.opacity_modifier(), "")
 
-    base != "" and
-      (MapSet.member?(utilities, base) or
-         Enum.any?(utility_prefixes(utilities), &String.starts_with?(base, &1)))
+    if base != "" do
+      case List.keyfind(utilities, base, 0) do
+        {_name, properties} ->
+          properties
+
+        nil ->
+          Enum.find_value(utilities, fn {name, properties} ->
+            if String.ends_with?(name, "*") and
+                 String.starts_with?(base, String.slice(name, 0..-2//1)),
+               do: properties
+          end)
+      end
+    end
   end
 
   @doc """
@@ -245,9 +272,12 @@ defmodule HeexLint.Theme do
   end
 
   defp read_css(css, file, seen, acc, from_package) do
+    utilities = parse_utilities(css)
+
     acc = %{
       acc
-      | utilities: MapSet.union(acc.utilities, parse_utilities(css)),
+      | utilities: MapSet.union(acc.utilities, MapSet.new(utilities, &elem(&1, 0))),
+        utility_properties: merge_utilities(acc.utility_properties, utilities),
         classes: MapSet.union(acc.classes, parse_class_selectors(css))
     }
 
@@ -274,7 +304,7 @@ defmodule HeexLint.Theme do
     acc = %{acc | variables: MapSet.union(acc.variables, all_variable_names(css))}
 
     if from_package do
-      acc
+      %{acc | theme_names: MapSet.union(acc.theme_names, package_animations(css))}
     else
       {values, scoped_names, theme_names, declarations} = parse_declarations(css)
 
@@ -292,6 +322,26 @@ defmodule HeexLint.Theme do
           declarations: acc.declarations ++ declarations
       }
     end
+  end
+
+  # A package's own @theme animations are generated all the same:
+  # tw-animate-css declares --animate-in there.
+  defp package_animations(css) do
+    if String.contains?(css, "--animate-") do
+      {_values, _scoped_names, theme_names, _declarations} = parse_declarations(css)
+      MapSet.filter(theme_names, &String.starts_with?(&1, "animate-"))
+    else
+      MapSet.new()
+    end
+  end
+
+  # A utility declared again takes the new body and keeps its place.
+  defp merge_utilities(utilities, new) do
+    Enum.reduce(new, utilities, fn {name, _properties} = utility, utilities ->
+      if List.keymember?(utilities, name, 0),
+        do: List.keyreplace(utilities, name, 0, utility),
+        else: utilities ++ [utility]
+    end)
   end
 
   defp finalize(%__MODULE__{} = theme) do
@@ -360,11 +410,46 @@ defmodule HeexLint.Theme do
   end
 
   @doc false
+  # Each @utility in source order, with the properties its body sets.
   def parse_utilities(css) do
-    ~r/@utility\s+([\w-]+\*?)\s*\{/
-    |> Regex.scan(css, capture: :all_but_first)
-    |> List.flatten()
-    |> MapSet.new()
+    stripped = strip_comments(css)
+
+    utilities =
+      ~r/@utility\s+([\w-]+\*?)\s*\{/
+      |> Regex.scan(stripped, return: :index)
+      |> Enum.map(fn [{start, length}, {name_start, name_length}] ->
+        {binary_part(stripped, name_start, name_length),
+         declared_properties(stripped, start + length)}
+      end)
+
+    merge_utilities([], utilities)
+  end
+
+  # The properties an @utility body sets, from just inside its brace to the
+  # matching close, nesting included: a declaration follows a brace or a
+  # semicolon, which neither a selector like &:hover nor an at-rule prelude
+  # does. Custom properties stay in: a body that sets --tw-shadow-color is
+  # as much a color as one that sets box-shadow.
+  defp declared_properties(css, start) do
+    rest = binary_part(css, start, byte_size(css) - start)
+
+    ~r/(?:^|[;{}])\s*(-{0,2}[a-zA-Z][\w-]*)\s*:/
+    |> Regex.scan(utility_body(rest, 1, 0), capture: :all_but_first)
+    |> Enum.map(fn [name] -> String.downcase(name) end)
+    |> Enum.uniq()
+  end
+
+  # An unclosed body runs to the end of the file.
+  defp utility_body(css, depth, length) when depth == 0 or length == byte_size(css) do
+    binary_part(css, 0, if(depth == 0, do: length - 1, else: length))
+  end
+
+  defp utility_body(css, depth, length) do
+    case :binary.at(css, length) do
+      ?{ -> utility_body(css, depth + 1, length + 1)
+      ?} -> utility_body(css, depth - 1, length + 1)
+      _ -> utility_body(css, depth, length + 1)
+    end
   end
 
   @doc false

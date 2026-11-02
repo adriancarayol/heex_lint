@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+- `no_restyle` classifies a class your CSS declares with `@utility` by the
+  properties its body sets, nested rules and custom properties included:
+  `@utility tap-target { min-height: 44px }` is layout and passes
+  `allow: ["layout"]`, and `@utility heading-2xs { font-size: 0.75rem }` is
+  reported as typography. A body setting several things takes the first
+  appearance, so `display` plus `color` is color. Exact names win over
+  prefixes such as `@utility tab-*`. A body-less `@utility` and a plain
+  selector stay unclassified. This removes findings for utilities your
+  contract's categories cover. **It adds findings** where the new category is
+  not allowed or is denied: `deny: ["typography"]` now reaches `heading-2xs`,
+  and `@utility text-md-regular { font-size: 1rem }`, which the grammar read as
+  a color, no longer passes `allow: ["color"]`.
+- With `@import "tw-animate-css"`, its `animate-in`, `fade-in`,
+  `slide-in-from-top-1` and the rest are motion, as are any `--tw-enter-*`,
+  `--tw-exit-*` and `--tw-animation-*` arbitrary properties. Packages now
+  contribute the `--animate-*` names of their `@theme`. **This adds findings**
+  where `deny` names motion, and removes them where `allow` does.
+- A commented-out `@utility` no longer counts as declared. **This adds
+  findings** for a class only such a comment named, the way Tailwind treats it.
+
 - `no_raw_colors` reports `white` and `black` where `deny` names them, as in
   `no_raw_colors: {:error, deny: ["*-white", "*-black"]}`, and suggests the
   nearest theme tokens. **This adds findings** for a config whose `deny`

@@ -3,7 +3,11 @@ defmodule HeexLint.Grammar.ProjectClassifier do
   The classifier the rules use: cn's grammar, then the project's theme
   wherever the grammar's answer was a color it could not have known was
   something else (a declared `--text-stat-label` makes `text-stat-label` a
-  font size), or no answer for an animation the project declares.
+  font size), or no answer for an animation the project declares. An
+  `@utility` answers from its body in both cases: the properties it sets are
+  categorized the way an arbitrary property is, so `@utility heading-2xs {
+  font-size: 0.75rem }` is typography for the same reason `[font-size:1rem]`
+  is.
   Ported from @shadcn/lint's `src/project/namespaces.ts` (MIT).
   """
 
@@ -46,9 +50,9 @@ defmodule HeexLint.Grammar.ProjectClassifier do
     group = Classifier.group_of(token)
 
     cond do
-      group == nil -> animation_group(theme, token)
+      group == nil -> animation_group(theme, token) || utility_group(theme, token)
       Categories.category_of(group) != "color" -> group
-      true -> theme_group(theme, token) || group
+      true -> theme_group(theme, token) || utility_group(theme, token) || group
     end
   end
 
@@ -84,6 +88,25 @@ defmodule HeexLint.Grammar.ProjectClassifier do
       Theme.declares_class?(theme, token) -> "animate"
       true -> nil
     end
+  end
+
+  # A body that changes more than one thing is read as the first appearance
+  # it carries, so a utility that paints and lays out is still paint. Layout
+  # ranks last: it is what a body with nothing else in it leaves. An empty
+  # body has no group.
+  defp utility_group(nil, _token), do: nil
+
+  defp utility_group(theme, token) do
+    theme
+    |> Theme.utility_properties_of(token)
+    |> List.wrap()
+    |> Enum.map(&Categories.property_group/1)
+    |> Enum.min_by(&utility_rank/1, fn -> nil end)
+  end
+
+  defp utility_rank(group) do
+    categories = Categories.categories()
+    Enum.find_index(categories, &(&1 == Categories.category_of(group))) || length(categories)
   end
 
   # The value a utility looks up, without the opacity or line-height modifier.
