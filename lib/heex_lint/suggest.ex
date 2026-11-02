@@ -93,8 +93,8 @@ defmodule HeexLint.Suggest do
     inner |> String.replace(~r/^color:/, "") |> String.replace("_", " ") |> Colors.parse()
   end
 
-  @doc "The scale steps nearest to `px`, closest first."
-  @spec nearest_steps(number(), %{String.t() => number()}, pos_integer()) ::
+  @doc "The scale steps nearest to `px`, closest first; of equal steps, the one declared first."
+  @spec nearest_steps(number(), [{String.t(), number()}], pos_integer()) ::
           [%{name: String.t(), px: number(), exact: boolean()}]
   def nearest_steps(px, scale, limit \\ 2) do
     scale

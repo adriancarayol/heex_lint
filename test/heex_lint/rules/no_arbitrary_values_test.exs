@@ -10,8 +10,8 @@ defmodule HeexLint.Rules.NoArbitraryValuesTest do
     lint(dir, files, rules: [no_arbitrary_values: {:error, options}])
   end
 
-  defp message(dir, class, options \\ []) do
-    [finding] = arbitrary(dir, ~s(<div class="#{class}" />), options)
+  defp message(dir, class, options \\ [], extra \\ %{}) do
+    [finding] = arbitrary(dir, ~s(<div class="#{class}" />), options, extra)
     finding.message
   end
 
@@ -122,5 +122,55 @@ defmodule HeexLint.Rules.NoArbitraryValuesTest do
     [text, radius] = arbitrary(dir, ~s(<div class="text-[14px] rounded-[10px]" />))
     assert [%{replacement: "text-sm", exact: false}] = text.suggestions
     assert [%{replacement: "rounded-lg", exact: true}] = radius.suggestions
+  end
+
+  # A density class declared after :root sets --radius only inside it, so
+  # the scale comes from :root: lg is 10px and xl 12px, and 8px is on
+  # neither. The :root value wins from an imported stylesheet too.
+  test "the scale reads --radius from :root, not a scoped selector", %{tmp_dir: dir} do
+    css = %{
+      "assets/css/base.css" => ":root { --radius: 0.5rem; }",
+      "assets/css/app.css" => """
+      @import "tailwindcss";
+      @import "./base.css";
+      .compact { --radius: 0.25rem; }
+      @theme inline {
+        --radius-lg: calc(var(--radius) + 2px);
+        --radius-xl: calc(var(--radius) + 4px);
+      }
+      """
+    }
+
+    [near] = arbitrary(dir, ~s(<div class="rounded-[8px]" />), [], css)
+    assert near.message =~ "Nearest on the scale"
+
+    [exact] = arbitrary(dir, ~s(<div class="rounded-[12px]" />), [], css)
+    assert exact.message =~ ~s(Use "rounded-xl" instead)
+    assert [%{replacement: "rounded-xl", exact: true}] = exact.suggestions
+  end
+
+  describe "steps of equal value" do
+    defp radius(dir, css, px) do
+      css = ~s(@import "tailwindcss";\n) <> css
+      message(dir, "rounded-[#{px}]", [], %{"assets/css/app.css" => css})
+    end
+
+    test "Tailwind's own step comes before one the theme adds", %{tmp_dir: dir} do
+      assert radius(dir, "@theme { --radius-card: 8px; }", "8px") =~ ~s(Use "rounded-lg" instead)
+    end
+
+    test "Tailwind's steps keep their order when the theme changes one", %{tmp_dir: dir} do
+      assert radius(dir, "@theme { --radius-lg: 4px; }", "4px") =~ ~s(Use "rounded-sm" instead)
+    end
+
+    test "the theme's steps keep the order it declares them in", %{tmp_dir: dir} do
+      css = "@theme { --radius-*: initial; --radius-zed: 4px; --radius-abc: 4px; }"
+      assert radius(dir, css, "4px") =~ ~s(Use "rounded-zed" instead)
+    end
+
+    test "a step removed and declared again goes last", %{tmp_dir: dir} do
+      css = "@theme { --radius-sm: initial; --radius-card: 4px; --radius-sm: 4px; }"
+      assert radius(dir, css, "4px") =~ ~s(Use "rounded-card" instead)
+    end
   end
 end

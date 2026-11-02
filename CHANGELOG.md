@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+- Theme variables resolve from `:root`, `html`, `:host` and `@theme` over
+  scoped selectors such as `.compact`, across imported files too. Before,
+  with `:root { --radius: 8px; }`, `.compact { --radius: 4px; }` and
+  `--radius-card: var(--radius)`, `no_arbitrary_values` called
+  `rounded-[4px]` an exact match for `rounded-card`, and `--fix` wrote that
+  class, which is 8px at `:root`. It now writes `rounded-sm`. Scoped values
+  still apply to variables nothing else sets.
+- When several scale steps have the same value, `no_arbitrary_values` names
+  the one declared first, Tailwind's own steps before the theme's, instead
+  of the first by name. `--fix` writes that step.
+- Neither change adds findings: they change which step or token is suggested
+  or fixed to.
+
 ## 0.2.2
 
 - Calls through `__MODULE__` aliases, such as `__MODULE__.Client.run()`,

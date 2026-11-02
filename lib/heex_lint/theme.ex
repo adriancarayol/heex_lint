@@ -19,6 +19,7 @@ defmodule HeexLint.Theme do
             utilities: MapSet.new(),
             classes: MapSet.new(),
             values: %{},
+            scoped_names: MapSet.new(),
             theme_names: MapSet.new(),
             declarations: [],
             variables: MapSet.new(),
@@ -30,6 +31,9 @@ defmodule HeexLint.Theme do
 
   @type declaration :: %{name: String.t(), value: String.t(), theme: boolean()}
 
+  @typedoc "Steps in the order they were declared, which breaks ties between equal values."
+  @type scale :: [{String.t(), float()}]
+
   @type t :: %__MODULE__{
           file: String.t() | nil,
           tailwind: boolean(),
@@ -38,13 +42,14 @@ defmodule HeexLint.Theme do
           utilities: MapSet.t(String.t()),
           classes: MapSet.t(String.t()),
           values: %{String.t() => String.t()},
+          scoped_names: MapSet.t(String.t()),
           theme_names: MapSet.t(String.t()),
           declarations: [declaration()],
           variables: MapSet.t(String.t()),
           files: [String.t()],
           missing_imports: [String.t()],
           colors: %{String.t() => Colors.lab()},
-          scales: %{radius: %{String.t() => float()}, text: %{String.t() => float()}},
+          scales: %{radius: scale(), text: scale()},
           spacing: float() | nil
         }
 
@@ -57,6 +62,9 @@ defmodule HeexLint.Theme do
   )
 
   @dark_prelude ~r/\.dark(?![\w-])|prefers-color-scheme\s*:\s*dark|data-(?:theme|mode)=["']?dark|@variant\s+dark\b/
+
+  # `:root, :host` is how Tailwind writes its own theme.
+  @root_selector ~r/^(?::root|html|:host)$/
 
   @skip_dirs MapSet.new(~w(
     node_modules dist build out coverage public .next .git .turbo .registry
@@ -217,7 +225,7 @@ defmodule HeexLint.Theme do
     do: prefix != "" and Enum.any?(classes, &String.starts_with?(&1, prefix))
 
   @doc "The radius or text scale in pixels, Tailwind's defaults with the theme's declarations over them."
-  @spec scale(t(), :radius | :text) :: %{String.t() => float()}
+  @spec scale(t(), :radius | :text) :: scale()
   def scale(%__MODULE__{scales: scales}, kind), do: Map.get(scales, kind) || default_scale(kind)
 
   ## Reading
@@ -268,11 +276,18 @@ defmodule HeexLint.Theme do
     if from_package do
       acc
     else
-      {values, theme_names, declarations} = parse_declarations(css)
+      {values, scoped_names, theme_names, declarations} = parse_declarations(css)
+
+      # Across files too, a :root value is not replaced by a scoped one.
+      {merged, merged_scoped} =
+        Enum.reduce(values, {acc.values, acc.scoped_names}, fn {name, value}, read ->
+          put_value(read, name, value, MapSet.member?(scoped_names, name))
+        end)
 
       %{
         acc
-        | values: Map.merge(acc.values, values),
+        | values: merged,
+          scoped_names: merged_scoped,
           theme_names: MapSet.union(acc.theme_names, theme_names),
           declarations: acc.declarations ++ declarations
       }
@@ -375,23 +390,27 @@ defmodule HeexLint.Theme do
   end
 
   @doc false
-  # Declarations in cascade order, dark-mode blocks skipped, later
-  # declarations winning in `values`.
+  # Declarations in cascade order, dark-mode blocks skipped. Later
+  # declarations win in `values`, as in CSS, but a value set under `:root` or
+  # `@theme` wins over one a scoped selector such as `.compact` sets: the
+  # scoped value applies only inside that selector. `scoped_names` lists the
+  # values only a scoped selector sets.
   def parse_declarations(css) do
     stripped = strip_comments(css)
 
-    {_stack, _start, values, names, declarations} =
+    {_stack, _start, {values, scoped_names}, names, declarations} =
       stripped
       |> :binary.bin_to_list()
       |> Enum.with_index()
-      |> Enum.reduce({[], 0, %{}, MapSet.new(), []}, fn
+      |> Enum.reduce({[], 0, {%{}, MapSet.new()}, MapSet.new(), []}, fn
         {?{, i}, {stack, start, values, names, decls} ->
           prelude = stripped |> binary_part(start, i - start) |> String.trim()
-          outer = List.first(stack, %{theme: false, dark: false})
+          outer = List.first(stack, %{theme: false, dark: false, scoped: false})
 
           scope = %{
             theme: outer.theme or Regex.match?(~r/^@theme\b/, prelude),
-            dark: outer.dark or Regex.match?(@dark_prelude, prelude)
+            dark: outer.dark or Regex.match?(@dark_prelude, prelude),
+            scoped: outer.scoped or scoped_prelude?(prelude)
           }
 
           {[scope | stack], i + 1, values, names, decls}
@@ -405,7 +424,7 @@ defmodule HeexLint.Theme do
               [_, name, value] when scope == nil or not scope.dark ->
                 theme = scope != nil and scope.theme
 
-                {Map.put(values, name, value),
+                {put_value(values, name, value, scope != nil and scope.scoped),
                  if(theme, do: MapSet.put(names, name), else: names),
                  [%{name: name, value: value, theme: theme} | decls]}
 
@@ -420,7 +439,24 @@ defmodule HeexLint.Theme do
           acc
       end)
 
-    {values, names, Enum.reverse(declarations)}
+    {values, scoped_names, names, Enum.reverse(declarations)}
+  end
+
+  # An at-rule's prelude is a condition, not a selector.
+  defp scoped_prelude?("@" <> _), do: false
+
+  defp scoped_prelude?(prelude) do
+    not (prelude
+         |> String.split(",")
+         |> Enum.all?(&Regex.match?(@root_selector, String.trim(&1))))
+  end
+
+  defp put_value({values, scoped_names} = read, name, value, scoped) do
+    cond do
+      not scoped -> {Map.put(values, name, value), MapSet.delete(scoped_names, name)}
+      Map.has_key?(values, name) and not MapSet.member?(scoped_names, name) -> read
+      true -> {Map.put(values, name, value), MapSet.put(scoped_names, name)}
+    end
   end
 
   # In cascade order: `--color-x: initial` drops x, `--color-*: initial` and
@@ -523,7 +559,9 @@ defmodule HeexLint.Theme do
   defp default_scale(kind) do
     defaults = if kind == :radius, do: TailwindTheme.radii(), else: TailwindTheme.font_sizes()
 
-    for {name, value} <- defaults, px = Lengths.px(value), px != nil, into: %{}, do: {name, px}
+    # Tailwind declares its defaults smallest first.
+    for({name, value} <- defaults, px = Lengths.px(value), px != nil, do: {name, px})
+    |> List.keysort(1)
   end
 
   @doc false
@@ -539,7 +577,7 @@ defmodule HeexLint.Theme do
         scale
 
       %{name: "*", value: value}, scale ->
-        if String.trim(value) == "initial", do: %{}, else: scale
+        if String.trim(value) == "initial", do: [], else: scale
 
       %{name: name, value: value}, scale ->
         if String.starts_with?(name, prefix) and not String.contains?(name, "--") do
@@ -547,8 +585,8 @@ defmodule HeexLint.Theme do
           reset = String.trim(value) == "initial"
 
           cond do
-            step == "*" -> if reset, do: %{}, else: scale
-            reset -> Map.delete(scale, step)
+            step == "*" -> if reset, do: [], else: scale
+            reset -> List.keydelete(scale, step, 0)
             true -> scale_step(scale, step, value, theme.values)
           end
         else
@@ -564,7 +602,11 @@ defmodule HeexLint.Theme do
         resolved -> Lengths.px(resolved)
       end
 
-    if px, do: Map.put(scale, step, px), else: Map.delete(scale, step)
+    cond do
+      px == nil -> List.keydelete(scale, step, 0)
+      List.keymember?(scale, step, 0) -> List.keyreplace(scale, step, 0, {step, px})
+      true -> scale ++ [{step, px}]
+    end
   end
 
   # Tailwind's 0.25rem unless the theme sets --spacing. Nil when the theme

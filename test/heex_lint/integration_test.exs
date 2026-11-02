@@ -122,6 +122,29 @@ defmodule HeexLint.IntegrationTest do
     assert contents =~ ~s|class="hover:px-(--gutter) border-(--x) text-(--y)"|
   end
 
+  test "--fix does not write a token whose value holds only under a scoped selector", %{
+    tmp_dir: dir
+  } do
+    css = """
+    @import "tailwindcss";
+    @theme { --radius-card: var(--radius); }
+    :root { --radius: 8px; }
+    .compact { --radius: 4px; }
+    """
+
+    files = %{
+      "assets/css/app.css" => css,
+      "lib/app_web/live/page_live.ex" => live(~s(<div class="rounded-[4px]" />))
+    }
+
+    result = run(dir, files, rules: [no_arbitrary_values: :error])
+    assert HeexLint.Fixer.apply(result.diagnostics) == 1
+
+    # rounded-card is 8px at :root; rounded-sm is the 4px that was written.
+    contents = File.read!(Path.join(dir, "lib/app_web/live/page_live.ex"))
+    assert contents =~ ~s(class="rounded-sm")
+  end
+
   test "unparsable templates are failures, not crashes", %{tmp_dir: dir} do
     files = %{"lib/app_web/live/page_live.ex" => live(~s(<div class="a></div>))}
     result = run(dir, files, rules: [no_raw_colors: :error])

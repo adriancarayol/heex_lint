@@ -10,9 +10,6 @@
 < leading-comfy	CardTitle	no_restyle	"leading-comfy" is not allowed on <CardTitle>: <CardTitle> owns its typography. Add a variant in FILE only if the design explicitly calls for this treatment.
 < paintbox	Button	no_restyle	"paintbox" is not allowed on <Button>: <Button> owns its color. Use a variant: default, destructive, outline. Add a new variant in FILE only if the design explicitly calls for a treatment none of these provides.
 < paintbox	CardTitle	no_restyle	"paintbox" is not allowed on <CardTitle>: <CardTitle> owns its color. Add a variant in FILE only if the design explicitly calls for this treatment.
-< rounded-[12px]	Button	no_arbitrary_values	"rounded-[12px]" hardcodes an off-token value. Use "rounded-xl" instead (same value, on the scale).
-< rounded-[12px]	CardTitle	no_arbitrary_values	"rounded-[12px]" hardcodes an off-token value. Use "rounded-xl" instead (same value, on the scale).
-< rounded-[12px]	div	no_arbitrary_values	"rounded-[12px]" hardcodes an off-token value. Use "rounded-xl" instead (same value, on the scale).
 < rounded-card	Button	no_restyle	"rounded-card" is not allowed on <Button>: <Button> owns its shape. Use a variant: default, destructive, outline. Add a new variant in FILE only if the design explicitly calls for a treatment none of these provides.
 < rounded-card	CardTitle	no_restyle	"rounded-card" is not allowed on <CardTitle>: <CardTitle> owns its shape. Add a variant in FILE only if the design explicitly calls for this treatment.
 < tracking-snug2	Button	no_restyle	"tracking-snug2" is not allowed on <Button>: <Button> owns its typography. Use a variant: default, destructive, outline. Add a new variant in FILE only if the design explicitly calls for a treatment none of these provides.
@@ -34,9 +31,6 @@
 > leading-comfy	CardTitle	no_restyle	"leading-comfy" is not allowed on <CardTitle>: the grammar does not recognize it. Fix the spelling, or use a class Tailwind generates.
 > paintbox	Button	no_restyle	"paintbox" is not allowed on <Button>: your CSS declares it, and the grammar cannot tell what it changes. Use a variant, or put it on a parent element.
 > paintbox	CardTitle	no_restyle	"paintbox" is not allowed on <CardTitle>: your CSS declares it, and the grammar cannot tell what it changes. Use a variant, or put it on a parent element.
-> rounded-[12px]	Button	no_arbitrary_values	"rounded-[12px]" hardcodes an off-token value. Use "rounded-card" instead (same value, on the scale).
-> rounded-[12px]	CardTitle	no_arbitrary_values	"rounded-[12px]" hardcodes an off-token value. Use "rounded-card" instead (same value, on the scale).
-> rounded-[12px]	div	no_arbitrary_values	"rounded-[12px]" hardcodes an off-token value. Use "rounded-card" instead (same value, on the scale).
 > rounded-card	Button	no_restyle	"rounded-card" is not allowed on <Button>: the grammar does not recognize it. Fix the spelling, or use a class Tailwind generates.
 > rounded-card	CardTitle	no_restyle	"rounded-card" is not allowed on <CardTitle>: the grammar does not recognize it. Fix the spelling, or use a class Tailwind generates.
 > stack-it	Button	no_restyle	"stack-it" is not allowed on <Button>: your CSS declares it, and the grammar cannot tell what it changes. Use a variant, or put it on a parent element.
