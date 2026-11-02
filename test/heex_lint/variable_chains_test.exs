@@ -415,6 +415,7 @@ defmodule HeexLint.VariableChainsTest do
 
     defp style(body), do: page(body, ~s(<div style={@s}></div>))
     defp styled(value), do: "assigns = assign(assigns, :s, #{value})"
+    defp hole(name), do: ~s("--tone: \#{#{name}}")
 
     test "fills each hole, even with what another hole read", %{tmp_dir: dir} do
       body = ~s(c = "#ff0000"\n) <> styled(~S("--tone: #{c}; --other: #{c}"))
@@ -438,12 +439,67 @@ defmodule HeexLint.VariableChainsTest do
       assert [_, _] = within_seconds(fn -> lint(dir, style(body), rules: @styles) end)
     end
 
-    test "stays linear in a hole past the limit", %{tmp_dir: dir} do
-      body =
-        chain("if(assigns.on, do: A, else: A)", 70, ~s("#ff0000")) <>
-          styled(~S("--tone: #{v70}"))
+    for links <- [63, 64, 70, 200, 5000] do
+      test "reads a raw color #{links} links from a hole", %{tmp_dir: dir} do
+        body = chain("A", unquote(links), ~s("#ff0000")) <> styled(hole("v#{unquote(links)}"))
 
-      assert [] == within_seconds(fn -> lint(dir, style(body), rules: @styles) end)
+        assert [%{message: message}] =
+                 within_seconds(fn -> lint(dir, style(body), rules: @styles) end)
+
+        assert message =~ "--tone hardcodes a color"
+      end
+    end
+
+    test "reads a raw color past the limit from a hole the template writes", %{tmp_dir: dir} do
+      files = page(chain("A", 70, ~s("#ff0000")), ~S(<div style={\"--tone: #{v70}\"}></div>))
+
+      assert [%{rule: :no_inline_styles, message: message}] = lint(dir, files, rules: @styles)
+      assert message =~ "--tone hardcodes a color"
+    end
+
+    test "stays linear in a hole past the limit", %{tmp_dir: dir} do
+      body = chain("if(assigns.on, do: A, else: A)", 70, ~s("#ff0000")) <> styled(hole("v70"))
+
+      assert [%{message: message}] =
+               within_seconds(fn -> lint(dir, style(body), rules: @styles) end)
+
+      assert message =~ "--tone hardcodes a color"
+    end
+
+    test "stays linear in a hole past the limit that ends in a cycle", %{tmp_dir: dir} do
+      first = ~s[if(assigns.on, do: v200, else: "#ff0000")]
+      body = chain("if(assigns.on, do: A, else: A)", 200, first) <> styled(hole("v200"))
+
+      assert [%{message: message}] =
+               within_seconds(fn -> lint(dir, style(body), rules: @styles) end)
+
+      assert message =~ "--tone hardcodes a color"
+    end
+
+    test "reads a lookup past the limit from a hole", %{tmp_dir: dir} do
+      read = chain("A", 70, ~s(%{a: "#ff0000"})) <> styled(hole("v70[:a]"))
+      assert [%{message: message}] = lint(dir, style(read), rules: @styles)
+      assert message =~ "--tone hardcodes a color"
+
+      table = ~s(t = %{a: "#ff0000"}\n) <> chain("A", 70, "t[:a]") <> styled(hole("v70"))
+      assert [%{message: message}] = lint(dir, style(table), rules: @styles)
+      assert message =~ "--tone hardcodes a color"
+    end
+
+    test "allows a hole past the limit that holds no raw color", %{tmp_dir: dir} do
+      for first <- [~s["var(--tone)"], "unknown()", "assigns.tone"] do
+        body = chain("A", 70, first) <> styled(hole("v70"))
+        assert [] == lint(dir, style(body), rules: @styles)
+      end
+    end
+
+    test "does not report a cycle in a hole as dynamic", %{tmp_dir: dir} do
+      body = ~s[a = if(assigns.on, do: b, else: "#ff0000")\nb = a\n] <> styled(hole("a"))
+
+      assert [%{message: message}] =
+               within_seconds(fn -> lint(dir, style(body), rules: @styles) end)
+
+      assert message =~ "--tone hardcodes a color"
     end
 
     test "read too far along a chain is dynamic", %{tmp_dir: dir} do
@@ -454,19 +510,27 @@ defmodule HeexLint.VariableChainsTest do
       assert finding.message =~ "cannot be checked"
     end
 
-    test "a hole cut on one route does not end the read on another", %{tmp_dir: dir} do
+    test "reads a hole in full from a style read near the limit", %{tmp_dir: dir} do
       us = for i <- 1..10, do: "u#{i} = u#{i - 1}\n"
       ws = for i <- 1..60, do: "w#{i} = w#{i - 1}\n"
-      template = ~S("--tone: #{u10}")
 
       body =
         "u0 = \"#ff0000\"\n" <>
           Enum.join(us) <>
-          "t = #{template}\nw0 = t\n" <>
-          Enum.join(ws) <> styled("if(assigns.on, do: w60, else: t)")
+          "w0 = #{hole("u10")}\n" <>
+          Enum.join(ws) <> styled("w60")
 
-      diagnostics = lint(dir, style(body), rules: @styles)
-      assert Enum.any?(diagnostics, &(&1.message =~ "hardcodes a color"))
+      assert [%{message: message}] = lint(dir, style(body), rules: @styles)
+      assert message =~ "--tone hardcodes a color"
+    end
+
+    test "a hole stopped on one route does not end the read on another", %{tmp_dir: dir} do
+      body =
+        ~s[x = if(assigns.on, do: t, else: "#ff0000")\nt = #{hole("x")}\n] <>
+          styled("if(assigns.on, do: x, else: t)")
+
+      assert [%{message: message}] = lint(dir, style(body), rules: @styles)
+      assert message =~ "--tone hardcodes a color"
     end
   end
 

@@ -22,7 +22,8 @@ defmodule HeexLint.Collector do
   reads it. Each binding is read once per site, so a class reached through both
   branches of `if on, do: a, else: a` is one class and a chain of such branches
   stays linear. A read that stopped on its route is remembered with that route,
-  since it could read more from another one.
+  since it could read more from another one. A hole in a style has no such limit:
+  what it can hold is only looked at for raw colors, however far away they are.
   """
 
   alias HeexLint.Code
@@ -417,10 +418,10 @@ defmodule HeexLint.Collector do
   # read on its own. In a style, holes stay holes in the CSS text.
   # In a style, a hole is not unreadable: the CSS text around it still
   # names its properties. What the hole can hold is kept, so a raw color
-  # laundered through a variable or lookup table is still seen. Every hole is
-  # filled on its own, as what it reads belongs to it even when another hole
-  # read it first: only how those reads ended goes back to the route, not what
-  # they visited.
+  # laundered through a variable or lookup table is still seen, at any length,
+  # as @shadcn/lint's `carriesRawColor` keeps no route. Every hole is filled on
+  # its own, as what it reads belongs to it even when another hole read it first:
+  # only how those reads ended goes back to the route, not what they visited.
   defp template(%{kind: :style} = state, items, exprs, _meta) do
     positions = for {:interp, position} <- items, do: position
 
@@ -428,7 +429,7 @@ defmodule HeexLint.Collector do
       positions
       |> Enum.zip(exprs)
       |> Enum.map_reduce(state, fn {position, expr}, acc ->
-        inner = visit(%{acc | strings: [], unresolved: [], kind: :class}, expr)
+        inner = visit(%{acc | strings: [], unresolved: [], kind: :hole}, expr)
 
         {{position, Enum.map(inner.strings, & &1.value)},
          %{acc | stops: inner.stops, cuts: inner.cuts, rereads: inner.rereads}}
@@ -632,7 +633,7 @@ defmodule HeexLint.Collector do
     again? = MapSet.size(ended) > 0
 
     cond do
-      state.depth >= @max_route -> cut(state, meta)
+      past_limit?(state, 0) -> cut(state, meta)
       MapSet.member?(ended, :whole) -> state
       MapSet.member?(ended, state.depth) -> %{state | cuts: state.cuts + 1}
       MapSet.member?(ended, state.seen) -> stop(state)
@@ -656,6 +657,9 @@ defmodule HeexLint.Collector do
     visited = Map.update(inner.visited, this, MapSet.new([ended]), &MapSet.put(&1, ended))
     Map.merge(%{inner | visited: visited}, saved)
   end
+
+  defp past_limit?(%{kind: :hole}, _links), do: false
+  defp past_limit?(state, links), do: state.depth + links >= @max_route
 
   defp stop(state), do: %{state | stops: state.stops + 1}
 
@@ -822,7 +826,7 @@ defmodule HeexLint.Collector do
   defp alias_of(state, key, value, route) do
     cond do
       key in route or MapSet.member?(state.seen, key) -> :stopped
-      state.depth + length(route) >= @max_route -> :cut
+      past_limit?(state, length(route)) -> :cut
       true -> table(state, value, route ++ [key])
     end
   end

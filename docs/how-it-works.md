@@ -144,7 +144,9 @@ Each binding is read once per attribute, so a class reached through both
 branches of `if on, do: a, else: a` is one class. What cannot be read — a socket assign
 in a LiveView, an unknown call, a variable that reads itself, a chain longer
 than 64 bindings — is reported by `require_static_classes` when used on a
-design-system component.
+design-system component. A hole in a `style`, as in `"--tone: #{v}"`, has no such
+limit and is not reported for being unreadable: `no_inline_styles` looks through
+it for raw colors, however many bindings away.
 
 ## Where it looks
 

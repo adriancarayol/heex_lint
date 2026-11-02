@@ -7,9 +7,11 @@
   **This adds findings:** a class more than four links away is now checked by
   every rule, where it was dropped without a word, and a chain past 64 is
   reported by `require_static_classes`, or by `no_inline_styles` for a `style`,
-  at the read that goes past the limit. A binding is read once per site, so a
-  generated chain of `if on, do: a, else: a` stays linear, also past the limit
-  or ending in a cycle.
+  at the read that goes past the limit. A hole in a `style`, as in
+  `"--tone: #{v}"`, has no limit, also as in @shadcn/lint: `no_inline_styles`
+  reports a raw color any number of links from it. A binding is read once per
+  site, so a generated chain of `if on, do: a, else: a` stays linear, also past
+  the limit or ending in a cycle.
 - A variable a template reads directly, as in `<.button class={v}>`, is read
   where the function binds it. **This adds findings:** its classes used to be
   dropped, and now get reports and fixes at that place. `@name` in its value is
