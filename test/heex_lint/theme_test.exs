@@ -133,6 +133,42 @@ defmodule HeexLint.ThemeTest do
       assert MapSet.member?(theme.scoped_names, "gap")
     end
 
+    test "a stylesheet reached by two import paths is read once", %{tmp_dir: dir} do
+      theme =
+        load(dir, %{
+          "shared.css" => "@utility dia { color: red }",
+          "b.css" => ~s(@import "./shared.css";),
+          "c.css" => ~s(@import "./shared.css";\n@utility dia { padding: 1px }),
+          "app.css" => ~s(@import "./b.css";\n@import "./c.css";)
+        })
+
+      assert Theme.utility_properties_of(theme, "dia") == ["padding"]
+      assert Enum.frequencies(theme.files) |> Map.values() |> Enum.uniq() == [1]
+    end
+
+    test "a stylesheet read again does not undo what came after it", %{tmp_dir: dir} do
+      theme =
+        load(dir, %{
+          "shared.css" => ":root { --radius: 8px; }",
+          "b.css" => ~s(@import "./shared.css";\n:root { --radius: 4px; }),
+          "c.css" => ~s(@import "./shared.css";),
+          "app.css" => ~s(@import "./b.css";\n@import "./c.css";)
+        })
+
+      assert theme.values["radius"] == "4px"
+    end
+
+    test "an import cycle reads each stylesheet once", %{tmp_dir: dir} do
+      theme =
+        load(dir, %{
+          "a.css" => ~s(@import "./app.css";\n@utility dia { color: red }),
+          "app.css" => ~s(@import "./a.css";)
+        })
+
+      assert Theme.utility_properties_of(theme, "dia") == ["color"]
+      assert length(theme.files) == 2
+    end
+
     test "a color token reads its variable from :root", %{tmp_dir: dir} do
       theme =
         load(dir, %{

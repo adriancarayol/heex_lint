@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- A stylesheet reached by two import paths is read once, at the first, as
+  upstream does. Reading it again put its declarations over the ones read
+  between the two imports, so a utility body or a `:root` value could come
+  from the wrong file. This can change the category `no_restyle` reports and
+  the values the theme resolves in projects whose imports overlap. The limit of
+  65 stylesheets now counts the whole import tree rather than one import chain.
 - `no_restyle` classifies a class your CSS declares with `@utility` by the
   properties its body sets, nested rules and custom properties included:
   `@utility tap-target { min-height: 44px }` is layout and passes

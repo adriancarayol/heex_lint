@@ -92,11 +92,9 @@ defmodule HeexLint.Theme do
   def load(file) do
     file = Path.expand(file)
 
-    read =
-      read(file, MapSet.new(), %__MODULE__{file: file}, false)
-      |> finalize()
+    {read, _seen} = read(file, MapSet.new(), %__MODULE__{file: file}, false)
 
-    read
+    finalize(read)
   end
 
   @doc """
@@ -257,16 +255,19 @@ defmodule HeexLint.Theme do
 
   ## Reading
 
+  # `seen` comes back out because it spans the whole walk: a stylesheet two
+  # imports reach is read at the first, and reading it again at the second
+  # would put its declarations over the ones read between them.
   defp read(file, seen, acc, from_package) do
     if MapSet.member?(seen, file) or MapSet.size(seen) > 64 do
-      acc
+      {acc, seen}
     else
       seen = MapSet.put(seen, file)
       acc = %{acc | files: acc.files ++ [file]}
 
       case File.read(file) do
         {:ok, css} -> read_css(css, file, seen, acc, from_package)
-        {:error, _} -> acc
+        {:error, _} -> {acc, seen}
       end
     end
   end
@@ -284,8 +285,8 @@ defmodule HeexLint.Theme do
     dir = Path.dirname(file)
 
     # Imports come first in the cascade.
-    acc =
-      Enum.reduce(parse_imports(css), acc, fn spec, acc ->
+    {acc, seen} =
+      Enum.reduce(parse_imports(css), {acc, seen}, fn spec, {acc, seen} ->
         acc =
           if spec == "tailwindcss" or String.starts_with?(spec, "tailwindcss/"),
             do: %{acc | tailwind: true},
@@ -293,7 +294,7 @@ defmodule HeexLint.Theme do
 
         case resolve_stylesheet(dir, spec) do
           nil ->
-            %{acc | missing_imports: acc.missing_imports ++ [spec]}
+            {%{acc | missing_imports: acc.missing_imports ++ [spec]}, seen}
 
           target ->
             read(target, seen, acc, from_package or package_file?(target))
@@ -304,7 +305,7 @@ defmodule HeexLint.Theme do
     acc = %{acc | variables: MapSet.union(acc.variables, all_variable_names(css))}
 
     if from_package do
-      %{acc | theme_names: MapSet.union(acc.theme_names, package_animations(css))}
+      {%{acc | theme_names: MapSet.union(acc.theme_names, package_animations(css))}, seen}
     else
       {values, scoped_names, theme_names, declarations} = parse_declarations(css)
 
@@ -314,13 +315,13 @@ defmodule HeexLint.Theme do
           put_value(read, name, value, MapSet.member?(scoped_names, name))
         end)
 
-      %{
-        acc
-        | values: merged,
-          scoped_names: merged_scoped,
-          theme_names: MapSet.union(acc.theme_names, theme_names),
-          declarations: acc.declarations ++ declarations
-      }
+      {%{
+         acc
+         | values: merged,
+           scoped_names: merged_scoped,
+           theme_names: MapSet.union(acc.theme_names, theme_names),
+           declarations: acc.declarations ++ declarations
+       }, seen}
     end
   end
 
