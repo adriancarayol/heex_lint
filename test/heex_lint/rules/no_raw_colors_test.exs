@@ -268,6 +268,67 @@ defmodule HeexLint.Rules.NoRawColorsTest do
     assert [_, _] = lint(dir, files, rules: [no_raw_colors: {:error, scan_all_strings: true}])
   end
 
+  describe "scan_all_strings and map keys" do
+    defp scanned(dir, body, options \\ [no_raw_colors: {:error, scan_all_strings: true}]) do
+      module = """
+      defmodule AppWeb.Layer do
+        import AppWeb.Cn
+
+        def layer(map, tone, on) do
+          #{body}
+        end
+      end
+      """
+
+      helper = """
+      defmodule AppWeb.Cn do
+        def cn(value), do: value
+      end
+      """
+
+      lint(dir, %{"lib/app_web/layer.ex" => module, "lib/app_web/cn.ex" => helper},
+        rules: options
+      )
+    end
+
+    test "a plain map key names a field", %{tmp_dir: dir} do
+      assert scanned(dir, ~S|%{"bg-pink-500" => tone, "text-pink-500" => on}|) == []
+      assert scanned(dir, ~S(%{map | "bg-pink-500" => tone})) == []
+      assert scanned(dir, ~S|%{"paint" => %{"bg-pink-500" => tone}}|) == []
+      assert scanned(dir, ~S|%{"bg-pink-500" => pink} = map; pink|) == []
+      assert scanned(dir, ~S|Map.merge(map, %{"bg-pink-500" => tone})|) == []
+    end
+
+    test "other rules reading the scan skip them too", %{tmp_dir: dir} do
+      rules = [no_arbitrary_values: {:error, scan_all_strings: true}]
+
+      assert scanned(dir, ~S|%{"p-[13px]" => tone}|, rules) == []
+      assert [_] = scanned(dir, ~S|%{tone => "p-[13px]"}|, rules)
+    end
+
+    test "map values still count", %{tmp_dir: dir} do
+      assert [finding] = scanned(dir, ~S|%{"fill-color" => "bg-pink-500"}|)
+      assert finding.message =~ ~s("bg-pink-500")
+
+      assert [_] = scanned(dir, ~S(%{map | "fill-color" => "bg-pink-500"}))
+      assert [_] = scanned(dir, ~S|%{fill: "bg-pink-500"}|)
+    end
+
+    test "a computed key still counts", %{tmp_dir: dir} do
+      assert [_] = scanned(dir, ~S|%{String.trim("bg-pink-500") => tone}|)
+    end
+
+    test "strings in other tuples and lists still count", %{tmp_dir: dir} do
+      assert [_] = scanned(dir, ~S|{"bg-pink-500", tone}|)
+      assert [_] = scanned(dir, ~S|[{"bg-pink-500", tone}]|)
+    end
+
+    test "a class map key is still reached by its class site", %{tmp_dir: dir} do
+      assert [finding] = scanned(dir, ~S|cn(%{"bg-pink-500" => on})|)
+      assert finding.message =~ ~s("bg-pink-500")
+    end
+  end
+
   test "a color function over one theme variable is not a raw color" do
     for value <- [
           "oklch(var(--primary-oklch))",

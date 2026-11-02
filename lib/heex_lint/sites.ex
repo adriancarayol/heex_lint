@@ -253,11 +253,13 @@ defmodule HeexLint.Sites do
     calls
   end
 
-  defp helper_name(callee) when is_atom(callee), do: Atom.to_string(callee)
+  @doc false
+  # The name a call matches merge and variant functions by.
+  def helper_name(callee) when is_atom(callee), do: Atom.to_string(callee)
 
-  defp helper_name({:., _, [{:__aliases__, _, _} = mod, fun]}) when is_atom(fun) do
+  def helper_name({:., _, [{:__aliases__, _, _} = mod, fun]}) when is_atom(fun) do
     if name = Code.alias_name(mod), do: name <> "." <> Atom.to_string(fun)
   end
 
-  defp helper_name(_), do: nil
+  def helper_name(_), do: nil
 end

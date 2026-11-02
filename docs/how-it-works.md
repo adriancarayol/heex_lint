@@ -123,7 +123,7 @@ reported by `require_static_classes` when used on a design-system component.
 - `style` attributes and `<style>` elements; SVG color attributes `fill`,
   `stroke`, `color`, `stop-color`, `flood-color` and `lighting-color`.
 - Merge-function calls anywhere in a module, and `attr :class` defaults.
-- Every string literal when `scan_all_strings` is enabled on `no_raw_colors`
+- Every string literal, except plain map keys, when `scan_all_strings` is enabled on `no_raw_colors`
   or `no_arbitrary_values`.
 
 ## What it cannot see

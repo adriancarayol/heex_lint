@@ -26,6 +26,10 @@
   `no_raw_colors` SVG attributes and `no_inline_styles` custom properties.
   Literal channels and a `var()` fallback are still reported. This removes
   findings and adds none.
+- `scan_all_strings` skips plain string map keys such as
+  `%{"fill-color" => 1}`, in `no_raw_colors` and `no_arbitrary_values`. Map
+  values, and class map keys like `cn(%{"bg-red-500" => @on})`, are still
+  checked. This removes findings and adds none.
 
 ## 0.2.2
 

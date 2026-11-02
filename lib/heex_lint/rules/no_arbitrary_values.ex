@@ -16,7 +16,8 @@ defmodule HeexLint.Rules.NoArbitraryValues do
 
     * `:allow`, `:deny`, `:contracts` - exceptions. See `HeexLint.Policy`.
     * `:message` - replaces the text. Also `{{replacement}}` and `{{tokens}}`.
-    * `:scan_all_strings` - check every string literal in the file.
+    * `:scan_all_strings` - check every string literal in the file except plain
+      map keys such as `%{"fill-color" => 1}`.
   """
 
   @behaviour HeexLint.Rule

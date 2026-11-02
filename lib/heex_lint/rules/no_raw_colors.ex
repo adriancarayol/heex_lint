@@ -22,7 +22,8 @@ defmodule HeexLint.Rules.NoRawColors do
     * `:allow`, `:deny`, `:contracts` - exceptions, as class patterns
       (`*-amber-*`), groups or categories. See `HeexLint.Policy`.
     * `:message` - replaces the text. Also `{{tokens}}` and `{{suggestion}}`.
-    * `:scan_all_strings` - check every string literal in the file.
+    * `:scan_all_strings` - check every string literal in the file except plain
+      map keys such as `%{"fill-color" => 1}`.
   """
 
   @behaviour HeexLint.Rule
@@ -144,6 +145,7 @@ defmodule HeexLint.Rules.NoRawColors do
   @doc false
   def all_strings(file) do
     source = file.source
+    merge = Map.get(file, :merge_functions, [])
 
     code_strings =
       if source.ast do
@@ -155,6 +157,17 @@ defmodule HeexLint.Rules.NoRawColors do
             {:__block__, _, [text]} = node, acc when is_binary(text) ->
               context = %{project: file.project, source: source}
               {node, acc ++ Collector.expression(node, context).strings}
+
+            # A plain key names a field, not a class.
+            {:%{}, meta, entries}, acc ->
+              {{:%{}, meta, without_plain_keys(entries)}, acc}
+
+            # But the keys of a map given to a merge function are classes, as
+            # in cn(%{"bg-red-500" => @on}).
+            {callee, meta, args} = node, acc when is_list(args) ->
+              if HeexLint.Sites.helper_name(callee) in merge,
+                do: {{callee, meta, Enum.map(args, &class_map/1)}, acc},
+                else: {node, acc}
 
             node, acc ->
               {node, acc}
@@ -179,6 +192,23 @@ defmodule HeexLint.Rules.NoRawColors do
 
     code_strings ++ template_strings
   end
+
+  # The entries of a map literal without their string keys, for
+  # %{"fill-color" => 1} and %{map | "fill-color" => 1} alike. A key that
+  # computes its string is walked like any other code.
+  defp without_plain_keys([{:|, meta, [map, entries]}]),
+    do: [{:|, meta, [map, without_plain_keys(entries)]}]
+
+  defp without_plain_keys(entries) do
+    Enum.map(entries, fn
+      {{:__block__, _, [key]}, value} when is_binary(key) -> {nil, value}
+      entry -> entry
+    end)
+  end
+
+  # Unwraps a map into its entries, so the walk reads its keys too.
+  defp class_map({:%{}, _meta, entries}), do: entries
+  defp class_map(arg), do: arg
 
   defp theme_file(%{theme_file: nil}), do: "your theme CSS"
   defp theme_file(%{theme_file: file, root: root}), do: Path.relative_to(file, root)

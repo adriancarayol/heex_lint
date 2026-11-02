@@ -183,9 +183,11 @@ defmodule HeexLint do
           [{module, _, options} | _] = group
           scoped = prepared[{module, options, theme_file}].project
 
+          merge_functions = (recognition[:merge_functions] || []) ++ @default_merge_functions
+
           collected =
             Sites.collect(scoped, source,
-              merge_functions: (recognition[:merge_functions] || []) ++ @default_merge_functions,
+              merge_functions: merge_functions,
               variant_functions: recognition[:variant_functions] || []
             )
 
@@ -194,6 +196,7 @@ defmodule HeexLint do
             source: source,
             sites: collected.sites,
             elements: collected.elements,
+            merge_functions: merge_functions,
             note: config.settings[:note]
           }
 
