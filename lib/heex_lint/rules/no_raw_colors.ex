@@ -28,7 +28,7 @@ defmodule HeexLint.Rules.NoRawColors do
 
   @behaviour HeexLint.Rule
 
-  alias HeexLint.{Collector, Messages, Policy, Rule, Suggest, Theme}
+  alias HeexLint.{Code, Collector, Element, Messages, Policy, Rule, Suggest, Theme}
   alias HeexLint.Grammar.{Categories, Classes, Colors, ProjectClassifier, Similar}
   alias HeexLint.Policy.ConfigError
 
@@ -200,9 +200,9 @@ defmodule HeexLint.Rules.NoRawColors do
   end
 
   # But the keys of a map a merge function reads are classes, as in
-  # cn(%{"bg-red-500" => on}), however the map reaches the call. Calls outside
-  # a function have no variables to follow; the same call read twice is one
-  # finding.
+  # cn(%{"bg-red-500" => on}), however the map reaches the call, from this
+  # file's code or from a template of its modules. Calls outside a function
+  # have no variables to follow; the same call read twice is one finding.
   defp class_map_keys(file, merge) do
     source = file.source
     opts = [merge_functions: merge]
@@ -222,7 +222,19 @@ defmodule HeexLint.Rules.NoRawColors do
           key <- Collector.map_keys(call, context, opts),
           do: key
 
-    in_functions ++ anywhere
+    in_templates =
+      for module <- source.modules,
+          template_source <- Map.values(file.project.sources),
+          template <- template_source.templates,
+          template.module == module.name,
+          {:expr, code, _position} = expression <- Element.expressions(template),
+          {:ok, ast} <- [Code.parse(code)],
+          call <- merge_calls(ast, merge),
+          context = Map.put(context, :template, template),
+          key <- Collector.template_map_keys(call, expression, context, opts),
+          do: key
+
+    in_functions ++ anywhere ++ in_templates
   end
 
   defp merge_calls(ast, merge) do

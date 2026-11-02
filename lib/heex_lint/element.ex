@@ -59,25 +59,7 @@ defmodule HeexLint.Element do
   """
   @spec from_template(Template.t()) :: {:ok, [t()]} | {:error, String.t()}
   def from_template(%Template{} = template) do
-    {:ok, eex} =
-      EEx.tokenize(template.source,
-        line: template.line,
-        # EEx adds the indentation to the starting column itself.
-        column: template.column - template.indentation,
-        indentation: template.indentation
-      )
-
-    state = Tokenizer.init(template.indentation, template.file, template.source, TagHandler)
-
-    {tokens, cont} =
-      Enum.reduce(eex, {[], {:text, :enabled}}, fn
-        {:text, text, meta}, {tokens, cont} ->
-          meta = [line: meta.line, column: meta.column]
-          Tokenizer.tokenize(List.to_string(text), meta, tokens, cont, state)
-
-        _eex, acc ->
-          acc
-      end)
+    {_eex, tokens, cont} = tokenize(template)
 
     lines = String.split(template.source, ~r/\r?\n/)
 
@@ -125,6 +107,66 @@ defmodule HeexLint.Element do
   rescue
     error in [Tokenizer.ParseError, EEx.SyntaxError] ->
       {:error, Exception.message(error)}
+  end
+
+  @doc """
+  Every `{...}` and `<%= ... %>` in `template`: attribute values, text and
+  EEx. Empty when the template does not parse.
+  """
+  @spec expressions(Template.t()) :: [{:expr, String.t(), {pos_integer(), pos_integer()}}]
+  def expressions(%Template{} = template) do
+    with {:ok, elements} <- Template.elements(template) do
+      {eex, tokens, cont} = tokenize(template)
+
+      attributes =
+        for element <- elements,
+            %{value: {:expr, _, _} = value} <- element.attributes,
+            do: value
+
+      text =
+        for {:body_expr, code, meta} <-
+              Tokenizer.finalize(tokens, template.file, cont, template.source),
+            do: {:expr, code, {meta.line, meta.column}}
+
+      embedded =
+        for {:expr, _marker, code, meta} <- eex,
+            do: {:expr, List.to_string(code), {meta.line, meta.column}}
+
+      # <%= if cn(@tones) do %> needs its end to parse.
+      opening =
+        for {:start_expr, _marker, code, meta} <- eex,
+            do: {:expr, List.to_string(code) <> "\nend", {meta.line, meta.column}}
+
+      attributes ++ text ++ embedded ++ opening
+    else
+      {:error, _message} -> []
+    end
+  rescue
+    _ in [Tokenizer.ParseError, EEx.SyntaxError] -> []
+  end
+
+  defp tokenize(template) do
+    {:ok, eex} =
+      EEx.tokenize(template.source,
+        line: template.line,
+        # EEx adds the indentation to the starting column itself.
+        column: template.column - template.indentation,
+        indentation: template.indentation
+      )
+
+    state = Tokenizer.init(template.indentation, template.file, template.source, TagHandler)
+
+    {tokens, cont} =
+      Enum.reduce(eex, {[], {:text, :enabled}}, fn
+        {:text, text, meta}, {tokens, cont} ->
+          meta = [line: meta.line, column: meta.column]
+          Tokenizer.tokenize(List.to_string(text), meta, tokens, cont, state)
+
+        _eex, acc ->
+          acc
+      end)
+
+    {eex, tokens, cont}
   end
 
   @doc """

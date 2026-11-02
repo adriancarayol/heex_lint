@@ -29,10 +29,14 @@
 - `scan_all_strings` skips plain string map keys such as
   `%{"fill-color" => 1}`, in `no_raw_colors` and `no_arbitrary_values`. Map
   values are still checked, and so are the keys of a map that reaches a merge
-  function in Elixir code, directly or through a list, branch, pipe, variable,
-  module attribute or same-module function. A merge call in a template, such
-  as `<div class={cn(%{"bg-red-500" => @on})} />`, still has its map keys
-  unread, as before. This removes findings and adds none.
+  function, directly or through a list, branch, pipe, variable, module
+  attribute or same-module function. A merge call in a template reads a map
+  from the function's variables and from assigns set anywhere in the module,
+  such as `assign(socket, :tones, %{"bg-red-500" => true})` in `mount/3`, in
+  `~H` and in embedded `.heex` files. A map written in the template, as in
+  `<div class={cn(%{"bg-red-500" => @on})} />`, and a map a function returns,
+  as in `cn(tones())` in a template, go unread: the first as before, the
+  second newly. This removes findings and adds none.
 
 ## 0.2.2
 

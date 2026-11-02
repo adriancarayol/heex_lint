@@ -399,6 +399,194 @@ defmodule HeexLint.Rules.NoRawColorsTest do
              ) == []
     end
 
+    # A module whose ~H template calls cn, so its map keys are read only there.
+    defp templated(dir, body, files \\ %{}, options \\ nil) do
+      module = """
+      defmodule AppWeb.Layer do
+        use Phoenix.LiveView
+        import AppWeb.Cn
+
+        #{body}
+      end
+      """
+
+      helper = "defmodule AppWeb.Cn do\n  def cn(value), do: value\nend\n"
+
+      lint(
+        dir,
+        Map.merge(files, %{"lib/app_web/layer.ex" => module, "lib/app_web/cn.ex" => helper}),
+        rules: options || [no_raw_colors: {:error, scan_all_strings: true}]
+      )
+    end
+
+    test "class map keys count when a template's merge call reads them", %{tmp_dir: dir} do
+      for body <- [
+            ~S"""
+            def a(assigns) do
+              tones = %{"bg-pink-500" => assigns.on}
+              ~H"<div class={cn(tones)} />"
+            end
+            """,
+            ~S"""
+            def a(assigns) do
+              tones = if assigns.on, do: %{"bg-pink-500" => true}
+              ~H"<div class={cn(tones)} />"
+            end
+            """,
+            ~S"""
+            def a(assigns) do
+              assigns = assign(assigns, :tones, %{"bg-pink-500" => true})
+              ~H"<div class={cn(@tones)} />"
+            end
+            """,
+            ~S"""
+            def a(assigns) do
+              assigns = assign(assigns, :tones, %{"bg-pink-500" => true})
+              ~H"<div class={cn(assigns.tones)} />"
+            end
+            """,
+            ~S"""
+            def mount(_params, _session, socket) do
+              {:ok, assign(socket, :tones, %{"bg-pink-500" => true})}
+            end
+
+            def render(assigns), do: ~H"<div class={cn(@tones)} />"
+            """,
+            ~S"""
+            def mount(_params, _session, socket) do
+              tones = %{"bg-pink-500" => true}
+              {:ok, assign(socket, tones: tones)}
+            end
+
+            def render(assigns), do: ~H"<div class={cn(@tones)} />"
+            """,
+            ~S"""
+            @tones %{"bg-pink-500" => true}
+
+            def a(assigns) do
+              assigns = assign(assigns, :tones, @tones)
+              ~H"<div class={cn(@tones)} />"
+            end
+            """,
+            ~S"""
+            attr :tones, :map, default: %{"bg-pink-500" => true}
+
+            def a(assigns), do: ~H"<div class={cn(@tones)} />"
+            """,
+            ~S"""
+            def a(assigns) do
+              assigns = assign(assigns, :tones, %{"bg-pink-500" => true})
+              ~H"<span>{cn(@tones)}</span>"
+            end
+            """,
+            ~S"""
+            def a(assigns) do
+              assigns = assign(assigns, :tones, %{"bg-pink-500" => true})
+              ~H"<span><%= cn(@tones) %></span>"
+            end
+            """,
+            ~S"""
+            def a(assigns) do
+              assigns = assign(assigns, :tones, %{"bg-pink-500" => true})
+              ~H"<%= if cn(@tones) do %><b>x</b><% end %>"
+            end
+            """
+          ] do
+        assert [finding] = templated(dir, body), body
+        assert finding.message =~ ~s("bg-pink-500")
+        assert finding.file =~ "layer.ex"
+      end
+    end
+
+    test "class map keys count when an embedded template reads them", %{tmp_dir: dir} do
+      template = ~S|<div class={cn(@tones)} />|
+
+      embedded = ~S"""
+      embed_templates "inner/*"
+
+      def a(assigns) do
+        assigns = assign(assigns, :tones, %{"bg-pink-500" => true})
+        card(assigns)
+      end
+      """
+
+      assert [finding] =
+               templated(dir, embedded, %{"lib/app_web/inner/card.html.heex" => template})
+
+      assert finding.file =~ "layer.ex"
+
+      colocated = ~S"""
+      def mount(_params, _session, socket) do
+        {:ok, assign(socket, :tones, %{"bg-pink-500" => true})}
+      end
+      """
+
+      assert [finding] = templated(dir, colocated, %{"lib/app_web/layer.html.heex" => template})
+      assert finding.file =~ "layer.ex"
+    end
+
+    test "a template's merge call reads through no_arbitrary_values too", %{tmp_dir: dir} do
+      body = ~S"""
+      def a(assigns) do
+        assigns = assign(assigns, :tones, %{"p-[13px]" => true})
+        ~H"<div class={cn(@tones)} />"
+      end
+      """
+
+      assert [_] =
+               templated(dir, body, %{}, no_arbitrary_values: {:error, scan_all_strings: true})
+    end
+
+    test "two template calls reading one map are one finding", %{tmp_dir: dir} do
+      body = ~S"""
+      def a(assigns) do
+        assigns = assign(assigns, :tones, %{"bg-pink-500" => true})
+        ~H"<div class={cn(@tones)} /><div class={cn(@tones)} />"
+      end
+      """
+
+      assert [_] = templated(dir, body)
+    end
+
+    test "a template without a merge call leaves a map plain", %{tmp_dir: dir} do
+      for body <- [
+            ~S"""
+            def a(assigns) do
+              assigns = assign(assigns, :tones, %{"bg-pink-500" => true})
+              ~H"<div title={@tones} />"
+            end
+            """,
+            ~S"""
+            def a(assigns) do
+              tones = %{"bg-pink-500" => true}
+              ~H"<div title={tones} />"
+            end
+            """,
+            ~S"""
+            def a(assigns) do
+              assigns = assign(assigns, :fields, %{"bg-pink-500" => true})
+              ~H"<div class={cn(@tones)} />"
+            end
+            """
+          ] do
+        assert templated(dir, body) == [], body
+      end
+    end
+
+    test "a template's merge call stays unread where it was", %{tmp_dir: dir} do
+      assert templated(
+               dir,
+               ~S|def a(assigns), do: ~H"<div class={cn(%{\"bg-pink-500\" => @on})} />"|
+             ) ==
+               []
+
+      assert templated(dir, ~S"""
+             def a(assigns), do: ~H"<div class={cn(tones())} />"
+
+             defp tones, do: %{"bg-pink-500" => true}
+             """) == []
+    end
+
     test "class map keys stay out of the default scan", %{tmp_dir: dir} do
       assert scanned(dir, ~S|cn(["p-1", %{"bg-pink-500" => on}])|, no_raw_colors: :error) == []
     end

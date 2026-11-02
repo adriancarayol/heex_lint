@@ -68,14 +68,10 @@ defmodule HeexLint.Collector do
   def attribute({:expr, code, position}, context, opts) do
     case Code.parse(code) do
       {:ok, ast} ->
-        text = %{
-          lines: code |> String.split("\n") |> List.to_tuple(),
-          locate: locator(position, context.template.indentation),
-          file: context.template.file
-        }
-
-        state = state(context, opts, text, :template)
-        state |> visit(ast) |> result()
+        context
+        |> state(opts, expression_text(code, position, context), :template)
+        |> visit(ast)
+        |> result()
 
       {:error, _} ->
         %__MODULE__{unresolved: [position]}
@@ -92,13 +88,10 @@ defmodule HeexLint.Collector do
     with {:ok, ast} <- Code.parse(code),
          pairs when is_list(pairs) <- root_pairs(ast),
          {_key, value} <- Enum.find(pairs, fn {k, _v} -> Code.name(k) == key end) do
-      text = %{
-        lines: code |> String.split("\n") |> List.to_tuple(),
-        locate: locator(position, context.template.indentation),
-        file: context.template.file
-      }
-
-      context |> state(opts, text, :template) |> visit(value) |> result()
+      context
+      |> state(opts, expression_text(code, position, context), :template)
+      |> visit(value)
+      |> result()
     else
       _ -> nil
     end
@@ -130,6 +123,30 @@ defmodule HeexLint.Collector do
   def map_keys(ast, context, opts \\ []) do
     state = %{state(context, opts, file_text(context), :body) | map_keys: []}
     Enum.reverse(visit(state, ast).map_keys)
+  end
+
+  @doc """
+  The same keys for a merge-function call in a template expression. Only what
+  the call reads from Elixir code counts, with an assign followed through
+  every function of the template's module, as `mount/3` sets what `render/1`
+  reads: the keys are reported where the code writes them. A map written in
+  the template itself stays unread, as does what a function returns.
+  """
+  @spec template_map_keys(Macro.t(), HeexLint.Element.value(), map(), keyword()) ::
+          [string_value()]
+  def template_map_keys(call, {:expr, code, position}, context, opts \\ []) do
+    text = expression_text(code, position, context)
+    state = %{state(context, opts, text, :template) | map_keys: []}
+    Enum.reverse(visit(state, call).map_keys)
+  end
+
+  # Positions inside a `{...}` expression, as they are in the template's file.
+  defp expression_text(code, position, context) do
+    %{
+      lines: code |> String.split("\n") |> List.to_tuple(),
+      locate: locator(position, context.template.indentation),
+      file: context.template.file
+    }
   end
 
   # A hop into a function body reads the module's file. For an embedded .heex
@@ -311,6 +328,9 @@ defmodule HeexLint.Collector do
        when {mod, fun} in [{:Map, :get}, {:Map, :fetch!}, {:Keyword, :get}, {:Keyword, :fetch!}],
        do: lookup(state, map, key, List.first(rest), meta)
 
+  defp visit(%{map_keys: keys, mode: :template} = state, {:%{}, _, _}) when is_list(keys),
+    do: state
+
   defp visit(%{map_keys: keys} = state, {:%{}, _, entries}) when is_list(keys),
     do: map_entries(state, entries)
 
@@ -431,6 +451,9 @@ defmodule HeexLint.Collector do
 
   ## Names
 
+  defp assign(%{map_keys: keys} = state, name, meta) when is_list(keys),
+    do: assign_in_module(state, name, meta)
+
   defp assign(state, name, meta) do
     key = {:assign, name}
 
@@ -446,7 +469,41 @@ defmodule HeexLint.Collector do
     end
   end
 
+  # What any function of the module assigns to `name`, each value read in its
+  # own clause, and the defaults its components declare for it.
+  defp assign_in_module(state, name, meta) do
+    key = {:assign, name}
+
+    with false <- MapSet.member?(state.seen, key),
+         %ModuleInfo{} = module <- current_module(state) do
+      assigned =
+        for clauses <- Map.values(module.functions),
+            clause <- clauses,
+            value <- assigned_values(clause, name),
+            do: {clause, value}
+
+      defaults =
+        for component <- Map.values(module.components),
+            %{default: default} when default not in [:none, nil] <-
+              [Component.attr(component, name)],
+            do: {nil, default}
+
+      hop(state, key, fn state ->
+        state = %{state | mode: :body, text: body_text(state, meta)}
+
+        Enum.reduce(assigned ++ defaults, state, fn {clause, value}, acc ->
+          visit(%{acc | clause: clause}, value)
+        end)
+      end)
+    else
+      _ -> state
+    end
+  end
+
   # A prop the component received from its caller.
+  defp received(%{map_keys: keys} = state, name, meta) when is_list(keys),
+    do: assign_in_module(state, name, meta)
+
   defp received(state, name, meta) do
     template = state.context[:template]
 
@@ -496,12 +553,21 @@ defmodule HeexLint.Collector do
         received(state, prop, meta)
 
       values = bound_values(state.clause, name) ->
-        hop(state, key, fn state -> Enum.reduce(values, state, &visit(&2, &1)) end)
+        hop(state, key, fn state ->
+          Enum.reduce(values, leave_template(state, meta), &visit(&2, &1))
+        end)
 
       true ->
         unresolved(state, meta)
     end
   end
+
+  # A variable a template reads holds code of the enclosing function, where
+  # the keys of its maps are.
+  defp leave_template(%{map_keys: keys, mode: :template} = state, meta) when is_list(keys),
+    do: %{state | mode: :body, text: body_text(state, meta)}
+
+  defp leave_template(state, _meta), do: state
 
   defp module_attribute(state, name, meta) do
     key = {:attribute, name}
@@ -564,7 +630,9 @@ defmodule HeexLint.Collector do
         Enum.reduce(args, state, &visit(&2, &1))
 
       is_atom(callee) and local_function?(state, Atom.to_string(callee), arity) ->
-        local_call(state, Atom.to_string(callee), arity, meta)
+        if state.mode == :template and is_list(state.map_keys),
+          do: state,
+          else: local_call(state, Atom.to_string(callee), arity, meta)
 
       true ->
         unresolved(state, meta_of(node))
