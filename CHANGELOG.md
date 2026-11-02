@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- A chain of variables, attributes, functions and lookups is followed for 64
+  bindings instead of 4, and the next one is unreadable, as in @shadcn/lint.
+  **This adds findings:** a class more than four links away is now checked by
+  every rule, where it was dropped without a word, and a chain past 64 is
+  reported by `require_static_classes`, or by `no_inline_styles` for a `style`,
+  at the read that goes past the limit. A binding is read once per site, so a
+  generated chain of `if on, do: a, else: a` stays linear, also past the limit
+  or ending in a cycle.
+- A variable a template reads directly, as in `<.button class={v}>`, is read
+  where the function binds it. **This adds findings:** its classes used to be
+  dropped, and now get reports and fixes at that place. `@name` in its value is
+  a module attribute, not an assign.
+- Two functions can each have a variable of one name. One calling the other
+  read as a cycle, reported as dynamic; its classes are now read. **This adds
+  findings** for those classes and removes the dynamic one.
+- A lookup on a table that names itself (`t = t`, `@t @t`, `t = %{a: t[:a]}`)
+  no longer hangs the run. It is reported as dynamic.
 - A workspace package linked into `node_modules`, as pnpm and npm workspaces
   do, counts as your own, as in @shadcn/lint: imports resolve to their real
   path, and a package can import itself by name. Its tokens, scales and resets

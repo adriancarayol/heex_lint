@@ -17,6 +17,12 @@ defmodule HeexLint.Collector do
     * in function bodies, variables, module attributes, `assigns.name`,
       same-module functions, map lookups (`Map.fetch!(%{...}, key)`), and
       the configured merge and variant functions
+
+  A route follows 64 bindings; the next one is unresolved at the place that
+  reads it. Each binding is read once per site, so a class reached through both
+  branches of `if on, do: a, else: a` is one class and a chain of such branches
+  stays linear. A read that stopped on its route is remembered with that route,
+  since it could read more from another one.
   """
 
   alias HeexLint.Code
@@ -44,7 +50,15 @@ defmodule HeexLint.Collector do
 
   @type t :: %__MODULE__{strings: [string_value()], unresolved: [{pos_integer(), pos_integer()}]}
 
-  @max_depth 4
+  # How many bindings a route follows before the next one is unreadable, the
+  # way a dynamic value is. No written chain of aliases is this deep.
+  @max_route 64
+
+  # How many times a site may read a binding it has already read. Only reads
+  # that stopped on their route are read again, and bindings that all read each
+  # other can do that on every route there is. First reads do not count, so this
+  # never limits how much a site reads.
+  @max_rereads 4096
 
   @doc """
   Collects from an element attribute value.
@@ -191,6 +205,10 @@ defmodule HeexLint.Collector do
       clause: context[:clause] || (context[:template] && context.template.clause),
       seen: MapSet.new(),
       depth: 0,
+      visited: %{},
+      stops: 0,
+      cuts: 0,
+      rereads: 0,
       strings: [],
       unresolved: [],
       map_keys: nil
@@ -398,20 +416,25 @@ defmodule HeexLint.Collector do
   # of its own and leaves the value unresolved; a value standing alone is
   # read on its own. In a style, holes stay holes in the CSS text.
   # In a style, a hole is not unreadable: the CSS text around it still
-  # names its properties. What the hole can hold is kept, one hop deep, so a
-  # raw color laundered through a variable or lookup table is still seen.
+  # names its properties. What the hole can hold is kept, so a raw color
+  # laundered through a variable or lookup table is still seen. Every hole is
+  # filled on its own, as what it reads belongs to it even when another hole
+  # read it first: only how those reads ended goes back to the route, not what
+  # they visited.
   defp template(%{kind: :style} = state, items, exprs, _meta) do
     positions = for {:interp, position} <- items, do: position
 
-    holes =
+    {holes, state} =
       positions
       |> Enum.zip(exprs)
-      |> Map.new(fn {position, expr} ->
-        inner = visit(%{state | strings: [], unresolved: [], kind: :class}, expr)
-        {position, Enum.map(inner.strings, & &1.value)}
+      |> Enum.map_reduce(state, fn {position, expr}, acc ->
+        inner = visit(%{acc | strings: [], unresolved: [], kind: :class}, expr)
+
+        {{position, Enum.map(inner.strings, & &1.value)},
+         %{acc | stops: inner.stops, cuts: inner.cuts, rereads: inner.rereads}}
       end)
 
-    push(state, raw_text(items), items, nil, holes)
+    push(state, raw_text(items), items, nil, Map.new(holes))
   end
 
   defp template(state, items, exprs, meta) do
@@ -459,12 +482,12 @@ defmodule HeexLint.Collector do
 
     with false <- MapSet.member?(state.seen, key),
          [_ | _] = values <- assigned_values(state.clause, name) do
-      hop(state, key, fn state ->
+      hop(state, key, meta, fn state ->
         state = %{state | mode: :body, text: body_text(state, meta)}
         Enum.reduce(values, state, &visit(&2, &1))
       end)
     else
-      true -> state
+      true -> stop(state)
       _ -> received(state, name, meta)
     end
   end
@@ -488,7 +511,7 @@ defmodule HeexLint.Collector do
               [Component.attr(component, name)],
             do: {nil, default}
 
-      hop(state, key, fn state ->
+      hop(state, key, meta, fn state ->
         state = %{state | mode: :body, text: body_text(state, meta)}
 
         Enum.reduce(assigned ++ defaults, state, fn {clause, value}, acc ->
@@ -496,7 +519,8 @@ defmodule HeexLint.Collector do
         end)
       end)
     else
-      _ -> state
+      true -> stop(state)
+      nil -> state
     end
   end
 
@@ -521,6 +545,7 @@ defmodule HeexLint.Collector do
             hop(
               state,
               {:default, name},
+              meta,
               &visit(%{&1 | mode: :body, text: body_text(&1, meta)}, default)
             )
         end
@@ -543,17 +568,17 @@ defmodule HeexLint.Collector do
   end
 
   defp variable(state, name, meta) do
-    key = {:var, name}
+    key = variable_key(state, name)
 
     cond do
       MapSet.member?(state.seen, key) ->
-        unresolved(state, meta)
+        state |> stop() |> unresolved(meta)
 
       prop = head_binding(state.clause, name) ->
         received(state, prop, meta)
 
       values = bound_values(state.clause, name) ->
-        hop(state, key, fn state ->
+        hop(state, key, meta, fn state ->
           Enum.reduce(values, leave_template(state, meta), &visit(&2, &1))
         end)
 
@@ -562,9 +587,15 @@ defmodule HeexLint.Collector do
     end
   end
 
-  # A variable a template reads holds code of the enclosing function, where
-  # the keys of its maps are.
-  defp leave_template(%{map_keys: keys, mode: :template} = state, meta) when is_list(keys),
+  # Two functions can each have their own `class`.
+  defp variable_key(state, name), do: {:var, name, clause_id(state.clause)}
+
+  defp clause_id(nil), do: nil
+  defp clause_id(%{line: line, column: column}), do: {line, column}
+
+  # A variable a template reads holds code of the enclosing function: its
+  # positions are in the file and `@name` in it is a module attribute.
+  defp leave_template(%{mode: :template} = state, meta),
     do: %{state | mode: :body, text: body_text(state, meta)}
 
   defp leave_template(state, _meta), do: state
@@ -575,22 +606,60 @@ defmodule HeexLint.Collector do
     with false <- MapSet.member?(state.seen, key),
          %ModuleInfo{attributes: attributes} <- current_module(state),
          [_ | _] = values <- Map.get(attributes, name) do
-      hop(state, key, fn state -> Enum.reduce(values, state, &visit(&2, &1)) end)
+      hop(state, key, meta, fn state -> Enum.reduce(values, state, &visit(&2, &1)) end)
     else
+      true -> state |> stop() |> unresolved(meta)
       _ -> unresolved(state, meta)
     end
   end
 
-  defp hop(state, key, fun) do
-    if state.depth >= @max_depth do
-      state
-    else
-      saved = Map.take(state, [:mode, :text, :clause, :seen, :depth])
-      state = %{state | seen: MapSet.put(state.seen, key), depth: state.depth + 1}
-      state = fun.(state)
-      Map.merge(state, saved)
+  # One step along a route: `key` is on it, or the several keys of a lookup
+  # that went through aliases. `seen` holds what is on the route, and reaching
+  # one of those again is a cycle. `visited` holds how the reads of this site
+  # ended, and is another thing: reading `a` from both branches of
+  # `if on, do: a, else: a` is no cycle, so the second read just adds nothing.
+  #
+  # A read that stopped says nothing about the binding's whole value: it was cut
+  # at the end of its route (`cuts`) or at a binding on it (`stops`). The same
+  # read is skipped only where it would stop the same way, at the same distance
+  # from the limit or on the same route, and skipping it passes that on to what
+  # is reading it. Without this, a branching chain that never finishes a read,
+  # because it runs past the limit or ends in a cycle, doubles with every link.
+  defp hop(state, key, meta, how \\ nil, fun) do
+    keys = List.wrap(key)
+    this = {keys, how, clause_id(state.clause), state.kind}
+    ended = Map.get(state.visited, this, MapSet.new())
+    again? = MapSet.size(ended) > 0
+
+    cond do
+      state.depth >= @max_route -> cut(state, meta)
+      MapSet.member?(ended, :whole) -> state
+      MapSet.member?(ended, state.depth) -> %{state | cuts: state.cuts + 1}
+      MapSet.member?(ended, state.seen) -> stop(state)
+      again? and state.rereads >= @max_rereads -> cut(state, meta)
+      again? -> read(%{state | rereads: state.rereads + 1}, this, keys, fun)
+      true -> read(state, this, keys, fun)
     end
   end
+
+  defp read(state, this, keys, fun) do
+    saved = Map.take(state, [:mode, :text, :clause, :seen, :depth])
+    inner = fun.(%{state | seen: Enum.into(keys, state.seen), depth: state.depth + length(keys)})
+
+    ended =
+      cond do
+        inner.stops != state.stops -> state.seen
+        inner.cuts != state.cuts -> state.depth
+        true -> :whole
+      end
+
+    visited = Map.update(inner.visited, this, MapSet.new([ended]), &MapSet.put(&1, ended))
+    Map.merge(%{inner | visited: visited}, saved)
+  end
+
+  defp stop(state), do: %{state | stops: state.stops + 1}
+
+  defp cut(state, meta), do: unresolved(%{state | cuts: state.cuts + 1}, meta)
 
   defp current_module(state) do
     module = state.context[:module] || (state.context[:template] && state.context.template.module)
@@ -659,11 +728,11 @@ defmodule HeexLint.Collector do
     key = {:fun, name, arity}
 
     if MapSet.member?(state.seen, key) do
-      unresolved(state, meta)
+      state |> stop() |> unresolved(meta)
     else
       clauses = current_module(state).functions[{name, arity}]
 
-      hop(state, key, fn state ->
+      hop(state, key, meta, fn state ->
         state = %{state | mode: :body, text: body_text(state, meta)}
 
         Enum.reduce(clauses, state, fn
@@ -689,11 +758,17 @@ defmodule HeexLint.Collector do
   # A lookup reads the entry named by a literal key, or every entry when the
   # key is only known at runtime: the table is the set of classes it can pick.
   defp lookup(state, map, key, default, meta) do
-    case table(state, map) do
+    case table(state, map, []) do
       nil ->
         unresolved(state, meta)
 
-      pairs ->
+      :stopped ->
+        state |> stop() |> unresolved(meta)
+
+      :cut ->
+        cut(state, meta)
+
+      {pairs, route} ->
         key = literal_key(key)
 
         values =
@@ -702,35 +777,55 @@ defmodule HeexLint.Collector do
             _ -> Enum.map(pairs, &elem(&1, 1))
           end
 
-        state = Enum.reduce(values, state, &visit(&2, &1))
+        state = entries(state, values, route, key, meta)
         if default, do: visit(state, default), else: state
     end
   end
 
-  defp table(_state, {:%{}, _, pairs}), do: literal_pairs(pairs)
+  defp entries(state, values, [], _key, _meta), do: Enum.reduce(values, state, &visit(&2, &1))
 
-  defp table(_state, list) when is_list(list) do
-    if Keyword.keyword?(list), do: literal_pairs(list), else: nil
+  # A table reached through names is on the route while its entries are read,
+  # so `t = %{a: t[:a]}` stops, and each entry is one read of its own.
+  defp entries(state, values, route, key, meta) do
+    hop(state, route, meta, {:entry, key}, fn state ->
+      Enum.reduce(values, leave_template(state, meta), &visit(&2, &1))
+    end)
   end
 
-  defp table(state, {name, _, ctx}) when is_atom(name) and is_atom(ctx) do
+  # The entries of a table and the names followed to reach it, nil when it is
+  # not one, :stopped at a name already on the route, or :cut past its limit.
+  defp table(_state, {:%{}, _, pairs}, route), do: {literal_pairs(pairs), route}
+
+  defp table(_state, list, route) when is_list(list) do
+    if Keyword.keyword?(list), do: {literal_pairs(list), route}, else: nil
+  end
+
+  defp table(state, {name, _, ctx}, route) when is_atom(name) and is_atom(ctx) do
     case bound_values(state.clause, name) do
-      [value] -> table(state, value)
+      [value] -> alias_of(%{state | mode: :body}, variable_key(state, name), value, route)
       _ -> nil
     end
   end
 
-  defp table(%{mode: :body} = state, {:@, _, [{name, _, ctx}]})
+  defp table(%{mode: :body} = state, {:@, _, [{name, _, ctx}]}, route)
        when is_atom(name) and is_atom(ctx) do
     with %ModuleInfo{attributes: attributes} <- current_module(state),
          [value] <- Map.get(attributes, Atom.to_string(name)) do
-      table(state, value)
+      alias_of(state, {:attribute, Atom.to_string(name)}, value, route)
     else
       _ -> nil
     end
   end
 
-  defp table(_state, _other), do: nil
+  defp table(_state, _other, _route), do: nil
+
+  defp alias_of(state, key, value, route) do
+    cond do
+      key in route or MapSet.member?(state.seen, key) -> :stopped
+      state.depth + length(route) >= @max_route -> :cut
+      true -> table(state, value, route ++ [key])
+    end
+  end
 
   defp literal_pairs(pairs) do
     Enum.map(pairs, fn
@@ -769,16 +864,7 @@ defmodule HeexLint.Collector do
 
   # `name = value` anywhere in the clause body, every one of them.
   defp bound_values(nil, _name), do: nil
-
-  defp bound_values(%{body: body}, name) do
-    {_, values} =
-      Macro.prewalk(body, [], fn
-        {:=, _, [{^name, _, ctx}, value]} = node, acc when is_atom(ctx) -> {node, acc ++ [value]}
-        node, acc -> {node, acc}
-      end)
-
-    if values == [], do: nil, else: values
-  end
+  defp bound_values(%{bindings: bindings}, name), do: Map.get(bindings, name)
 
   # The values `assign(assigns, :name, value)` and friends give an assign.
   defp assigned_values(nil, _name), do: []

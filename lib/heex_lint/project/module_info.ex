@@ -23,7 +23,9 @@ defmodule HeexLint.Project.ModuleInfo do
           args: [Macro.t()],
           guard: Macro.t() | nil,
           body: Macro.t() | nil,
-          line: pos_integer()
+          line: pos_integer(),
+          column: pos_integer(),
+          bindings: %{atom() => [Macro.t()]}
         }
 
   @type t :: %__MODULE__{

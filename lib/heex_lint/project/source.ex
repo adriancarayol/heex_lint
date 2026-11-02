@@ -170,7 +170,17 @@ defmodule HeexLint.Project.Source do
         args = if is_list(args), do: args, else: []
         body = rest |> Enum.flat_map(&Code.keyword/1) |> Keyword.get(:do)
         name = Atom.to_string(name)
-        clause = %{kind: kind, args: args, guard: guard, body: body, line: meta[:line]}
+
+        clause = %{
+          kind: kind,
+          args: args,
+          guard: guard,
+          body: body,
+          line: meta[:line],
+          column: meta[:column],
+          bindings: bindings(body)
+        }
+
         key = {name, length(args)}
         functions = Map.update(module.functions, key, [clause], &(&1 ++ [clause]))
         module = %{module | functions: functions}
@@ -238,6 +248,21 @@ defmodule HeexLint.Project.Source do
         line: meta[:line]
       }
     end
+  end
+
+  # `name = value` anywhere in a function body, every one of them. Kept with the
+  # clause: a route reads these once per link, and a function can be long.
+  defp bindings(body) do
+    {_, found} =
+      Macro.prewalk(body, %{}, fn
+        {:=, _, [{name, _, ctx}, value]} = node, acc when is_atom(name) and is_atom(ctx) ->
+          {node, Map.update(acc, name, [value], &[value | &1])}
+
+        node, acc ->
+          {node, acc}
+      end)
+
+    Map.new(found, fn {name, values} -> {name, Enum.reverse(values)} end)
   end
 
   # A def is a function component when attrs or slots precede it or its

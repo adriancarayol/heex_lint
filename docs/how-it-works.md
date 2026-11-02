@@ -135,12 +135,16 @@ A class value is read through:
   `assign_new` and `update` in the rendering function;
 - in a function component, the received `class` (and any `*_class`) is the
   component's own input: accepted as-is, with its `attr` default checked;
-- one hop further: variables bound in the function, module attributes,
-  same-module functions (each clause's result), map and keyword lookups
-  (`Map.fetch!(@variants, @variant)` reads every entry), and merge functions.
+- further along a chain, up to 64 bindings: variables bound in the function,
+  module attributes, same-module functions (each clause's result), map and
+  keyword lookups (`Map.fetch!(@variants, @variant)` reads every entry), and
+  merge functions.
 
-What cannot be read — a socket assign in a LiveView, an unknown call — is
-reported by `require_static_classes` when used on a design-system component.
+Each binding is read once per attribute, so a class reached through both
+branches of `if on, do: a, else: a` is one class. What cannot be read — a socket assign
+in a LiveView, an unknown call, a variable that reads itself, a chain longer
+than 64 bindings — is reported by `require_static_classes` when used on a
+design-system component.
 
 ## Where it looks
 
