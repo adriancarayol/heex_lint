@@ -204,4 +204,189 @@ defmodule HeexLint.Rules.NoRestyleTest do
     [finding] = restyle(dir, template, options, extra)
     assert finding.message =~ ~s("bg-muted" is not allowed on <.table>)
   end
+
+  describe "{{sizes}}" do
+    @sizes [message: "Sizes: {{sizes|none yet}}."]
+
+    defp sized(dir, template) do
+      options = @sizes ++ [allow: ["layout"], deny: ["w-*"]]
+      [finding] = restyle(dir, template, options)
+      finding.message
+    end
+
+    test "is the list on every finding kind", %{tmp_dir: dir} do
+      # Denied, color, typography, spacing, and a name the grammar cannot read.
+      for class <- ~w(w-full bg-pink-500 font-bold p-4 not-a-class) do
+        assert sized(dir, ~s(<.button class="#{class}">Go</.button>)) == "Sizes: sm, lg."
+      end
+    end
+
+    test "is on a closed contract's layout finding too", %{tmp_dir: dir} do
+      options = @sizes ++ [allow: []]
+      [finding] = restyle(dir, ~s(<.button class="mt-4">Go</.button>), options)
+      assert finding.message == "Sizes: sm, lg."
+    end
+
+    test "takes the fallback on a component without sizes", %{tmp_dir: dir} do
+      assert sized(dir, ~s(<.card class="font-bold">x</.card>)) == "Sizes: none yet."
+      assert sized(dir, ~s(<.card class="w-full">x</.card>)) == "Sizes: none yet."
+    end
+
+    test "is empty rather than literal without a fallback", %{tmp_dir: dir} do
+      [finding] =
+        restyle(dir, ~s(<.card class="font-bold">x</.card>),
+          allow: ["layout"],
+          message: "Sizes: [{{sizes}}]."
+        )
+
+      assert finding.message == "Sizes: []."
+    end
+
+    test "comes from the wrapped component on a forwarding wrapper", %{tmp_dir: dir} do
+      wrapper =
+        component_module("Widgets", "danger_button", "attr :rest, :global", """
+        <.button variant="destructive" {@rest}>Delete</.button>
+        """)
+
+      [finding] =
+        restyle(
+          dir,
+          ~s(<AppWeb.Widgets.danger_button class="bg-pink-500" />),
+          @sizes ++ [allow: ["layout"]],
+          %{"lib/app_web/widgets.ex" => wrapper}
+        )
+
+      assert finding.message == "Sizes: sm, lg."
+    end
+  end
+
+  describe "a component from deps/" do
+    @salad """
+    defmodule SaladUI.Button do
+      use Phoenix.Component
+
+      attr :variant, :string, values: ~w(default ghost), default: "default"
+      attr :size, :string, values: ~w(sm lg), default: "sm"
+      attr :class, :any, default: nil
+      def button(assigns), do: ~H"<button class={@class} />"
+
+      attr :class, :any, default: nil
+      def badge(assigns), do: ~H"<span class={@class} />"
+    end
+    """
+
+    defp salad_page(template) do
+      """
+      defmodule AppWeb.ShopLive do
+        use Phoenix.LiveView
+        import SaladUI.Button
+
+        def render(assigns) do
+          ~H\"\"\"
+          #{template}
+          \"\"\"
+        end
+      end
+      """
+    end
+
+    defp salad(dir, template, options \\ [allow: ["layout"]], extra \\ %{}) do
+      files =
+        Map.merge(
+          %{
+            "deps/salad_ui/lib/salad_ui/button.ex" => @salad,
+            "lib/app_web/live/shop_live.ex" => salad_page(template)
+          },
+          extra
+        )
+
+      lint(dir, files,
+        rules: [no_restyle: {:error, options}],
+        settings: [component_imports: ["^SaladUI\\."]]
+      )
+    end
+
+    test "an appearance finding adds the variant to the component", %{tmp_dir: dir} do
+      [finding] = salad(dir, ~s(<.button class="bg-pink-500">Go</.button>))
+
+      assert finding.message ==
+               ~s|"bg-pink-500" is not allowed on <.button>: <.button> owns its color. Use a variant: default, ghost. Add a new variant to <.button> only if the design explicitly calls for a treatment none of these provides.|
+    end
+
+    test "without variants too", %{tmp_dir: dir} do
+      [finding] = salad(dir, ~s(<.badge class="bg-pink-500">Go</.badge>))
+
+      assert finding.message ==
+               ~s|"bg-pink-500" is not allowed on <.badge>: <.badge> owns its color. Add a variant to <.badge> only if the design explicitly calls for this treatment.|
+    end
+
+    test "a spacing finding adds the size to the component", %{tmp_dir: dir} do
+      [finding] = salad(dir, ~s(<.button class="p-4">Go</.button>))
+
+      assert finding.message ==
+               ~s|"p-4" is not allowed on <.button>: <.button> owns its spacing. Use a size (sm, lg), or margin here or gap on the parent for space around it. Add a size to <.button> only if the design explicitly calls for one.|
+    end
+
+    test "a wrapper over it names the component it forwards to", %{tmp_dir: dir} do
+      wrapper = """
+      defmodule AppWeb.Widgets do
+        use Phoenix.Component
+        import SaladUI.Button
+
+        attr :rest, :global
+        def danger_button(assigns), do: ~H"<.button variant=\\"ghost\\" {@rest}>Delete</.button>"
+      end
+      """
+
+      extra = %{"lib/app_web/widgets.ex" => wrapper}
+
+      [color] =
+        salad(
+          dir,
+          ~s(<AppWeb.Widgets.danger_button class="bg-pink-500" />),
+          [allow: ["layout"]],
+          extra
+        )
+
+      assert color.message ==
+               ~s|"bg-pink-500" is not allowed on <.danger_button>: <.danger_button> forwards class to <.button>, which owns its color. Use a variant: default, ghost. Add a new variant to <.button> only if the design explicitly calls for a treatment none of these provides.|
+
+      [spacing] =
+        salad(dir, ~s(<AppWeb.Widgets.danger_button class="p-4" />), [allow: ["layout"]], extra)
+
+      assert spacing.message =~
+               "Add a size to <.button> only if the design explicitly calls for one."
+
+      refute spacing.message =~ "deps/"
+    end
+
+    test "{{file}} is empty and {{where}} names the component", %{tmp_dir: dir} do
+      options = [allow: ["layout"], message: "[{{file}}] [{{file|no file}}] [{{where}}]"]
+
+      for class <- ~w(bg-pink-500 p-4 not-a-class) do
+        [finding] = salad(dir, ~s(<.button class="#{class}">Go</.button>), options)
+        assert finding.message == "[] [no file] [to <.button>]"
+      end
+    end
+
+    test "no finding on it names the dependency's path", %{tmp_dir: dir} do
+      options = [allow: ["mt-4"], deny: ["w-*"]]
+      classes = "bg-pink-500 p-4 font-bold shadow-sm w-full flex not-a-class"
+      findings = salad(dir, ~s(<.button class="#{classes}">Go</.button>), options)
+
+      assert length(findings) == 7
+      for finding <- findings, do: refute(finding.message =~ "deps/")
+    end
+  end
+
+  test "a project component's own file fills {{file}} and {{where}}", %{tmp_dir: dir} do
+    options = [allow: ["layout"], message: "[{{file}}] [{{where}}]"]
+    file = "lib/app_web/components/core_components.ex"
+
+    # On every finding kind, not only the ones whose built-in text names it.
+    for class <- ~w(bg-pink-500 p-4 not-a-class) do
+      [finding] = restyle(dir, ~s(<.button class="#{class}">Go</.button>), options)
+      assert finding.message == "[#{file}] [in #{file}]"
+    end
+  end
 end

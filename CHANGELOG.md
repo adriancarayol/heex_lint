@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- `no_raw_colors` reports `white` and `black` where `deny` names them, as in
+  `no_raw_colors: {:error, deny: ["*-white", "*-black"]}`, and suggests the
+  nearest theme tokens. **This adds findings** for a config whose `deny`
+  matches those classes, which were accepted before: `deny: ["*-white"]`, or
+  a `deny` naming a category or group that covers them. Without such a
+  `deny` they still pass, and a theme declaring `--color-white` still owns it.
+- `{{sizes}}` in a custom `no_restyle` message now holds the size names on
+  every finding, and is empty when the component has none, instead of
+  printing the placeholder on a color or layout finding. Every `no_restyle`
+  finding also offers `{{where}}`.
+- `no_restyle` no longer sends anyone to add a variant or size in `deps/`. A
+  finding on a component from a dependency says "Add a new variant to
+  <.button>" instead of naming the file, and `{{file}}` is empty there.
+  Messages for your own components are unchanged, and no findings are added.
 - Theme variables resolve from `:root`, `html`, `:host` and `@theme` over
   scoped selectors such as `.compact`, across imported files too. Before,
   with `:root { --radius: 8px; }`, `.compact { --radius: 4px; }` and

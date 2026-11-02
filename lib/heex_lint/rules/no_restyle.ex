@@ -24,12 +24,12 @@ defmodule HeexLint.Rules.NoRestyle do
     * `:message` - a string, or a map of category keys (`layout`, `color`,
       `typography`, `spacing`, `shape`, `effects`, `motion`, `default`).
       Also `{{category}}`, `{{variants}}`, `{{sizes}}`, `{{wrapper}}`,
-      `{{around}}` and `{{entries}}`.
+      `{{where}}`, `{{around}}` and `{{entries}}`.
   """
 
   @behaviour HeexLint.Rule
 
-  alias HeexLint.{Policy, Rule, Theme}
+  alias HeexLint.{Policy, Project, Rule, Theme}
   alias HeexLint.Policy.ConfigError
   alias HeexLint.Project.Component
 
@@ -39,15 +39,15 @@ defmodule HeexLint.Rules.NoRestyle do
   @new_variant_guard "only if the design explicitly calls for a treatment none of these provides."
   @spacing_sizes "Use a size ({{sizes}}), or {{around}} for space around it."
   @spacing_around "For space around it, use {{around}}."
-  @spacing_new_size "Add a size in {{file}} only if the design explicitly calls for one."
+  @spacing_new_size "Add a size {{where}} only if the design explicitly calls for one."
 
   @messages %{
     appearance_class:
       "#{@not_allowed} #{@owns} Use one of its variants. Add a new variant only if the design explicitly calls for a treatment none of them provides.",
     appearance_class_with_variants:
-      "#{@not_allowed} #{@owns} Use a variant: {{variants}}. Add a new variant in {{file}} #{@new_variant_guard}",
+      "#{@not_allowed} #{@owns} Use a variant: {{variants}}. Add a new variant {{where}} #{@new_variant_guard}",
     appearance_class_no_variants:
-      "#{@not_allowed} #{@owns} Add a variant in {{file}} only if the design explicitly calls for this treatment.",
+      "#{@not_allowed} #{@owns} Add a variant {{where}} only if the design explicitly calls for this treatment.",
     appearance_class_via_wrapper:
       ~s|"{{className}}" is not allowed on <{{wrapper}}>: #{@owns_via_wrapper} Use a variant{{variantsSuffix}}. Add a new variant {{where}} #{@new_variant_guard}|,
     denied_class: "#{@not_allowed} its contract denies {{entries}}.",
@@ -103,9 +103,19 @@ defmodule HeexLint.Rules.NoRestyle do
          file
        ) do
     component = site.component_ref
-    where = Path.relative_to(component.file, project.root)
+    # A dependency is read for its variants, but no message sends anyone
+    # into deps/ to add one.
+    shown =
+      if Project.dependency?(component),
+        do: "",
+        else: Path.relative_to(component.file, project.root)
+
+    where =
+      if shown != "", do: "in #{shown}", else: "to <#{Rule.display(site.component)}>"
+
     variants = Component.variants(component)
     variant_names = if variants, do: Enum.join(variants, ", "), else: ""
+    sizes = Component.sizes(component)
 
     # Every finding carries the same slots, whatever the category, so a
     # contract's own words can interpolate any of them.
@@ -115,8 +125,10 @@ defmodule HeexLint.Rules.NoRestyle do
       "entries" => Enum.join(entries, " "),
       "category" => category,
       "variants" => variant_names,
+      "sizes" => Enum.join(sizes || [], ", "),
       "wrapper" => Rule.display(site.wrapper),
-      "file" => where
+      "file" => shown,
+      "where" => where
     }
 
     {id, data} =
@@ -134,7 +146,6 @@ defmodule HeexLint.Rules.NoRestyle do
           {if(entries == [], do: :layout_class_closed, else: :layout_class), data}
 
         category == "spacing" ->
-          sizes = Component.sizes(component)
           around = around(site, policy, project, token)
 
           id =
@@ -145,7 +156,7 @@ defmodule HeexLint.Rules.NoRestyle do
               {false, false} -> :spacing_class_no_sizes
             end
 
-          {id, Map.merge(data, %{"sizes" => Enum.join(sizes || [], ", "), "around" => around})}
+          {id, Map.put(data, "around", around)}
 
         true ->
           id =
@@ -156,7 +167,7 @@ defmodule HeexLint.Rules.NoRestyle do
             end
 
           suffix = if variant_names != "", do: ": " <> variant_names, else: ""
-          {id, Map.merge(data, %{"variantsSuffix" => suffix, "where" => "in #{where}"})}
+          {id, Map.put(data, "variantsSuffix", suffix)}
       end
 
     %{position: position, message: Rule.message(@messages[id], data, words, options, file)}

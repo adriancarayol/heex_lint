@@ -56,6 +56,18 @@ not make a declared token a raw color, class exceptions do not bypass SVG
 attribute checks, and property exceptions do not bypass `<style>` or
 dynamic-style checks.
 
+In `no_raw_colors`, `transparent`, `current` and `inherit` are always accepted.
+`white` and `black` are accepted too, since Tailwind declares them in every
+theme, until `deny` names them:
+
+```elixir
+no_raw_colors: {:error, deny: ["*-white", "*-black"]}
+```
+
+`<p class="text-white">` is then reported with the nearest theme tokens, such
+as `text-background`. A theme that declares `--color-white` owns the name, and
+it still passes.
+
 ### Contracts
 
 A contract's `pattern` is a regex on the component's function name:
@@ -140,7 +152,7 @@ Every finding provides these placeholders, empty when they do not apply:
 | `{{property}}`    | The inline CSS property.                                  |
 | `{{component}}`   | The component, such as `.button`.                         |
 | `{{suggestions}}` | Suggested tokens, scale values, or a spelling correction. |
-| `{{file}}`        | The relevant theme or component file.                     |
+| `{{file}}`        | The relevant theme or component file; empty on `no_restyle` findings for a component from `deps/`. |
 
 `no_restyle` also accepts a map with category keys: `layout`, `color`,
 `typography`, `spacing`, `shape`, `effects`, `motion`, and `default` for the
@@ -155,7 +167,8 @@ Additional `no_restyle` placeholders:
 | `{{category}}` | The class category, including `layout` or `unclassified`.        |
 | `{{variants}}` | Comma-separated variant names, or empty.                         |
 | `{{wrapper}}`  | The forwarding component, or empty.                              |
-| `{{sizes}}`    | Size names on spacing findings, except explicit `deny` findings. |
+| `{{sizes}}`    | Comma-separated size names on every finding, or empty.           |
+| `{{where}}`    | Where to add a variant or size: `in lib/app_web/components/button.ex`, or `to <.button>` for a component from `deps/`. |
 | `{{around}}`   | Where spacing can go instead, on spacing findings.               |
 | `{{entries}}`  | The relevant allow or deny entries.                              |
 

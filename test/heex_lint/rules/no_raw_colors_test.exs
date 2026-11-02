@@ -623,4 +623,103 @@ defmodule HeexLint.Rules.NoRawColorsTest do
     [finding] = colors(dir, ~s|<svg><path fill="oklch(var(--x, 0.5 0.1 200))" /></svg>|)
     assert finding.message =~ ~s|fill="oklch(var(--x, 0.5 0.1 200))" hardcodes a color|
   end
+
+  # Tailwind declares white and black in every theme, and core components
+  # use them, so they pass until deny names them.
+  describe "white and black" do
+    @mixed ~s(<div class="text-white bg-black/50" />)
+
+    test "pass by default and under an allow that does not name them", %{tmp_dir: dir} do
+      assert colors(dir, @mixed) == []
+      assert colors(dir, @mixed, allow: ["*-red-*"]) == []
+    end
+
+    test "deny reports them, and keeps variants and opacity in the suggestions", %{tmp_dir: dir} do
+      [white, black] =
+        colors(dir, ~s(<div class="hover:text-white bg-black/50" />),
+          deny: ["*-white", "*-black"]
+        )
+
+      assert white.message ==
+               ~s|"hover:text-white" uses the raw Tailwind palette. Nearest theme tokens: hover:text-background, hover:text-primary-foreground. Use one of those, or declare --color-<name> in assets/css/app.css for a new color.|
+
+      assert Enum.map(white.suggestions, & &1.replacement) ==
+               ["hover:text-background", "hover:text-primary-foreground"]
+
+      # No surface token is close to black in this theme.
+      assert black.message =~
+               ~s("bg-black/50" uses the raw Tailwind palette and no declared theme color is close to it.)
+
+      [faded] = colors(dir, ~s(<div class="text-white/50" />), deny: ["*-white"])
+
+      assert Enum.map(faded.suggestions, & &1.replacement) ==
+               ["text-background/50", "text-primary-foreground/50"]
+    end
+
+    test "denying white leaves black alone", %{tmp_dir: dir} do
+      assert [%{message: message}] = colors(dir, @mixed, deny: ["*-white"])
+      assert message =~ ~s("text-white")
+    end
+
+    test "a category in deny reaches them", %{tmp_dir: dir} do
+      assert [_, _] = colors(dir, @mixed, deny: ["color"])
+    end
+
+    test "allow takes back nothing deny names", %{tmp_dir: dir} do
+      assert [_] =
+               colors(dir, ~s(<div class="text-white" />), allow: ["*-white"], deny: ["text-*"])
+
+      assert colors(dir, ~s(<div class="text-white" />), allow: ["*-white"]) == []
+    end
+
+    test "a contract with its own deny lets one component keep them", %{tmp_dir: dir} do
+      options = [deny: ["*-white"], contracts: [[pattern: "^button$", deny: []]]]
+      assert colors(dir, ~s(<.button class="text-white">Go</.button>), options) == []
+      assert [_] = colors(dir, ~s(<.card class="text-white">Go</.card>), options)
+    end
+
+    test "a theme declaring them owns them, even under deny", %{tmp_dir: dir} do
+      css = theme() <> "\n@theme { --color-white: #fefefe; }\n"
+      extra = %{"assets/css/app.css" => css}
+
+      assert colors(dir, ~s(<div class="text-white" />), [deny: ["*-white"]], extra) == []
+
+      assert [_] = colors(dir, ~s(<div class="bg-black" />), [deny: ["*-black"]], extra)
+    end
+
+    test "a scoped token of that name passes for its utility only", %{tmp_dir: dir} do
+      css = theme() <> "\n@theme { --background-color-white: #fefefe; }\n"
+      extra = %{"assets/css/app.css" => css}
+
+      assert colors(dir, ~s(<div class="bg-white" />), [deny: ["*-white"]], extra) == []
+      assert [_] = colors(dir, ~s(<div class="text-white" />), [deny: ["*-white"]], extra)
+    end
+
+    test "deny reports them without a theme to read", %{tmp_dir: dir} do
+      extra = %{"assets/css/app.css" => ""}
+      assert colors(dir, @mixed, [], extra) == []
+
+      assert [finding] = colors(dir, ~s(<div class="text-white" />), [deny: ["*-white"]], extra)
+
+      assert finding.message ==
+               ~s("text-white" uses the raw Tailwind palette. Use a theme token, or define one for this color.)
+    end
+
+    test "the other named colors stay out of reach of deny", %{tmp_dir: dir} do
+      template = ~s(<div class="bg-transparent text-current fill-inherit" />)
+      assert colors(dir, template, deny: ["*-transparent", "*-current", "*-inherit"]) == []
+    end
+
+    test "scan_all_strings follows the same rule", %{tmp_dir: dir} do
+      module = """
+      defmodule AppWeb.Tones do
+        def tone, do: "text-white"
+      end
+      """
+
+      extra = %{"lib/app_web/tones.ex" => module}
+      assert colors(dir, ~s(<div />), [scan_all_strings: true], extra) == []
+      assert [_] = colors(dir, ~s(<div />), [scan_all_strings: true, deny: ["*-white"]], extra)
+    end
+  end
 end

@@ -185,9 +185,9 @@ defmodule HeexLint.Project do
     |> Enum.take(1)
   end
 
-  @doc "Whether `module` comes from a dependency rather than the project."
-  @spec dependency?(ModuleInfo.t()) :: boolean()
-  def dependency?(%ModuleInfo{file: file}), do: String.contains?(file, "/deps/")
+  @doc "Whether a module or component comes from a dependency rather than the project."
+  @spec dependency?(ModuleInfo.t() | Component.t()) :: boolean()
+  def dependency?(%{file: file}), do: String.contains?(file, "/deps/")
 
   ## Theme
 

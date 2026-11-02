@@ -13,8 +13,10 @@ defmodule HeexLint.Rules.NoRawColors do
       <div class="bg-highlight"> "bg-highlight" is not a declared theme color...
       <path fill="#ec4899" />    fill="#ec4899" hardcodes a color...
 
-  `white`, `black`, `transparent`, `current` and `inherit` are accepted,
-  as are `fill-none` and `stroke-none`.
+  `transparent`, `current` and `inherit` are always accepted, as are
+  `fill-none` and `stroke-none`. `white` and `black` are accepted too, since
+  Tailwind declares them in every theme, until `deny` names them:
+  `no_raw_colors: {:error, deny: ["*-white", "*-black"]}`.
   Arbitrary colors such as `bg-[#333]` belong to `no_arbitrary_values`.
 
   ## Options
@@ -32,7 +34,12 @@ defmodule HeexLint.Rules.NoRawColors do
   alias HeexLint.Grammar.{Categories, Classes, Colors, ProjectClassifier, Similar}
   alias HeexLint.Policy.ConfigError
 
-  @named MapSet.new(~w(white black transparent current inherit))
+  # No theme can get these wrong: they turn a color off or pass one down.
+  @named MapSet.new(~w(transparent current inherit))
+
+  # Tailwind declares these in every theme, so they pass until `deny` names
+  # them: text-white on bg-primary is right in one theme and wrong in the next.
+  @fixed MapSet.new(~w(white black))
 
   # HTML and SVG attributes that take a color directly.
   @color_attributes MapSet.new(~w(
@@ -108,7 +115,8 @@ defmodule HeexLint.Rules.NoRawColors do
           {token, position} <- Rule.tokens(string),
           verdict = verdict(context, token),
           verdict != nil,
-          (exemption = Policy.decide(policy, site_component(site), token)) != :ok do
+          (exemption = Policy.decide(policy, site_component(site), token)) != :ok,
+          reported?(verdict, exemption) do
         data = Map.put(verdict.data, "component", Rule.display(site_component(site)))
 
         %{
@@ -123,6 +131,10 @@ defmodule HeexLint.Rules.NoRawColors do
 
     class_findings ++ attribute_findings(file, context, options)
   end
+
+  # white or black: reported only where `deny` names it.
+  defp reported?(%{opt_in: true}, exemption), do: match?({:denied, _, _, _}, exemption)
+  defp reported?(_verdict, _exemption), do: true
 
   defp words({_, _, _, message}), do: message
   defp words(_), do: nil
@@ -294,6 +306,7 @@ defmodule HeexLint.Rules.NoRawColors do
       # --background-color-surface declares bg-surface, and only that.
       parts && member?(tokens_for(theme, parts.prefix), value) -> nil
       Classes.palette_class?(token) -> palette_verdict(context, token)
+      value && MapSet.member?(@fixed, value) -> fixed_verdict(context, token)
       declared == nil -> nil
       ProjectClassifier.category_of(theme, token) != "color" -> nil
       value == nil or MapSet.member?(@named, value) -> nil
@@ -304,6 +317,9 @@ defmodule HeexLint.Rules.NoRawColors do
       true -> undeclared_verdict(context, token)
     end
   end
+
+  defp fixed_verdict(context, token),
+    do: context |> palette_verdict(token) |> Map.put(:opt_in, true)
 
   defp member?(nil, _value), do: false
   defp member?(set, value), do: MapSet.member?(set, value)

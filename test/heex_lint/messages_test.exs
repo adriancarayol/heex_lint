@@ -13,6 +13,12 @@ defmodule HeexLint.MessagesTest do
              "none {{unknown}} {{unknown|x}}"
   end
 
+  test "the no_restyle slots are known placeholders, so they raise no typo warning" do
+    assert Messages.check("{{sizes}} {{where}} {{file}}", "no_restyle") == []
+    assert [warning] = Messages.check("{{wher}}", "no_restyle")
+    assert warning =~ ~s(Did you mean "{{where}}"?)
+  end
+
   test "custom messages get the universal slots and the note" do
     data = %{"className" => "p-4", "replacement" => "p-3"}
     assert Messages.render("built-in", data) == "built-in"

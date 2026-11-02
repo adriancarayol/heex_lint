@@ -28,7 +28,9 @@ that is not in the project is looked up in `deps/` by its conventional path
 deep so `use SaladUI` brings in what its quote block imports. Its components
 then resolve with their attrs, and `<.button>` from `import SaladUI.Button`
 is SaladUI's, not a local one of the same name. A dependency's components are
-the design system only when `ui` or `component_imports` names them.
+the design system only when `ui` or `component_imports` names them. Their
+findings list the dependency's variants and name the component rather than
+its file: there is no variant to add inside `deps/`.
 
 **The design system** is the set of modules whose components `no_restyle`
 and `require_static_classes` check: every module defined under a
