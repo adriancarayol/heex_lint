@@ -213,4 +213,9 @@ One your CSS declares some other way, such as a plain selector, is still
 unclassified — the rule cannot read what it changes — and is reported in words
 that do not call it a misspelling.
 
+A scale your `@theme` declares joins the grammar: `--radius-card` makes
+`rounded-card` shape and `--text-display` makes `text-display` typography. A
+`--radius-*: initial` reset replaces the default names, so `rounded-lg` is
+unclassified until the theme declares it again.
+
 The complete mapping is `HeexLint.Grammar.Categories`.

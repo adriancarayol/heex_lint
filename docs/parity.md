@@ -29,7 +29,7 @@ reference the same way.
 | @shadcn/lint | HeexLint |
 | --- | --- |
 | `no-restyle`, `no-raw-colors`, `no-arbitrary-values`, `no-inline-styles`, `no-unknown-classes`, `require-static-classes` | The same rules, snake_cased, with the same semantics and message text. |
-| Class grammar from `cn` 0.3.2 | Vendored config and a port of its trie and validators; checked to classify Tailwind 4.3's full class list (46k variants) identically. |
+| Class grammar from `cn` 0.4.0, with the theme's scales applied as `mergeConfigs` does | Vendored config and a port of its trie and validators; checked to classify Tailwind 4.3's full class list (46k variants) identically. `HeexLint.Grammar.ThemeScales` ports `themeScalesOf`, and a theme that declares scales gets its own trie. |
 | Categories and `GROUP_CATEGORY` | `HeexLint.Grammar.Categories`, the same table and arbitrary-property rules. |
 | `allow`, `deny`, `contracts`, entry validation, config errors on line 1 | `HeexLint.Policy`, a port of `contracts.ts`. |
 | Messages, `{{placeholder\|fallback}}`, `note`, typo warnings, 500-char limit | `HeexLint.Messages`. |

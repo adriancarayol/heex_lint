@@ -89,6 +89,16 @@ A utility's own namespace counts too: `--background-color-surface` declares
 `bg-surface` and nothing else. Theme namespaces that share a prefix with a
 color utility are not colors: `--text-stat` makes `text-stat` a font size.
 
+The grammar reads the scales your theme declares, the way `cn build` registers
+them. A `--radius-card` in `@theme` makes `rounded-card` a shape class,
+`--text-display` makes `text-display` typography, and `--spacing-gutter` makes
+`p-gutter` spacing. A `--radius-*: initial` reset replaces the default names
+with the declared ones, so `rounded-lg` is unclassified until the theme declares
+it again, and `--*: initial` resets every scale but colors and fonts. Setting
+`--spacing` after a reset brings the numeric spacing scale back. Only `@theme`
+blocks count, from the same stylesheets as your tokens: packages under
+`node_modules` contribute no scales.
+
 Suggestions use token values: variables resolve from `:root`, dark-mode
 blocks are skipped, and colors compare in OKLab. The radius and text scales
 (and `calc()`) are read too, so `rounded-[10px]` can suggest `rounded-lg`

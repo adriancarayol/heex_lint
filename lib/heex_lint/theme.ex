@@ -8,9 +8,14 @@ defmodule HeexLint.Theme do
   selectors and `--animate-*` theme names but not tokens, since Tailwind's
   own palette is not the project's vocabulary. Dark-mode blocks are skipped,
   so values are the light theme's.
+
+  `load/1` also applies the scales the stylesheets declare to cn's grammar,
+  once per read, and `signature` tells two reads of an edited file apart.
   """
 
-  alias HeexLint.Grammar.{Classes, Colors, Lengths, TailwindTheme}
+  @derive {Inspect, except: [:grammar]}
+
+  alias HeexLint.Grammar.{Classes, Classifier, Colors, Lengths, TailwindTheme, ThemeScales, Trie}
 
   defstruct file: nil,
             tailwind: false,
@@ -28,7 +33,9 @@ defmodule HeexLint.Theme do
             missing_imports: [],
             colors: %{},
             scales: %{},
-            spacing: nil
+            spacing: nil,
+            grammar: nil,
+            signature: nil
 
   @type declaration :: %{name: String.t(), value: String.t(), theme: boolean()}
 
@@ -58,7 +65,9 @@ defmodule HeexLint.Theme do
           missing_imports: [String.t()],
           colors: %{String.t() => Colors.lab()},
           scales: %{radius: scale(), text: scale()},
-          spacing: float() | nil
+          spacing: float() | nil,
+          grammar: Trie.t() | nil,
+          signature: integer() | nil
         }
 
   # The namespaces Tailwind reads a color utility from before --color-*,
@@ -73,6 +82,8 @@ defmodule HeexLint.Theme do
 
   # `:root, :host` is how Tailwind writes its own theme.
   @root_selector ~r/^(?::root|html|:host)$/
+
+  @tailwind_package "/node_modules/tailwindcss/"
 
   @skip_dirs MapSet.new(~w(
     node_modules dist build out coverage public .next .git .turbo .registry
@@ -90,6 +101,13 @@ defmodule HeexLint.Theme do
   def load(nil), do: %__MODULE__{}
 
   def load(file) do
+    theme = read_stylesheets(file)
+
+    %{theme | grammar: theme.declarations |> ThemeScales.of() |> Classifier.grammar()}
+  end
+
+  # Without the grammar, which only a theme the rules read needs.
+  defp read_stylesheets(file) do
     file = Path.expand(file)
 
     {read, _seen} = read(file, MapSet.new(), %__MODULE__{file: file}, false)
@@ -110,7 +128,7 @@ defmodule HeexLint.Theme do
     |> css_files(0, [])
     |> Enum.sort()
     |> Enum.reduce(nil, fn file, best ->
-      theme = load(file)
+      theme = read_stylesheets(file)
 
       if theme.tailwind do
         tokens = MapSet.size(theme.tokens)
@@ -249,6 +267,19 @@ defmodule HeexLint.Theme do
   def class_prefix?(%__MODULE__{classes: classes}, prefix),
     do: prefix != "" and Enum.any?(classes, &String.starts_with?(&1, prefix))
 
+  @doc "The class map with the theme's scales applied, or `nil` for cn's own."
+  @spec grammar(t() | nil) :: Trie.t() | nil
+  def grammar(nil), do: nil
+  def grammar(%__MODULE__{grammar: grammar}), do: grammar
+
+  @doc """
+  What a memo of answers about this theme should key on: the same for two reads
+  of the same stylesheets, different once one is edited.
+  """
+  @spec signature(t() | nil) :: integer() | nil
+  def signature(nil), do: nil
+  def signature(%__MODULE__{signature: signature}), do: signature
+
   @doc "The radius or text scale in pixels, Tailwind's defaults with the theme's declarations over them."
   @spec scale(t(), :radius | :text) :: scale()
   def scale(%__MODULE__{scales: scales}, kind), do: Map.get(scales, kind) || default_scale(kind)
@@ -305,7 +336,7 @@ defmodule HeexLint.Theme do
     acc = %{acc | variables: MapSet.union(acc.variables, all_variable_names(css))}
 
     if from_package do
-      {%{acc | theme_names: MapSet.union(acc.theme_names, package_animations(css))}, seen}
+      {%{acc | theme_names: MapSet.union(acc.theme_names, package_animations(css, file))}, seen}
     else
       {values, scoped_names, theme_names, declarations} = parse_declarations(css)
 
@@ -326,9 +357,10 @@ defmodule HeexLint.Theme do
   end
 
   # A package's own @theme animations are generated all the same:
-  # tw-animate-css declares --animate-in there.
-  defp package_animations(css) do
-    if String.contains?(css, "--animate-") do
+  # tw-animate-css declares --animate-in there. Tailwind's are the grammar's
+  # defaults, which `--animate-*: initial` has to be able to remove.
+  defp package_animations(css, file) do
+    if String.contains?(css, "--animate-") and not String.contains?(file, @tailwind_package) do
       {_values, _scoped_names, theme_names, _declarations} = parse_declarations(css)
       MapSet.filter(theme_names, &String.starts_with?(&1, "animate-"))
     else
@@ -353,8 +385,16 @@ defmodule HeexLint.Theme do
       theme
       | colors: colors_of(theme),
         scales: %{radius: build_scale(theme, :radius), text: build_scale(theme, :text)},
-        spacing: spacing_of(theme)
+        spacing: spacing_of(theme),
+        signature: read_signature(theme)
     }
+  end
+
+  defp read_signature(%__MODULE__{} = theme) do
+    :erlang.phash2(
+      {theme.file, theme.declarations, theme.utility_properties, theme.classes, theme.theme_names,
+       theme.values, theme.variables, theme.tailwind}
+    )
   end
 
   defp package_file?(file), do: String.contains?(file, "/node_modules/")

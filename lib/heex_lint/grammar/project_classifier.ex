@@ -1,9 +1,10 @@
 defmodule HeexLint.Grammar.ProjectClassifier do
   @moduledoc """
-  The classifier the rules use: cn's grammar, then the project's theme
-  wherever the grammar's answer was a color it could not have known was
-  something else (a declared `--text-stat-label` makes `text-stat-label` a
-  font size), or no answer for an animation the project declares. An
+  The classifier the rules use: cn's grammar with the project's theme scales
+  applied (a declared `--text-stat-label` makes `text-stat-label` a font
+  size), then the project's CSS for what cn does not read. `bg-stripes` comes
+  from a `--background-image-*` the grammar has no scale for, so it reads as a
+  color, and a project's animations live in `@utility` as often as `@theme`. An
   `@utility` answers from its body in both cases: the properties it sets are
   categorized the way an arbitrary property is, so `@utility heading-2xs {
   font-size: 0.75rem }` is typography for the same reason `[font-size:1rem]`
@@ -14,22 +15,15 @@ defmodule HeexLint.Grammar.ProjectClassifier do
   alias HeexLint.Grammar.{Categories, Classes, Classifier}
   alias HeexLint.Theme
 
-  # Longest prefix first: text-shadow-crisp is a text-shadow, not text
-  # "shadow-crisp". `over_color`: whether the namespace wins over a
-  # --color-* of the same name (verified against Tailwind 4.3.3).
-  @namespaces [
-    {"text-shadow-", "text-shadow-", "text-shadow", true},
-    {"inset-shadow-", "inset-shadow-", "inset-shadow", true},
-    {"drop-shadow-", "drop-shadow-", "drop-shadow", true},
-    {"shadow-", "shadow-", "shadow", true},
-    {"text-", "text-", "font-size", false},
-    {"bg-", "background-image-", "bg-image", false}
-  ]
+  # {class prefix, the @theme namespace it reads, the group it gives}. A
+  # --color-* of the same name wins over the namespace, the way Tailwind reads
+  # bg-* (verified against Tailwind 4.3.3): cn's scales cover the rest.
+  @namespaces [{"bg-", "background-image-", "bg-image"}]
 
   @doc "The class group of `token` in a project with `theme`."
   @spec group_of(Theme.t() | nil, String.t()) :: String.t() | nil
   def group_of(theme, token) do
-    key = {__MODULE__, theme && theme.file, token}
+    key = {__MODULE__, Theme.signature(theme), token}
 
     case Process.get(key, :miss) do
       :miss ->
@@ -47,7 +41,7 @@ defmodule HeexLint.Grammar.ProjectClassifier do
   def category_of(theme, token), do: Categories.category_of(group_of(theme, token))
 
   defp classify(theme, token) do
-    group = Classifier.group_of(token)
+    group = Classifier.group_of(token, Theme.grammar(theme))
 
     cond do
       group == nil -> animation_group(theme, token) || utility_group(theme, token)
@@ -62,10 +56,10 @@ defmodule HeexLint.Grammar.ProjectClassifier do
   defp theme_group(theme, token) do
     base = Classes.normalize(token)
 
-    with {prefix, namespace, group, over_color} <-
-           Enum.find(@namespaces, fn {prefix, _, _, _} -> String.starts_with?(base, prefix) end),
+    with {prefix, namespace, group} <-
+           Enum.find(@namespaces, fn {prefix, _, _} -> String.starts_with?(base, prefix) end),
          value when value != nil <- value_of(base, prefix),
-         false <- not over_color and MapSet.member?(theme.tokens, value),
+         false <- MapSet.member?(theme.tokens, value),
          true <- MapSet.member?(theme.theme_names, namespace <> value) do
       group
     else

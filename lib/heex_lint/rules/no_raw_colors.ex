@@ -280,7 +280,7 @@ defmodule HeexLint.Rules.NoRawColors do
   ## Verdicts
 
   defp verdict(context, token) do
-    key = {__MODULE__, context.theme && context.theme.file, token}
+    key = {__MODULE__, Theme.signature(context.theme), token}
 
     case Process.get(key, :miss) do
       :miss ->

@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+- The grammar reads the scales your theme declares, the way `cn build`
+  registers them (cn 0.4.0). `--radius-card` makes `rounded-card` a shape
+  class, and `--tracking-*`, `--leading-*`, `--blur-*`, `--ease-*`,
+  `--aspect-*`, `--spacing-*`, `--perspective-*`, `--breakpoint-*`,
+  `--container-*`, `--font-weight-*`, `--animate-*` and the shadow and text
+  namespaces work the same way. `no_restyle` now reports these under their
+  category and passes them when a contract allows it, and they stop being
+  unclassified. **This adds findings:** `--radius-*: initial` replaces the
+  default names with the declared ones, so `rounded-lg` is unrecognized until
+  the theme declares it again, and `--*: initial` does this to every scale. A
+  `shadow-lg` or `text-lg` after such a reset reads as a color, so
+  `no_raw_colors` reports it as undeclared, and `no_restyle` as color rather
+  than effects or typography. `--spacing` set after a reset keeps the numeric
+  spacing scale. A `deny` or `allow` reaching a category now reaches the
+  declared classes too.
+- `--text-primary` beside `--color-primary` makes `text-primary` a font size,
+  and `no_raw_colors` does not check it. The grammar's answer now wins over a
+  color token of the same name for `text-*`, as it already did for `shadow-*`.
+  Only `bg-*`, reading `--background-image-*`, still gives way to a color.
 - A stylesheet reached by two import paths is read once, at the first, as
   upstream does. Reading it again put its declarations over the ones read
   between the two imports, so a utility body or a `:root` value could come

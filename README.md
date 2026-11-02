@@ -253,7 +253,8 @@ Start with warnings, fix the common patterns, then promote rules to errors.
 The six rules, the policy engine (`allow`, `deny`, contracts, categories,
 groups, patterns, entry validation), messages and placeholders, theme reading
 and the Tailwind oracle follow `@shadcn/lint` 0.2, down to its message text.
-The class grammar is [cn](https://github.com/shadcn-ui/cn) 0.3.2's.
+The class grammar is [cn](https://github.com/shadcn-ui/cn) 0.4.0's, with
+the scales your theme declares applied.
 
 A parity check runs @shadcn/lint's own rules and HeexLint over equivalent
 React and Phoenix projects, asking the same Tailwind: across 552 classes on

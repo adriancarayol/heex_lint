@@ -4,10 +4,16 @@ defmodule HeexLint.Grammar.Classifier do
   or `font-size`.
 
   The grammar is the default config of [cn](https://github.com/shadcn-ui/cn)
-  0.3.2 (MIT), vendored in `priv/cn_config.json`. The lookup mirrors
+  0.4.0 (MIT), vendored in `priv/cn_config.json`. The lookup mirrors
   tailwind-merge's class map: a trie keyed by `-`-split parts, built in
   config order, where exact parts go as deep as they can and validators are
   tried on the rest from the deepest node back up.
+
+  The trie for cn's own config is built at compile time. A theme that
+  declares scales gets its own from `grammar/1`, the way cn's `mergeConfigs`
+  applies them: the whole config is walked again, because a default scale is
+  often a validator rather than a list of names, and a later group wins an
+  exact path.
 
       iex> HeexLint.Grammar.Classifier.group_of("md:hover:text-sm")
       "font-size"
@@ -17,13 +23,13 @@ defmodule HeexLint.Grammar.Classifier do
       nil
   """
 
-  alias HeexLint.Grammar.{Categories, Classes, Validators}
+  alias HeexLint.Grammar.{Categories, Classes, ThemeScales, Trie, Validators}
 
   @config_path Path.expand("../../../priv/cn_config.json", __DIR__)
   @external_resource @config_path
 
   # The cn version this grammar comes from.
-  @cn_version "0.3.2"
+  @cn_version "0.4.0"
 
   # Tailwind still generates these utilities under their Tailwind 3 names,
   # so they read as the utilities they are.
@@ -52,50 +58,9 @@ defmodule HeexLint.Grammar.Classifier do
   theme = config |> Map.fetch!("theme") |> then(&ordered.(ordered, &1)) |> Map.new()
   class_groups = config |> Map.fetch!("classGroups") |> then(&ordered.(ordered, &1))
 
-  # Nodes keyed by their path of parts; a node is {group, validators}.
-  # Every prefix of a node's path is a node too, as in the trie.
-  put_node = fn nodes, path ->
-    Enum.reduce(1..length(path)//1, nodes, fn n, acc ->
-      Map.put_new(acc, Enum.take(path, n), {nil, []})
-    end)
-  end
-
-  split = fn key -> String.split(key, "-") end
-
-  process = fn process, definition, path, group, nodes ->
-    case definition do
-      "" ->
-        nodes |> put_node.(path) |> Map.update(path, {group, []}, fn {_, v} -> {group, v} end)
-
-      text when is_binary(text) ->
-        target = path ++ split.(text)
-        nodes |> put_node.(target) |> Map.update!(target, fn {_, v} -> {group, v} end)
-
-      %{"$t" => name} ->
-        Enum.reduce(Map.get(theme, name, []), nodes, &process.(process, &1, path, group, &2))
-
-      %{"$v" => name} ->
-        unless name in Validators.names(), do: raise("cn-classifier: unknown validator #{name}")
-
-        nodes
-        |> put_node.(path)
-        |> Map.update(path, {nil, [{name, group}]}, fn {g, v} -> {g, v ++ [{name, group}]} end)
-
-      pairs when is_list(pairs) ->
-        Enum.reduce(pairs, nodes, fn {key, inner}, acc ->
-          child = path ++ split.(key)
-          acc = put_node.(acc, child)
-          Enum.reduce(inner, acc, &process.(process, &1, child, group, &2))
-        end)
-    end
-  end
-
-  nodes =
-    Enum.reduce(class_groups, %{[] => {nil, []}}, fn {group, definitions}, acc ->
-      Enum.reduce(definitions, acc, &process.(process, &1, [], group, &2))
-    end)
-
-  @nodes nodes
+  @theme theme
+  @class_groups class_groups
+  @nodes Trie.build(class_groups, theme)
   @groups Enum.map(class_groups, &elem(&1, 0))
   @postfix_lookup_groups MapSet.new(Map.get(config, "postfixLookupClassGroups", []))
 
@@ -107,11 +72,34 @@ defmodule HeexLint.Grammar.Classifier do
   def groups, do: @groups
 
   @doc """
-  The class group of `token`, ignoring its variants and important marker,
-  or `nil` when the grammar does not recognize it.
+  The class map with a theme's scales applied, or `nil` when they change
+  nothing and cn's own applies. Replaced scales go first and extended ones
+  after, as in cn's `mergeConfigs`.
   """
-  @spec group_of(String.t()) :: String.t() | nil
-  def group_of(token) do
+  @spec grammar(ThemeScales.t()) :: Trie.t() | nil
+  def grammar(%{extend: extend, override: override})
+      when map_size(extend) == 0 and map_size(override) == 0,
+      do: nil
+
+  def grammar(%{extend: extend, override: override}) do
+    theme =
+      @theme
+      |> Map.merge(override)
+      |> Map.merge(extend, fn _scale, defaults, names -> defaults ++ names end)
+
+    Trie.build(@class_groups, theme)
+  end
+
+  @doc """
+  The class group of `token`, ignoring its variants and important marker,
+  or `nil` when `grammar` does not recognize it. Without a grammar, cn's own.
+  """
+  @spec group_of(String.t(), Trie.t() | nil) :: String.t() | nil
+  def group_of(token, grammar \\ nil)
+
+  def group_of(token, nil), do: group_of(token, @nodes)
+
+  def group_of(token, nodes) do
     base = token |> String.trim() |> Classes.split_variants() |> elem(1)
 
     base =
@@ -121,23 +109,23 @@ defmodule HeexLint.Grammar.Classifier do
         true -> base
       end
 
-    if base == "", do: nil, else: classify(current_name(base))
+    if base == "", do: nil, else: classify(current_name(base), nodes)
   end
 
-  defp classify(base) do
+  defp classify(base, nodes) do
     case postfix_index(base) do
       nil ->
-        lookup(base)
+        lookup(base, nodes)
 
       slash ->
         # Without the modifier first, so text-sm/6 stays font-size instead
         # of reaching text-color's catch-all.
-        group = lookup(binary_part(base, 0, slash))
+        group = lookup(binary_part(base, 0, slash), nodes)
 
         cond do
-          group && MapSet.member?(@postfix_lookup_groups, group) -> lookup(base) || group
+          group && MapSet.member?(@postfix_lookup_groups, group) -> lookup(base, nodes) || group
           group -> group
-          true -> lookup(base)
+          true -> lookup(base, nodes)
         end
     end
   end
@@ -171,13 +159,13 @@ defmodule HeexLint.Grammar.Classifier do
     index
   end
 
-  defp lookup(base) do
+  defp lookup(base, nodes) do
     if String.starts_with?(base, "[") and String.ends_with?(base, "]") do
       arbitrary_property_group(base)
     else
       parts = String.split(base, "-")
       start = if hd(parts) == "" and length(parts) > 1, do: 1, else: 0
-      walk(parts, start)
+      walk(parts, start, nodes)
     end
   end
 
@@ -192,14 +180,14 @@ defmodule HeexLint.Grammar.Classifier do
 
   # tailwind-merge's search order: exact parts as deep as they go, then
   # validators on the tail, from the deepest node back up.
-  defp walk(parts, start) do
+  defp walk(parts, start, nodes) do
     tail = Enum.drop(parts, start)
-    depth = exact_depth(tail, [], 0)
+    depth = exact_depth(tail, [], 0, nodes)
     path = Enum.take(tail, depth)
 
     level =
       if depth == length(tail) do
-        case Map.fetch!(@nodes, path) do
+        case Map.fetch!(nodes, path) do
           {group, _} when group != nil -> {:found, group}
           # An exact match with no group has an empty tail to validate.
           _ -> depth - 1
@@ -210,26 +198,26 @@ defmodule HeexLint.Grammar.Classifier do
 
     case level do
       {:found, group} -> group
-      level -> validate(tail, level)
+      level -> validate(tail, level, nodes)
     end
   end
 
-  defp exact_depth([part | rest], path, depth) do
+  defp exact_depth([part | rest], path, depth, nodes) do
     next = path ++ [part]
-    if Map.has_key?(@nodes, next), do: exact_depth(rest, next, depth + 1), else: depth
+    if Map.has_key?(nodes, next), do: exact_depth(rest, next, depth + 1, nodes), else: depth
   end
 
-  defp exact_depth([], _path, depth), do: depth
+  defp exact_depth([], _path, depth, _nodes), do: depth
 
-  defp validate(_tail, level) when level < 0, do: nil
+  defp validate(_tail, level, _nodes) when level < 0, do: nil
 
-  defp validate(tail, level) do
-    {_group, validators} = Map.fetch!(@nodes, Enum.take(tail, level))
+  defp validate(tail, level, nodes) do
+    {_group, validators} = Map.fetch!(nodes, Enum.take(tail, level))
     rest = tail |> Enum.drop(level) |> Enum.join("-")
 
     case Enum.find(validators, fn {name, _group} -> Validators.check(name, rest) end) do
       {_name, group} -> group
-      nil -> validate(tail, level - 1)
+      nil -> validate(tail, level - 1, nodes)
     end
   end
 end
