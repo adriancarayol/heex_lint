@@ -11,7 +11,8 @@ defmodule HeexLint.Tailwind do
     * **Standalone CLI**: otherwise, the `tailwind` binary Phoenix installs
       in `_build/` (or `:tailwind_bin`) builds the theme with the
       candidates as `@source inline(...)`, and a class is known when its
-      selector is in the output. No suggestions this way.
+      selector is in the output. No suggestions this way, and each question is
+      a build, so `expect/3` lets a first question carry the likely next ones.
 
   When neither works, `unknown/2` returns nil and rules fall back to the
   class grammar. Answers are cached for the run, per stylesheet.
@@ -46,6 +47,11 @@ defmodule HeexLint.Tailwind do
   # not judged.
   @max_candidate_length 10_000
   @max_variants 64
+
+  # Far past the text classes of a real project. A question has one deadline, and
+  # the words of a data file must not be what runs it out. Past this they ask as they
+  # come up.
+  @max_expected 2_000
 
   @font_size ~r/(?:^|[;{\s])font-size\s*:/
 
@@ -117,11 +123,22 @@ defmodule HeexLint.Tailwind do
   end
 
   @doc """
-  Whether the Tailwind that builds `entry` generates a font size for `token`, or
-  nil when it cannot be asked.
+  Whether the Tailwind that builds `entry` generates a font size for `token`, a
+  `text-*` class, or nil when it cannot be asked.
   """
   @spec font_size?(pid(), String.t(), String.t()) :: boolean() | nil
   def font_size?(pid, entry, token), do: ask(pid, {:font_size, entry, [token]})
+
+  @doc """
+  Says `tokens` may come up in `font_size?/3`. With the standalone binary, where each
+  question is a build, the next such question about `entry` that has to reach it asks
+  about them too. Through Node a question costs little and these are not asked about,
+  where each unknown class would cost a search of every class Tailwind knows. This
+  starts nothing, and without such a question nothing ever does.
+  """
+  @spec expect(pid(), String.t(), [String.t()]) :: :ok
+  def expect(_pid, _entry, []), do: :ok
+  def expect(pid, entry, tokens), do: GenServer.cast(pid, {:expect, entry, tokens})
 
   @doc "The strategy the oracle uses for `entry`, and why, for diagnostics."
   def status(nil, _entry), do: {:none, "not started"}
@@ -203,6 +220,7 @@ defmodule HeexLint.Tailwind do
        # The one question being worked on, and those waiting their turn.
        job: nil,
        waiting: [],
+       expected: %{},
        warm: MapSet.new(),
        failures: 0,
        off: false,
@@ -227,6 +245,11 @@ defmodule HeexLint.Tailwind do
 
   @impl true
   def handle_cast({:warn, message}, state), do: {:noreply, warn(state, message)}
+
+  def handle_cast({:expect, entry, tokens}, state) do
+    expected = Map.update(state.expected, entry, tokens, &(&1 ++ tokens))
+    {:noreply, %{state | expected: expected}}
+  end
 
   @impl true
   def handle_info({port, {:data, data}}, %{port: port} = state) do
@@ -279,23 +302,36 @@ defmodule HeexLint.Tailwind do
   defp pump(%{job: nil, waiting: [first | _]} = state) do
     {requests, others} = Enum.split_with(state.waiting, &(&1.entry == first.entry))
     {strategy, state} = strategy(%{state | waiting: others}, first.entry)
-
-    missing =
-      requests
-      |> Enum.flat_map(& &1.tokens)
-      |> Enum.uniq()
-      |> Enum.reject(&Map.has_key?(state.cache, {first.entry, &1}))
-
-    job = %{entry: first.entry, requests: requests, missing: missing}
+    asked = uncached(state, first.entry, Enum.flat_map(requests, & &1.tokens))
+    {expected, state} = take_expected(state, strategy, first.entry, requests, asked)
+    job = %{entry: first.entry, requests: requests, missing: asked ++ expected}
 
     cond do
-      strategy == :none or missing == [] -> state |> reply_all(job) |> pump()
+      strategy == :none or asked == [] -> state |> reply_all(job) |> pump()
       strategy == :node -> ask_node(state, job)
       strategy == :standalone -> start_build(state, job)
     end
   end
 
   defp pump(state), do: state
+
+  defp uncached(state, entry, tokens) do
+    tokens |> Enum.uniq() |> Enum.reject(&Map.has_key?(state.cache, {entry, &1}))
+  end
+
+  # Only a font size question that has to run a build takes them along. The rest of
+  # the run then finds them answered.
+  defp take_expected(state, :standalone, entry, requests, [_ | _] = asked) do
+    if Enum.any?(requests, &(&1.kind == :font_size)) do
+      {expected, others} = Map.pop(state.expected, entry, [])
+      taken = state |> uncached(entry, expected) |> Kernel.--(asked) |> Enum.take(@max_expected)
+      {taken, %{state | expected: others}}
+    else
+      {[], state}
+    end
+  end
+
+  defp take_expected(state, _strategy, _entry, _requests, _asked), do: {[], state}
 
   defp reply_all(state, job) do
     Enum.each(job.requests, &GenServer.reply(&1.from, answer(state, &1)))

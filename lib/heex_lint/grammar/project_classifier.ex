@@ -39,6 +39,34 @@ defmodule HeexLint.Grammar.ProjectClassifier do
     end
   end
 
+  @doc """
+  Says `tokens` may be classified with `theme`, so that the first of them that needs
+  the theme's own Tailwind asks about them all: with the standalone binary, each
+  question is a build. Asks nothing yet, and a miss only costs its own question.
+  """
+  @spec expect(Theme.t() | nil, [String.t()]) :: :ok
+  def expect(%Theme{oracle: {oracle, entry}} = theme, tokens) do
+    questions = tokens |> Enum.uniq() |> Enum.filter(&asks_tailwind?(theme, &1))
+    Tailwind.expect(oracle, entry, questions)
+  end
+
+  def expect(_theme, _tokens), do: :ok
+
+  @doc """
+  The words of source code that could be `text-*` classes, for `expect/2`. A word
+  that turns out to be no class costs only its place in the question.
+  """
+  @spec text_words(String.t()) :: [String.t()]
+  def text_words(code) do
+    if String.contains?(code, "text-") do
+      code
+      |> String.split(~r/[\s"'`]+|~[a-zA-Z]\(|\)(?=[\s}\],>]|$)/, trim: true)
+      |> Enum.filter(&String.contains?(&1, "text-"))
+    else
+      []
+    end
+  end
+
   @doc "The category of `token`, or nil for layout and unknown classes."
   @spec category_of(Theme.t() | nil, String.t()) :: String.t() | nil
   def category_of(theme, token), do: Categories.category_of(group_of(theme, token))
@@ -61,12 +89,20 @@ defmodule HeexLint.Grammar.ProjectClassifier do
 
   # The grammar reads text-body as a color, knowing only the name.
   defp module_group(%Theme{oracle: {oracle, entry}}, token) do
-    if String.starts_with?(Classes.normalize(token), "text-") and
-         Tailwind.font_size?(oracle, entry, token) == true,
-       do: "font-size"
+    if text_class?(token) and Tailwind.font_size?(oracle, entry, token) == true,
+      do: "font-size"
   end
 
   defp module_group(_theme, _token), do: nil
+
+  defp text_class?(token), do: String.starts_with?(Classes.normalize(token), "text-")
+
+  # Whether classifying `token` would reach module_group/2.
+  defp asks_tailwind?(theme, token) do
+    text_class?(token) and
+      Categories.category_of(Classifier.group_of(token, Theme.grammar(theme))) == "color" and
+      theme_group(theme, token) == nil and utility_group(theme, token) == nil
+  end
 
   defp theme_group(nil, _token), do: nil
   defp theme_group(%Theme{file: nil}, _token), do: nil

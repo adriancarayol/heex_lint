@@ -8,6 +8,7 @@ defmodule HeexLint do
   """
 
   alias HeexLint.{Config, Diagnostic, Messages, Project, Rule, Sites, Suppressions, Tailwind}
+  alias HeexLint.Grammar.ProjectClassifier
 
   # Class helpers known in the Elixir ecosystem, on top of the configured ones.
   @default_merge_functions ["cn", "Tails.classes", "TwMerge.merge", "Twix.tw"]
@@ -58,6 +59,7 @@ defmodule HeexLint do
       end
 
     project = %{project | oracle: oracle}
+    expect_text_classes(project, theme_files)
 
     # The project is large; tasks read it from persistent_term, which never
     # copies it onto their heaps.
@@ -144,6 +146,19 @@ defmodule HeexLint do
           recognition: recognition
         }
     end
+  end
+
+  # On a theme that loads JavaScript, Tailwind says which text-* classes are font
+  # sizes. Those the files name go together with the first that is asked about.
+  defp expect_text_classes(project, theme_files) do
+    theme_files
+    |> Enum.group_by(fn {_path, file} -> file end, fn {path, _file} -> path end)
+    |> Enum.each(fn {theme_file, paths} ->
+      with %{oracle: {_pid, _entry}} = theme <- themed(project, theme_file).theme do
+        words = Enum.flat_map(paths, &ProjectClassifier.text_words(project.sources[&1].contents))
+        ProjectClassifier.expect(theme, words)
+      end
+    end)
   end
 
   # The project with a given theme: every file of an app shares its app's.

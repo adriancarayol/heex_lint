@@ -163,7 +163,9 @@ that checks contract entries asks about one nothing else knows, since a plugin's
 is in no stylesheet, and a theme that loads an `@config` or `@plugin` has its own Tailwind
 answer for the `text-*` classes the grammar reads as colors, since one may be a font
 size. With no such question, Node does not start. The standalone binary answers the
-last from the rule its output has for the class.
+last from the rule its output has for the class. Since each question is a build there,
+the first such question also asks about the `text-*` classes the linted files and the
+contract entries name.
 
 Tailwind cannot outlive the linter or stall it. The linter waits up to 60 seconds for
 a stylesheet's first answer and 30 seconds for later ones; set

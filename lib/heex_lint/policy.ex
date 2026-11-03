@@ -53,12 +53,13 @@ defmodule HeexLint.Policy do
     contracts = options |> Keyword.get(:contracts, []) |> Enum.map(&normalize_contract/1)
     allow = fetch_list(options, :allow)
     deny = fetch_list(options, :deny)
+    lists = [allow, deny | Enum.flat_map(contracts, &[&1.allow, &1.deny])]
+    expect_entries(lists, theme)
 
     warnings =
       if unchecked do
         []
       else
-        lists = [allow, deny | Enum.flat_map(contracts, &[&1.allow, &1.deny])]
         built = entries_built(lists, theme, generated)
 
         Enum.flat_map(lists, fn entries ->
@@ -89,6 +90,13 @@ defmodule HeexLint.Policy do
 
     policy = %__MODULE__{id: make_ref(), theme: theme, baseline: baseline, contracts: compiled}
     {policy, Enum.uniq(warnings)}
+  end
+
+  # Classifying them below takes them one at a time.
+  defp expect_entries(lists, theme) do
+    entries = lists |> Enum.flat_map(&List.wrap/1) |> Enum.filter(&is_binary/1)
+    bases = Enum.map(entries, &(&1 |> Classes.normalize() |> String.replace(~r/\/[\w.%]+$/, "")))
+    ProjectClassifier.expect(theme, entries ++ bases)
   end
 
   defp fetch_list(options, key) do
