@@ -12,6 +12,9 @@ defmodule HeexLint.Theme do
 
   `load/1` also applies the scales the stylesheets declare to cn's grammar,
   once per read, and `signature` tells two reads of an edited file apart.
+
+  `prefix` is the `tw` of `@import "tailwindcss" prefix(tw)`, read like the
+  tokens from the project's own files.
   """
 
   @derive {Inspect, except: [:grammar]}
@@ -20,6 +23,7 @@ defmodule HeexLint.Theme do
 
   defstruct file: nil,
             tailwind: false,
+            prefix: nil,
             tokens: MapSet.new(),
             scoped: %{},
             utilities: MapSet.new(),
@@ -52,6 +56,7 @@ defmodule HeexLint.Theme do
   @type t :: %__MODULE__{
           file: String.t() | nil,
           tailwind: boolean(),
+          prefix: String.t() | nil,
           tokens: MapSet.t(String.t()),
           scoped: %{String.t() => MapSet.t(String.t())},
           utilities: MapSet.t(String.t()),
@@ -80,6 +85,11 @@ defmodule HeexLint.Theme do
   )
 
   @dark_prelude ~r/\.dark(?![\w-])|prefers-color-scheme\s*:\s*dark|data-(?:theme|mode)=["']?dark|@variant\s+dark\b/
+
+  # An @import up to the end of its quoted id.
+  @import_head ~r/@import\s+(?:url\(\s*)?["']([^"']+)["']/
+
+  @prefix_function ~r/\bprefix\(\s*([\w-]+)\s*\)/
 
   # `:root, :host` is how Tailwind writes its own theme.
   @root_selector ~r/^(?::root|html|:host)$/
@@ -113,6 +123,13 @@ defmodule HeexLint.Theme do
 
     finalize(read)
   end
+
+  @doc """
+  The prefix the stylesheet at `file` gives Tailwind, for a theme file that is
+  not the stylesheet Tailwind builds.
+  """
+  @spec prefix_of(String.t()) :: String.t() | nil
+  def prefix_of(file), do: read_stylesheets(file).prefix
 
   @doc """
   Finds the stylesheet that imports Tailwind under `root`, the way the
@@ -309,7 +326,8 @@ defmodule HeexLint.Theme do
       acc
       | utilities: MapSet.union(acc.utilities, MapSet.new(utilities, &elem(&1, 0))),
         utility_properties: merge_utilities(acc.utility_properties, utilities),
-        classes: MapSet.union(acc.classes, parse_class_selectors(css))
+        classes: MapSet.union(acc.classes, parse_class_selectors(css)),
+        prefix: if(from_package, do: acc.prefix, else: acc.prefix || parse_tailwind_prefix(css))
     }
 
     dir = Path.dirname(file)
@@ -317,10 +335,7 @@ defmodule HeexLint.Theme do
     # Imports come first in the cascade.
     {acc, seen} =
       Enum.reduce(parse_imports(css), {acc, seen}, fn spec, {acc, seen} ->
-        acc =
-          if spec == "tailwindcss" or String.starts_with?(spec, "tailwindcss/"),
-            do: %{acc | tailwind: true},
-            else: acc
+        acc = if tailwind_spec?(spec), do: %{acc | tailwind: true}, else: acc
 
         case resolve_stylesheet(dir, spec) do
           nil ->
@@ -406,7 +421,7 @@ defmodule HeexLint.Theme do
   defp read_signature(%__MODULE__{} = theme) do
     :erlang.phash2(
       {theme.file, theme.declarations, theme.utility_properties, theme.classes, theme.theme_names,
-       theme.values, theme.variables, theme.tailwind}
+       theme.values, theme.variables, theme.tailwind, theme.prefix}
     )
   end
 
@@ -462,6 +477,44 @@ defmodule HeexLint.Theme do
     |> Regex.scan(strip_comments(css), capture: :all_but_first)
     |> List.flatten()
   end
+
+  @doc false
+  # The prefix a Tailwind import declares before the `;` that ends it, if any.
+  def parse_tailwind_prefix(css), do: css |> strip_comments() |> tailwind_prefix(0)
+
+  defp tailwind_prefix(text, offset) do
+    case Regex.run(@import_head, text, offset: offset, return: :index) do
+      nil ->
+        nil
+
+      [{start, length}, {id_start, id_length}] ->
+        head_end = start + length
+
+        if tailwind_spec?(binary_part(text, id_start, id_length)),
+          do: prefix_of_import(text, head_end),
+          else: tailwind_prefix(text, head_end)
+    end
+  end
+
+  defp prefix_of_import(text, head_end) do
+    rule_end =
+      case :binary.match(text, ";", scope: {head_end, byte_size(text) - head_end}) do
+        {at, _} -> at
+        :nomatch -> nil
+      end
+
+    rest = binary_part(text, head_end, (rule_end || byte_size(text)) - head_end)
+
+    case Regex.run(@prefix_function, rest, capture: :all_but_first) do
+      [prefix] -> prefix
+      # A Tailwind @import inside `rest` ends at the same `;`.
+      nil when rule_end == nil -> nil
+      nil -> tailwind_prefix(text, rule_end)
+    end
+  end
+
+  defp tailwind_spec?(spec),
+    do: spec == "tailwindcss" or String.starts_with?(spec, "tailwindcss/")
 
   @doc false
   # Each @utility in source order, with the properties its body sets.

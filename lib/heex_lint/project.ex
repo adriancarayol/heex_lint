@@ -19,6 +19,7 @@ defmodule HeexLint.Project do
             theme: nil,
             theme_file: nil,
             entry: nil,
+            tailwind_prefix: nil,
             sources: %{},
             modules: %{},
             imports: %{},
@@ -250,11 +251,38 @@ defmodule HeexLint.Project do
         true -> Theme.discover(root)
       end
 
-    %{file: file, theme: theme, entry: entry}
+    # And the prefix that build gives, which a partial cannot declare.
+    prefix =
+      cond do
+        entry == nil -> nil
+        entry == file -> theme.prefix
+        true -> Theme.prefix_of(entry)
+      end
+
+    %{file: file, theme: theme, entry: entry, prefix: prefix}
   end
 
-  defp with_theme_info(project, info),
-    do: %{project | theme: info.theme, theme_file: info.file, entry: info.entry}
+  @doc false
+  # The project with the theme of `info`, from `themes`.
+  def with_theme_info(project, info) do
+    %{
+      project
+      | theme: info.theme,
+        theme_file: info.file,
+        entry: info.entry,
+        tailwind_prefix: info.prefix
+    }
+  end
+
+  @doc """
+  Whether Tailwind can read `token` at all: under `prefix(tw)`, only `tw:flex`
+  is a Tailwind class, and `flex` and `text-muted` are not.
+  """
+  @spec tailwind_class?(t(), String.t()) :: boolean()
+  def tailwind_class?(%__MODULE__{tailwind_prefix: nil}, _token), do: true
+
+  def tailwind_class?(%__MODULE__{tailwind_prefix: prefix}, token),
+    do: String.starts_with?(token, prefix <> ":")
 
   @doc """
   The project as the file at `path` sees it: with the theme of its Mix

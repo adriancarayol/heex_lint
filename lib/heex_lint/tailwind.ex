@@ -321,8 +321,8 @@ defmodule HeexLint.Tailwind do
       bases =
         for token <- tokens,
             {variants, base} = Classes.split_variants(token),
-            variants != [],
-            do: base
+            bare <- bare_candidates(variants, base),
+            do: bare
 
       candidates =
         Enum.uniq(tokens ++ bases) |> Enum.reject(&String.contains?(&1, ["\"", "\\", "{", "}"]))
@@ -346,7 +346,8 @@ defmodule HeexLint.Tailwind do
           results =
             for token <- tokens, not known?.(token) do
               {variants, base} = Classes.split_variants(token)
-              %{token: token, suggestion: nil, base_known: variants != [] and known?.(base)}
+              bare = bare_candidates(variants, base)
+              %{token: token, suggestion: nil, base_known: Enum.any?(bare, known?)}
             end
 
           {:ok, results}
@@ -359,6 +360,15 @@ defmodule HeexLint.Tailwind do
       File.rm_rf(dir)
     end
   end
+
+  # The utility a token's variants stand on, to tell a misspelled variant from
+  # a misspelled utility. A project's prefix is a variant segment in the source
+  # and stays on the bare utility: tw:hovr:flex stands on tw:flex, and under
+  # prefix(tw) a plain flex generates nothing. The build says which name is the
+  # prefix: a real variant on a class that does not exist generates nothing either.
+  defp bare_candidates([], _base), do: []
+  defp bare_candidates([_only], base), do: [base]
+  defp bare_candidates([first | _], base), do: [base, first <> ":" <> base]
 
   @doc false
   # CSS.escape for an identifier, as Tailwind escapes class selectors.

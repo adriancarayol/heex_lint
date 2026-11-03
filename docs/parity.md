@@ -34,7 +34,7 @@ reference the same way.
 | Categories and `GROUP_CATEGORY` | `HeexLint.Grammar.Categories`, the same table and arbitrary-property rules. |
 | `allow`, `deny`, `contracts`, entry validation, config errors on line 1 | `HeexLint.Policy`, a port of `contracts.ts`. |
 | Messages, `{{placeholder\|fallback}}`, `note`, typo warnings, 500-char limit | `HeexLint.Messages`. |
-| Theme reading: `@theme` tokens, resets, scoped namespaces, dark blocks, `--spacing`, radius/text scales, `@utility`, class selectors, discovery | `HeexLint.Theme`; checked against the reference on sample themes. |
+| Theme reading: `@theme` tokens, resets, scoped namespaces, dark blocks, `--spacing`, radius/text scales, `@utility`, class selectors, `prefix(tw)`, discovery | `HeexLint.Theme`; checked against the reference on sample themes. |
 | OKLab colors, CSS named colors, `calc()` lengths, edit distance | `HeexLint.Grammar.Colors`, `Lengths`, `Similar`; checked against the reference. |
 | Tailwind oracle (`candidatesToCss`, suggestions, variant typos) | `priv/tailwind_oracle.mjs`, the same logic; loads through `@tailwindcss/node` so CommonJS plugins (Phoenix's heroicons) load too. |
 | Suggestions that rewrite one class inside its literal | The same, plus `mix heex_lint --fix` for single suggestions. |

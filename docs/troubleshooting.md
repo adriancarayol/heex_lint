@@ -68,6 +68,9 @@ no_unknown_classes: {:warning, allow: ["editor-root", "editor-*"]}
 Classes that only serve as JavaScript or test hooks generate no CSS; that is
 what the rule reports.
 
+Under `@import "tailwindcss" prefix(tw)`, a class generates CSS only with the
+prefix first: `tw:hover:flex`, not `flex` or `hover:tw:flex`.
+
 ## Findings in a value the linter cannot read
 
 `require_static_classes` reports class values it cannot read on components:

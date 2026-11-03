@@ -68,6 +68,10 @@ no_raw_colors: {:error, deny: ["*-white", "*-black"]}
 as `text-background`. A theme that declares `--color-white` owns the name, and
 it still passes.
 
+Under `@import "tailwindcss" prefix(tw)`, `no_raw_colors` judges `tw:bg-pink-500`
+and leaves `bg-pink-500` alone: it is no Tailwind class, and `no_unknown_classes`
+reports it.
+
 ### Contracts
 
 A contract's `pattern` is a regex on the component's function name:

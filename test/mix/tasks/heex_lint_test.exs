@@ -104,4 +104,17 @@ defmodule Mix.Tasks.HeexLintTest do
     assert output =~ "Applied 1 fix."
     assert File.read!(Path.join(dir, "lib/app_web/live/page_live.ex")) =~ ~s(class="p-3")
   end
+
+  test "--fix keeps a Tailwind prefix", %{tmp_dir: dir} do
+    setup_project(dir, ~s(<div class="tw:hover:p-[12px]" />), no_arbitrary_values: :error)
+
+    File.write!(
+      Path.join(dir, "assets/css/app.css"),
+      ~s|@import "tailwindcss" prefix(tw);\n@theme { --color-ink: #18181b; }\n|
+    )
+
+    assert {:ok, output, _} = task(dir, ["--fix"])
+    assert output =~ "Applied 1 fix."
+    assert File.read!(Path.join(dir, "lib/app_web/live/page_live.ex")) =~ ~s(class="tw:hover:p-3")
+  end
 end

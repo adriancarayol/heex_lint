@@ -151,7 +151,7 @@ defmodule HeexLint do
   defp themed(project, theme_file) do
     case Enum.find(Map.values(project.themes), &(&1.file == theme_file)) do
       nil -> project
-      info -> %{project | theme: info.theme, theme_file: info.file, entry: info.entry}
+      info -> Project.with_theme_info(project, info)
     end
   end
 

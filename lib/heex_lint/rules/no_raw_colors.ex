@@ -19,6 +19,9 @@ defmodule HeexLint.Rules.NoRawColors do
   `no_raw_colors: {:error, deny: ["*-white", "*-black"]}`.
   Arbitrary colors such as `bg-[#333]` belong to `no_arbitrary_values`.
 
+  Under `@import "tailwindcss" prefix(tw)`, only `tw:` classes are Tailwind's:
+  `tw:bg-pink-500` is reported, and `bg-pink-500` is left to `no_unknown_classes`.
+
   ## Options
 
     * `:allow`, `:deny`, `:contracts` - exceptions, as class patterns
@@ -30,7 +33,7 @@ defmodule HeexLint.Rules.NoRawColors do
 
   @behaviour HeexLint.Rule
 
-  alias HeexLint.{Code, Collector, Element, Messages, Policy, Rule, Suggest, Theme}
+  alias HeexLint.{Code, Collector, Element, Messages, Policy, Project, Rule, Suggest, Theme}
   alias HeexLint.Grammar.{Categories, Classes, Colors, ProjectClassifier, Similar}
   alias HeexLint.Policy.ConfigError
 
@@ -113,6 +116,9 @@ defmodule HeexLint.Rules.NoRawColors do
     class_findings =
       for {site, string} <- class_strings(file, options),
           {token, position} <- Rule.tokens(string),
+          # Under prefix(tw), text-muted is not a Tailwind class, let alone a
+          # color: whether it exists is no_unknown_classes' question.
+          Project.tailwind_class?(file.project, token),
           verdict = verdict(context, token),
           verdict != nil,
           (exemption = Policy.decide(policy, site_component(site), token)) != :ok,

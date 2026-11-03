@@ -150,6 +150,14 @@ plugins:
 - **Grammar.** Without either, the class grammar, `@utility` names and class
   selectors answer; that checks less.
 
+Under `@import "tailwindcss" prefix(tw)`, only `tw:flex` is a Tailwind class.
+`no_raw_colors` judges the class behind the prefix and leaves an unprefixed one
+alone, and `no_unknown_classes` reports the unprefixed one, a color like `text-muted`
+as much as `flex`. The prefix is read from the project's own stylesheets, the first
+one read winning, and from the stylesheet Tailwind builds when `theme` names a partial.
+The grammar knows no prefix, so without a Tailwind to ask an unprefixed class passes
+`no_unknown_classes`.
+
 ## Values
 
 A class value is read through:

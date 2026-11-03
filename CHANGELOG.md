@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Under `@import "tailwindcss" prefix(tw)`, only `tw:flex` is a Tailwind class, as in
+  @shadcn/lint. `no_raw_colors` leaves an unprefixed class alone, where it called
+  `text-muted` an undeclared color, and judges `tw:text-muted` as before. **This
+  removes those findings and adds others:** `no_unknown_classes` now reports an
+  unprefixed color class as unknown, as it already did `flex`. That includes classes
+  naming a declared token, such as `text-primary`, which had no finding at all. A
+  project with a prefix that runs only one of the two rules sees only one half. The
+  prefix is read from your own stylesheets and not from an installed package, and from
+  the stylesheet Tailwind builds when `theme` names a partial. With the standalone
+  binary, `tw:hovr:flex` now reads as a misspelled variant. **This adds findings:**
+  `tw:hovr:bg-primary` was dropped without a word.
 - A wrapper's class props each follow their own path, as in @shadcn/lint: a
   `title_class` handed to `<.card_title>` is judged against `card_title`, not
   against what `class` reaches, and `{{prop}}` names the attribute in `no_restyle`

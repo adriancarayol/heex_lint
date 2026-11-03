@@ -30,6 +30,9 @@ Each configuration also runs `themed_cases.txt` under each theme in `themes/`:
   where Tailwind's animations stay motion classes.
 - `workspace_package`: a package in `workspace_kit/`, linked into `node_modules`
   the way pnpm links one, whose tokens, scales and resets count as the project's.
+- `prefixed`: `@import "tailwindcss" prefix(tw)`, where only `tw:` classes are
+  Tailwind's. `themed_cases.txt` has `tw:` classes for it, which every other theme
+  reads as an unknown variant.
 
 The wrappers are `Panel`, which hands `className` to Card, `titleClassName` to
 CardTitle and `footerClassName` to a plain element, and `PassedPanel`, which hands
