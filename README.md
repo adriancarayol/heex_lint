@@ -128,8 +128,8 @@ rules: `no_arbitrary_values` still keeps `p-[13px]` off the scale.
   input, allowed as-is, with its authored default checked. Up to 64 bindings
   along a chain of body variables, module attributes, same-module helpers such
   as `defp button_variant("primary"), do: "..."`, map lookups, and merge
-  functions (`cn`, `Tails.classes`, `TwMerge.merge`...); past that the value
-  counts as unreadable.
+  functions (`cn`, `Tails.classes`, `TwMerge.merge`...); past that a class
+  counts as unreadable, while a `style` has no such limit.
 - **Tailwind.** `no_unknown_classes` asks your installed Tailwind v4: through
   Node when `tailwindcss` is in `node_modules`, or through the standalone
   `tailwind` binary Phoenix installs in `_build/`. Without either it falls

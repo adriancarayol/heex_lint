@@ -506,12 +506,104 @@ defmodule HeexLint.VariableChainsTest do
       assert message =~ "--tone hardcodes a color"
     end
 
-    test "read too far along a chain is dynamic", %{tmp_dir: dir} do
-      assert [%{rule: :no_inline_styles} = finding] =
-               lint(dir, style(chain("A", 70, ~s("color: red")) <> styled("v70")), rules: @styles)
+    # @shadcn/lint's `check` keeps no route, so a chain never makes a style dynamic.
+    for links <- [63, 64, 65, 70, 200, 5000] do
+      test "reads its value #{links} links away", %{tmp_dir: dir} do
+        links = unquote(links)
 
-      assert at([finding]) == [position(dir, "v8 = ")]
-      assert finding.message =~ "cannot be checked"
+        clean = ~s[if(assigns.on, do: "--x: var(--y)", else: "--z: var(--y)")]
+        body = chain("A", links, clean) <> styled("v#{links}")
+        assert [] == within_seconds(fn -> lint(dir, style(body), rules: @styles) end)
+
+        raw = ~s[if(assigns.on, do: "color: red", else: "--z: #ff0000")]
+        body = chain("A", links, raw) <> styled("v#{links}")
+
+        assert [%{message: color}, %{message: custom}] =
+                 within_seconds(fn -> lint(dir, style(body), rules: @styles) end)
+
+        assert color =~ "Inline style sets color"
+        assert custom =~ "--z hardcodes a color"
+      end
+    end
+
+    test "reads its value past the limit from a variable the template reads", %{tmp_dir: dir} do
+      files = page(chain("A", 70, ~s("color: red")), ~s(<div style={v70}></div>))
+
+      assert [%{message: message}] = lint(dir, files, rules: @styles)
+      assert message =~ "Inline style sets color"
+    end
+
+    test "reads its value past the limit from a spread", %{tmp_dir: dir} do
+      files = page(chain("A", 70, ~s("color: red")), ~s(<div {%{style: v70}}></div>))
+
+      assert [%{message: message}] = lint(dir, files, rules: @styles)
+      assert message =~ "Inline style sets color"
+    end
+
+    test "reads its value past the limit through a lookup", %{tmp_dir: dir} do
+      read = chain("A", 70, ~s(%{a: "color: red"})) <> styled("v70[:a]")
+      assert [%{message: message}] = lint(dir, style(read), rules: @styles)
+      assert message =~ "Inline style sets color"
+
+      table = ~s(t = %{a: "color: red"}\n) <> chain("A", 70, "t[:a]") <> styled("v70")
+      assert [%{message: message}] = lint(dir, style(table), rules: @styles)
+      assert message =~ "Inline style sets color"
+    end
+
+    test "reads its value past the limit through attributes and functions", %{tmp_dir: dir} do
+      attributes = for i <- 1..70, do: "@a#{i} @a#{i - 1}\n"
+      functions = for i <- 1..70, do: "defp f#{i}, do: f#{i - 1}()\n"
+
+      extra =
+        ~s(@a0 "color: red"\n) <>
+          Enum.join(attributes) <> ~s(defp f0, do: "--z: #ff0000"\n) <> Enum.join(functions)
+
+      body = styled("if(assigns.on, do: @a70, else: f70())")
+
+      assert [%{message: color}, %{message: custom}] =
+               lint(dir, page(body, ~s(<div style={@s}></div>), extra), rules: @styles)
+
+      assert color =~ "Inline style sets color"
+      assert custom =~ "--z hardcodes a color"
+    end
+
+    test "allows a received style past the limit", %{tmp_dir: dir} do
+      body = chain("A", 70, "assigns.style") <> styled("v70")
+      assert [] == lint(dir, style(body), rules: @styles)
+    end
+
+    test "is dynamic only where its value is unreadable, at any length", %{tmp_dir: dir} do
+      body = chain("A", 70, "unknown()") <> styled("v70")
+
+      assert [%{message: message} = finding] = lint(dir, style(body), rules: @styles)
+      assert message =~ "cannot be checked"
+      assert at([finding]) == [position(dir, "v0 = ")]
+    end
+
+    test "stays linear past the limit", %{tmp_dir: dir} do
+      raw = ~s[if(assigns.on, do: "color: red", else: "--z: #ff0000")]
+      body = chain("if(assigns.on, do: A, else: A)", 200, raw) <> styled("v200")
+
+      assert [_, _] = within_seconds(fn -> lint(dir, style(body), rules: @styles) end)
+    end
+
+    test "stays linear past the limit in a chain that ends in a cycle", %{tmp_dir: dir} do
+      first = ~s[if(assigns.on, do: v200, else: "color: red")]
+      body = chain("if(assigns.on, do: A, else: A)", 200, first) <> styled("v200")
+
+      assert [dynamic, color] = within_seconds(fn -> lint(dir, style(body), rules: @styles) end)
+      assert dynamic.message =~ "cannot be checked"
+      assert at([dynamic]) == [position(dir, "v0 = if(assigns.on, do: ")]
+      assert color.message =~ "Inline style sets color"
+    end
+
+    test "is dynamic at a cycle past the limit", %{tmp_dir: dir} do
+      first = ~s[if(assigns.on, do: v70, else: "--x: var(--y)")]
+      body = chain("A", 70, first) <> styled("v70")
+
+      assert [%{message: message} = finding] = lint(dir, style(body), rules: @styles)
+      assert message =~ "cannot be checked"
+      assert at([finding]) == [position(dir, "v0 = if(assigns.on, do: ")]
     end
 
     test "reads a hole in full from a style read near the limit", %{tmp_dir: dir} do

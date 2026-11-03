@@ -18,12 +18,13 @@ defmodule HeexLint.Collector do
       same-module functions, map lookups (`Map.fetch!(%{...}, key)`), and
       the configured merge and variant functions
 
-  A route follows 64 bindings; the next one is unresolved at the place that
-  reads it. Each binding is read once per site, so a class reached through both
-  branches of `if on, do: a, else: a` is one class and a chain of such branches
-  stays linear. A read that stopped on its route is remembered with that route,
-  since it could read more from another one. A hole in a style has no such limit:
-  what it can hold is only looked at for raw colors, however far away they are.
+  A route to a class follows 64 bindings; the next one is unresolved at the place
+  that reads it. Each binding is read once per site, so a class reached through
+  both branches of `if on, do: a, else: a` is one class and a chain of such
+  branches stays linear. A read that stopped on its route is remembered with that
+  route, since it could read more from another one. A style has no such limit: its
+  value is read however far away it is, and what a hole in it can hold is looked
+  at for raw colors the same way.
   """
 
   alias HeexLint.Code
@@ -51,8 +52,10 @@ defmodule HeexLint.Collector do
 
   @type t :: %__MODULE__{strings: [string_value()], unresolved: [{pos_integer(), pos_integer()}]}
 
-  # How many bindings a route follows before the next one is unreadable, the
-  # way a dynamic value is. No written chain of aliases is this deep.
+  # How many bindings a route to a class follows before the next one is
+  # unreadable, the way a dynamic value is. No written chain of aliases is this
+  # deep. A style has no limit, as @shadcn/lint's `check` and `carriesRawColor`
+  # keep no route: only what is on the route stops it.
   @max_route 64
 
   # How many times a site may read a binding it has already read. Only reads
@@ -667,8 +670,8 @@ defmodule HeexLint.Collector do
     Map.merge(%{inner | visited: visited}, saved)
   end
 
-  defp past_limit?(%{kind: :hole}, _links), do: false
-  defp past_limit?(state, links), do: state.depth + links >= @max_route
+  defp past_limit?(%{kind: :class} = state, links), do: state.depth + links >= @max_route
+  defp past_limit?(_state, _links), do: false
 
   defp stop(state), do: %{state | stops: state.stops + 1}
 

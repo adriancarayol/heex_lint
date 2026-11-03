@@ -2,17 +2,18 @@
 
 ## Unreleased
 
-- A chain of variables, attributes, functions and lookups is followed for 64
-  bindings instead of 4, and the next one is unreadable, as in @shadcn/lint.
-  **This adds findings:** a class more than four links away is now checked by
-  every rule, where it was dropped without a word, and a chain past 64 is
-  reported by `require_static_classes`, or by `no_inline_styles` for a `style`,
-  at the read that goes past the limit. A hole in a `style`, as in
-  `"--tone: #{v}"`, has no limit, also as in @shadcn/lint: `no_inline_styles`
-  reports a raw color any number of links from it. A binding is read once per
-  site, so a generated chain of `if on, do: a, else: a` stays linear, also past
-  the limit or ending in a cycle. A default that reads its own prop ends there:
-  a class says nothing more about it, and a whole `style` is reported as dynamic.
+- A chain of variables, attributes, functions and lookups to a class is followed
+  for 64 bindings instead of 4, and the next one is unreadable, as in
+  @shadcn/lint. **This adds findings:** a class more than four links away is now
+  checked by every rule, where it was dropped without a word, and a chain past 64
+  is reported by `require_static_classes` at the read that goes past the limit. A
+  `style` has no limit, also as in @shadcn/lint. **This adds findings too:**
+  `no_inline_styles` checks a `style` value any number of links away, and reports
+  a raw color any number of links from a hole, as in `"--tone: #{v}"`. A long chain
+  alone never makes a `style` dynamic. A binding is read once per site, so a
+  generated chain of `if on, do: a, else: a` stays linear, also past the limit or
+  ending in a cycle. A default that reads its own prop ends there: a class says
+  nothing more about it, and a whole `style` is reported as dynamic.
 - A variable a template reads directly, as in `<.button class={v}>`, is read
   where the function binds it. **This adds findings:** its classes used to be
   dropped, and now get reports and fixes at that place. `@name` in its value is
