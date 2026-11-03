@@ -7,15 +7,16 @@ This page maps each part to its Phoenix counterpart.
 
 [`scripts/parity/run.sh`](https://github.com/adriancarayol/heex_lint/tree/main/scripts/parity) lints 552 classes (a sample of
 Tailwind's class list plus colors, tokens, typos, arbitrary values, variants
-and markers) on a plain element, a Button with variants and sizes, and a
-CardTitle, with @shadcn/lint's own ESLint rules on a React project and with
-HeexLint on the equivalent Phoenix project, and diffs every finding:
+and markers) on a plain element, a Button with variants and sizes, a CardTitle,
+and wrappers handing several class props on, with @shadcn/lint's own ESLint rules
+on a React project and with HeexLint on the equivalent Phoenix project, and diffs
+every finding:
 
 | Configuration | Findings | Differences |
 | --- | --- | --- |
-| `no-restyle` and `no-arbitrary-values` with `allow: ["layout"]`, `no-raw-colors` | 1795 | 0 |
-| `deny`, contracts, per-category messages, placeholders with fallbacks, group and exact-class allows | 1734 | 0 |
-| `no-unknown-classes` with `no-raw-colors`, asking Tailwind 4.3.3 (suggestions and typo ownership) | 1089 | 0 |
+| `no-restyle` and `no-arbitrary-values` with `allow: ["layout"]`, `no-raw-colors` | 5379 | 0 |
+| `deny`, contracts, per-category messages, placeholders with fallbacks, group and exact-class allows | 5176 | 0 |
+| `no-unknown-classes` with `no-raw-colors`, asking Tailwind 4.3.3 (suggestions and typo ownership) | 3267 | 0 |
 
 Both linters ask the same installed Tailwind, so `no-raw-colors` hands a
 typo of another utility (`text-smal`) to `no-unknown-classes` the same way.
@@ -51,6 +52,7 @@ reference the same way.
 | Components from packages ("use components you don't own") | Components from `deps/` (SaladUI, PetalComponents...), recognized through `component_imports`. |
 | Variants from `cva`/`tv` and string-union props | `attr :variant, values: [...]` and `attr :size, values: [...]`. |
 | Wrappers forwarding `className`, render props | Components forwarding `@class` or global attributes (`{@rest}`). Slots belong to their component. |
+| A wrapper's other class props, such as `headerClassName`, each on its own path; `{{prop}}` | The same for `title_class`, and `{{prop}}` is `class` or the attribute. `class` is the main prop, not `className`, which is an assign of its own here. Global attributes stop carrying a prop once `attr` declares it, as destructuring does. Wrappers that render each other differ: each prop is followed along its own route until it repeats, so it reaches the components it can reach, where @shadcn/lint at `9231259` stops at the first component or file being read and can find nothing. |
 | Same-file `const`/`let`, a route of 64, each read once per site | Function-body variables, `assign/3` in the rendering function, module attributes, same-module helpers and map lookups, the same limit and the same reads. A read that stopped is also remembered with its route, so a branching chain past the limit or ending in a cycle finishes here; @shadcn/lint at `9231259` does not finish those. A `style` has no limit in either, whole (`style={v}`) or in a hole (like a value of `{"--tone": v}`), as `check` and `carriesRawColor` keep no route. A cycle there ends the read here, reported as dynamic when the `style` is whole, and overflows the stack in @shadcn/lint at `9231259`. |
 | Received `className` prop | A function component's received `class`; socket assigns in a LiveView `render/1` are not received props. |
 | `{{component}}` as `Button` | `.button`, the way the tag is written. Contract patterns match the function name: `^button$`. |

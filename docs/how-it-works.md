@@ -44,8 +44,35 @@ matches by regex. `ignore_imports` excludes modules and takes precedence.
 **Wrappers.** A component outside the design system that forwards its
 received `class` — `class={["w-full", @class]}` — or its global attributes —
 `{@rest}` with `attr :rest, :global` — to a design-system component gets that
-component's contract and suggestions. Chains resolve across files, a few
-hops deep.
+component's contract and suggestions. Chains resolve across files, at any
+depth.
+
+Each class prop follows its own path. A wrapper that hands `title_class` to
+`card_title` gets `card_title`'s contract for it, while its `class` keeps
+`card`'s:
+
+```heex
+attr :class, :any, default: nil
+attr :title_class, :any, default: nil
+
+def panel(assigns) do
+  ~H"""
+  <.card class={@class}>
+    <.card_title class={@title_class}>{render_slot(@inner_block)}</.card_title>
+  </.card>
+  """
+end
+
+<%!-- Checked against card_title's contract, not card's. --%>
+<.panel title_class="px-6" />
+```
+
+Global attributes carry any prop the component does not declare, as they do
+when it renders. A class prop the wrapper does not hand to a design-system
+component is not checked. If a prop lands on several tags, the first that is,
+or wraps, a design-system component supplies the contract, reading a tag's
+children before the tag and sibling tags in order. Classes on a wrapper's slot
+use its `class` target, since a slot's attributes are not the wrapper's props.
 
 ## Theme tokens
 
@@ -163,9 +190,12 @@ it is only looked through for raw colors.
 
 - **Parent selectors.** `no_restyle` does not trace `[&_button]:bg-primary` to
   a child component. Token rules still check the class.
-- **Unknown attribute maps.** `<.button {@attrs}>` is left alone.
+- **Unknown attribute maps.** `<.button {@attrs}>` is left alone, and a wrapper
+  passing `{assigns}` or `{assigns_to_attributes(assigns)}` is not followed.
 - **Other modules' values.** Values are followed within a module, not across
-  modules; wrapper tracing only follows `class` forwarding.
+  modules; wrapper tracing only follows class props, in the tag that reads them.
+  A prop renamed in the function body, as in `assign(assigns, :merged_class, ...)`
+  reading `assigns.class`, is not followed to `@merged_class`.
 - **Plain CSS.** Stylesheets and `@apply` are outside these rules.
 - **Locally rebuilt components** are not the design system; token rules still
   apply to their classes.

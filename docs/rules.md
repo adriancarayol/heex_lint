@@ -167,6 +167,7 @@ Additional `no_restyle` placeholders:
 | `{{category}}` | The class category, including `layout` or `unclassified`.        |
 | `{{variants}}` | Comma-separated variant names, or empty.                         |
 | `{{wrapper}}`  | The forwarding component, or empty.                              |
+| `{{prop}}`     | The class attribute the classes were written in, such as `class` or `title_class`. |
 | `{{sizes}}`    | Comma-separated size names on every finding, or empty.           |
 | `{{where}}`    | Where to add a variant or size: `in lib/app_web/components/button.ex`, or `to <.button>` for a component from `deps/`. |
 | `{{around}}`   | Where spacing can go instead, on spacing findings.               |

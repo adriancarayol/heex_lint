@@ -20,24 +20,60 @@ theme =
     path -> File.read!(path)
   end
 
+kinds = [
+  {"div", ~s(<div class="$" />)},
+  {"Button", ~s(<.button class="$">x</.button>)},
+  {"CardTitle", ~s(<.card_title class="$">x</.card_title>)},
+  {"Panel", ~s(<AppWeb.Panels.panel class="$" />)},
+  {"PanelTitle", ~s(<AppWeb.Panels.panel title_class="$" />)},
+  {"PanelFooter", ~s(<AppWeb.Panels.panel footer_class="$" />)},
+  {"PassedPanel", ~s(<AppWeb.Panels.passed_panel class="$" />)},
+  {"PassedTitle", ~s(<AppWeb.Panels.passed_panel title_class="$" />)},
+  {"PassedOther", ~s(<AppWeb.Panels.passed_panel other_class="$" />)}
+]
+
 {lines, where} =
   cases
   |> Enum.reduce({[], %{}}, fn token, {lines, where} ->
-    Enum.reduce(["div", "Button", "CardTitle"], {lines, where}, fn kind, {lines, where} ->
-      line =
-        case kind do
-          "div" -> ~s(<div class="#{token}" />)
-          "Button" -> ~s(<.button class="#{token}">x</.button>)
-          "CardTitle" -> ~s(<.card_title class="#{token}">x</.card_title>)
-        end
-
-      {lines ++ [line], Map.put(where, length(lines), {token, kind})}
+    Enum.reduce(kinds, {lines, where}, fn {kind, tag}, {lines, where} ->
+      {[String.replace(tag, "$", token) | lines], Map.put(where, map_size(where), {token, kind})}
     end)
   end)
 
+# Wrappers with more than one class prop: each goes where the wrapper hands it.
+panels = """
+defmodule AppWeb.Panels do
+  use AppWeb, :html
+
+  attr :class, :any, default: nil
+  attr :title_class, :any, default: nil
+  attr :footer_class, :any, default: nil
+  slot :inner_block
+
+  def panel(assigns) do
+    ~H\"\"\"
+    <.card class={@class}>
+      <.card_title class={@title_class}>{render_slot(@inner_block)}</.card_title>
+      <div class={@footer_class} />
+    </.card>
+    \"\"\"
+  end
+
+  attr :rest, :global
+
+  def passed_panel(assigns) do
+    ~H\"\"\"
+    <.panel {@rest} />
+    \"\"\"
+  end
+end
+"""
+
 files = %{
   "assets/css/app.css" => theme,
-  "lib/app_web/live/page_live.ex" => HeexLint.TestProject.live(Enum.join(lines, "\n"))
+  "lib/app_web/panels.ex" => panels,
+  "lib/app_web/live/page_live.ex" =>
+    HeexLint.TestProject.live(lines |> Enum.reverse() |> Enum.join("\n"))
 }
 
 # The same Tailwind the React fixture resolves, so both linters can ask it.
@@ -54,7 +90,7 @@ rules =
           {:error,
            allow: ["layout"],
            deny: ["w-*"],
-           message: %{spacing: "S {{className}} {{sizes|nosize}} {{around}}"},
+           message: %{spacing: "S {{className}} {{sizes|nosize}} {{around}} P[{{prop}}]"},
            contracts: [
              [
                pattern: "^card_title$",
@@ -97,7 +133,15 @@ out =
       |> String.replace("<.button>", "<Button>")
       |> String.replace("<.card_title>", "<CardTitle>")
       |> String.replace(".card_title", "CardTitle")
+      |> String.replace(".passed_panel", "PassedPanel")
+      |> String.replace(".panel", "Panel")
+      |> String.replace(".card", "Card")
       |> String.replace(".button", "Button")
+      |> String.replace("title_class", "titleClassName")
+      |> String.replace("footer_class", "footerClassName")
+      |> String.replace("other_class", "otherClassName")
+      |> String.replace("forwards class to", "forwards className to")
+      |> String.replace("P[class]", "P[className]")
       |> String.replace("lib/app_web/components/core_components.ex", "FILE")
       |> String.replace("assets/css/app.css", "THEME")
 

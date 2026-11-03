@@ -117,7 +117,9 @@ rules: `no_arbitrary_values` still keeps `p-[13px]` off the scale.
   finding suggests; `attr :size, values: ...` the sizes a spacing finding offers.
 - **Wrappers.** A component that forwards its `class` (`class={["w-full", @class]}`)
   or its global attributes (`{@rest}` with `attr :rest, :global`) to a
-  design-system component gets that component's contract and suggestions.
+  design-system component gets that component's contract and suggestions. Each
+  class prop follows its own path, so a `title_class` handed to `card_title` is
+  checked against `card_title`.
 - **Theme.** The stylesheet that imports Tailwind, found under the project (or
   `theme`). Colors are the `--color-*` tokens in `@theme` (and a utility's own
   namespace, such as `--background-color-*`); scales come from `--spacing`,

@@ -24,7 +24,7 @@ The information the rules use. Its shapes may change before 1.0:
 | `HeexLint.Project.for_file(project, path)` | The project with the theme of `path`'s app. |
 | `HeexLint.Project.resolve(project, module, type, name)` | The component a tag names, or nil. |
 | `HeexLint.Project.design_system?(project, component)` | Whether it belongs to the design system. |
-| `HeexLint.Project.wrapped(project, component)` | The design-system component a wrapper forwards to. |
+| `HeexLint.Project.wrapped(project, component, attribute \\ "class")` | The design-system component a wrapper hands that class prop to, or nil. |
 | `HeexLint.Project.Component.variants(component)` | Its variant names, or nil. |
 | `HeexLint.Project.Component.sizes(component)` | Its size names, or nil. |
 | `HeexLint.Theme.load(file)` / `HeexLint.Theme.discover(root)` | A theme, or the stylesheet that imports Tailwind. |

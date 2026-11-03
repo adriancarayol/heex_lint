@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- A wrapper's class props each follow their own path, as in @shadcn/lint: a
+  `title_class` handed to `<.card_title>` is judged against `card_title`, not
+  against what `class` reaches, and `{{prop}}` names the attribute in `no_restyle`
+  messages (`forwards title_class to <.card_title>`). The text for `class` is
+  unchanged. Every class rule reads the same target. **This adds findings:** a class
+  prop is checked against its own component's contract; chains of wrappers resolve
+  at any depth, where a chain past a few hops was unchecked; a tag spreading
+  `{%{class: @class}}` forwards it; and a readable map's other class keys, as in
+  `{%{title_class: "p-4"}}`, are read as attributes on any element. **It also
+  removes findings** on classes a wrapper does not hand to that component:
+  `title_class` on a wrapper that forwards only `class`, `class` on one that
+  forwards only another assign such as `@title_class` or `@merged_class`, and `class`
+  declared with `attr` beside a `{@rest}` that no longer carries it. When a prop lands
+  on nested tags, the inner one now decides, and spacing advice also offers the
+  component behind a parent written as a wrapper or with its module, both as in
+  @shadcn/lint.
 - A chain of variables, attributes, functions and lookups to a class is followed
   for 64 bindings instead of 4, and the next one is unreadable, as in
   @shadcn/lint. **This adds findings:** a class more than four links away is now

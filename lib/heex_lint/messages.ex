@@ -20,6 +20,7 @@ defmodule HeexLint.Messages do
   @keys ~w(
     className class property component suggestions file category variants wrapper
     sizes entries tokens suggestion replacement attribute value around where variantsSuffix
+    prop
   )
 
   @doc "The placeholder names messages may use."

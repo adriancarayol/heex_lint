@@ -97,9 +97,25 @@ defmodule HeexLint.Collector do
   end
 
   @doc """
-  Collects `key` ("class" or "style") from a root attribute that spreads a
-  readable map or keyword list onto the element: `{%{class: "p-4"}}`.
-  Nil when the root is not one, or does not set `key`.
+  The keys a root attribute sets when it spreads a readable map or keyword list
+  onto the element: `{%{class: "p-4"}}`. Empty when it is not one.
+  """
+  @spec root_keys(HeexLint.Element.value()) :: [String.t()]
+  def root_keys({:expr, code, _position}) do
+    with {:ok, ast} <- Code.parse(code),
+         pairs when is_list(pairs) <- root_pairs(ast) do
+      for {key, _value} <- pairs, name = Code.name(key), uniq: true, do: name
+    else
+      _ -> []
+    end
+  end
+
+  def root_keys(_value), do: []
+
+  @doc """
+  Collects `key` from a root attribute that spreads a readable map or keyword
+  list onto the element: `{%{class: "p-4"}}`. Nil when the root is not one, or
+  does not set `key`.
   """
   @spec root(HeexLint.Element.value(), String.t(), map(), keyword()) :: t() | nil
   def root({:expr, code, position}, key, context, opts) do

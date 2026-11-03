@@ -10,8 +10,8 @@ with HeexLint, on equivalent projects, and diffs every finding:
 
 `cases.txt` holds 552 classes: a sample of Tailwind's class list plus
 colors, tokens, typos, arbitrary values, variants and markers. Each is
-written on a plain element, on Button and on CardTitle, and checked under
-three configurations: `no-restyle`, `no-raw-colors` and `no-arbitrary-values`
+written on a plain element, on Button, on CardTitle and on two wrappers, and
+checked under three configurations: `no-restyle`, `no-raw-colors` and `no-arbitrary-values`
 with the recommended options; the same with `deny`, contracts, per-category
 messages, placeholders and exact-class allows; and `no-unknown-classes` with
 `no-raw-colors`. Both linters ask the same installed Tailwind 4.3.3; the
@@ -30,6 +30,11 @@ Each configuration also runs `themed_cases.txt` under each theme in `themes/`:
   where Tailwind's animations stay motion classes.
 - `workspace_package`: a package in `workspace_kit/`, linked into `node_modules`
   the way pnpm links one, whose tokens, scales and resets count as the project's.
+
+The wrappers are `Panel`, which hands `className` to Card, `titleClassName` to
+CardTitle and `footerClassName` to a plain element, and `PassedPanel`, which hands
+everything to Panel through a spread. Each class goes on each of those props, and
+on `PassedPanel`'s `otherClassName`, which nothing names.
 
 The drivers take the configuration, the theme and the class list from the
 `CONFIG`, `THEME` and `CASES` environment variables.

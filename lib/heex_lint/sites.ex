@@ -23,6 +23,7 @@ defmodule HeexLint.Sites do
     :component_file,
     :written,
     :wrapper,
+    :prop,
     strings: [],
     unresolved: [],
     parents: []
@@ -71,7 +72,6 @@ defmodule HeexLint.Sites do
   end
 
   defp element_sites(project, source, template, element, by_index, opts) do
-    resolved = resolution(project, template, element, by_index)
     component = component_of(project, template, element)
     parents = parents(element, by_index)
 
@@ -86,18 +86,14 @@ defmodule HeexLint.Sites do
     |> Enum.flat_map(fn
       # {%{class: ..., style: ...}}: a readable map spread onto the element.
       %{name: :root, value: value} ->
-        for {key, kind} <- [{"class", :class}, {"style", :style}],
+        for key <- Collector.root_keys(value),
+            kind = attribute_kind(key),
             collected = Collector.root(value, key, context, Keyword.put(opts, :mode, kind)),
             collected != nil,
             do: {key, kind, collected}
 
       attribute ->
-        kind =
-          cond do
-            attribute.name == "style" -> :style
-            class_attribute?(attribute.name) -> :class
-            true -> nil
-          end
+        kind = attribute_kind(attribute.name)
 
         if kind,
           do: [
@@ -107,6 +103,8 @@ defmodule HeexLint.Sites do
           else: []
     end)
     |> Enum.map(fn {name, kind, collected} ->
+      resolved = resolution(project, template, element, by_index, name)
+
       %__MODULE__{
         file: source.path,
         kind: kind,
@@ -118,12 +116,16 @@ defmodule HeexLint.Sites do
         component_file: resolved && resolved.component.file,
         written: written_name(element, component),
         wrapper: resolved && resolved.wrapper,
+        prop: resolved && resolved.prop,
         strings: collected.strings,
         unresolved: collected.unresolved,
         parents: Enum.map(parents, &{&1, resolution(project, template, &1, by_index)})
       }
     end)
   end
+
+  defp attribute_kind("style"), do: :style
+  defp attribute_kind(name), do: if(class_attribute?(name), do: :class)
 
   # The component that defines the template, whose received props are
   # the template's inputs.
@@ -139,23 +141,25 @@ defmodule HeexLint.Sites do
   end
 
   # The name a contract matches: the design-system component wearing the
-  # classes, directly or through a wrapper. Classes on a slot belong to the
-  # component the slot is passed to.
+  # classes, directly or through a wrapper. A wrapper is followed by the class
+  # attribute set on it: its `title_class` goes wherever the wrapper hands that
+  # prop, not where `class` goes. Classes on a slot belong to the component the
+  # slot is passed to, whose props they are not, so its `class` decides.
   @doc false
-  def resolution(project, template, element, by_index) do
-    element =
+  def resolution(project, template, element, by_index, attribute \\ "class") do
+    {element, attribute} =
       if element.type == :slot,
-        do: slot_owner(element, by_index),
-        else: element
+        do: {slot_owner(element, by_index), "class"},
+        else: {element, attribute}
 
     with %Element{} <- element,
          %Component{} = component <- component_of(project, template, element) do
       cond do
         Project.design_system?(project, component) ->
-          %{name: component.name, component: component, wrapper: nil}
+          %{name: component.name, component: component, wrapper: nil, prop: attribute}
 
-        target = Project.wrapped(project, component) ->
-          %{name: target.name, component: target, wrapper: component.name}
+        target = Project.wrapped(project, component, attribute) ->
+          %{name: target.name, component: target, wrapper: component.name, prop: attribute}
 
         true ->
           nil

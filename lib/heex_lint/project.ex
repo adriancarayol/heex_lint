@@ -613,17 +613,51 @@ defmodule HeexLint.Project do
 
   ## Wrappers
 
+  # The prop `class={...}` sets on a component. Any other class prop, such as
+  # `title_class`, is a prop of its own and follows its own path.
+  @main_class_prop "class"
+
   @doc """
-  The design-system component `component` forwards its `class` to, when it
-  is a wrapper: a component outside the design system whose template passes
-  its received `class` (or its global attributes) on to one.
+  The design-system component `component` hands its class prop `attribute` to,
+  when it is a wrapper: a component outside the design system whose template
+  passes that prop on to one, directly or through other wrappers.
+
+  Each prop follows its own path. `class` is the main one, and global attributes
+  (`{@rest}` with `attr :rest, :global`) carry any prop the component does not
+  declare. A prop that reaches no design-system component has no target.
   """
-  @spec wrapped(t(), Component.t() | nil) :: Component.t() | nil
-  def wrapped(_project, nil), do: nil
+  @spec wrapped(t(), Component.t() | nil, String.t()) :: Component.t() | nil
+  def wrapped(project, component, attribute \\ @main_class_prop)
 
-  def wrapped(project, %Component{module: module, name: name}),
-    do: Map.get(project.wrappers, {module, name})
+  def wrapped(_project, nil, _attribute), do: nil
 
+  def wrapped(project, %Component{} = component, attribute),
+    do: carried(project, component, attribute, MapSet.new())
+
+  # A prop the component does not name goes where its global attributes go.
+  defp carried(project, %Component{module: module, name: name}, attribute, seen) do
+    wrappers = project.wrappers
+    key = {module, name}
+
+    cond do
+      is_map_key(wrappers, {module, name, attribute}) ->
+        wrappers[{module, name, attribute}]
+
+      MapSet.member?(seen, key) ->
+        nil
+
+      hop = wrappers[{module, name, :spread}] ->
+        if design_system?(project, hop),
+          do: hop,
+          else: carried(project, hop, attribute, MapSet.put(seen, key))
+
+      true ->
+        nil
+    end
+  end
+
+  # `{module, name, prop} => target or nil` for the props each wrapper names, and
+  # `{module, name, :spread} => component` for where its global attributes go.
   defp wrappers(project) do
     components =
       for {_name, module} <- project.modules,
@@ -631,55 +665,182 @@ defmodule HeexLint.Project do
           {_cname, component} <- module.components,
           do: component
 
-    # Chains resolve by iterating to a fixed point, a few hops deep.
-    Enum.reduce(1..4, %{}, fn _round, known ->
-      Enum.reduce(components, known, fn component, acc ->
-        case forward_target(project, component, acc) do
-          nil -> acc
-          target -> Map.put_new(acc, {component.module, component.name}, target)
-        end
+    forwards = Map.new(components, &{{&1.module, &1.name}, forwards(project, &1)})
+
+    named =
+      for component <- components,
+          prop <- Map.keys(forwards[{component.module, component.name}].props),
+          do: {component, prop}
+
+    {wrappers, _known} =
+      Enum.reduce(named, {%{}, %{}}, fn {component, prop}, {wrappers, known} ->
+        walk = %{known: known, route: MapSet.new(), dead: MapSet.new(), cut: false}
+        {target, walk} = target_of(component, prop, forwards, walk)
+        key = {component.module, component.name, prop}
+
+        {Map.put(wrappers, key, target), settled(walk, target)}
       end)
-    end)
+
+    for {{module, name}, %{spread: %Component{} = spread}} <- forwards,
+        into: wrappers,
+        do: {{module, name, :spread}, spread}
   end
 
-  defp forward_target(project, component, known) do
-    Enum.find_value(component.templates, fn template ->
-      case Template.elements(template) do
-        {:ok, elements} ->
-          Enum.find_value(elements, fn element ->
-            target = resolve(project, template.module, element.type, element.name)
+  # The first tag the prop reaches that is, or wraps, a design-system component.
+  # Components can render each other, so the walk keeps its route and goes round
+  # no cycle. An answer that met its own route holds for that route only and is
+  # not kept; `dead` stops the rest of the walk from going through it again, and
+  # any other answer ends the walk at once.
+  defp target_of(%Component{module: module, name: name} = component, prop, forwards, walk) do
+    key = {module, name, prop}
+    own = Map.get(forwards, {module, name})
 
-            resolved =
-              cond do
-                target == nil -> nil
-                design_system?(project, target) -> target
-                true -> Map.get(known, {target.module, target.name})
-              end
+    cond do
+      # Only components outside the design system have forwards.
+      own == nil ->
+        {component, walk}
 
-            if resolved && forwards_class?(element, component), do: resolved
-          end)
+      is_map_key(walk.known, key) ->
+        {walk.known[key], walk}
 
-        {:error, _} ->
-          nil
+      MapSet.member?(walk.route, key) or MapSet.member?(walk.dead, key) ->
+        {nil, %{walk | cut: true}}
+
+      true ->
+        inside = %{walk | route: MapSet.put(walk.route, key), cut: false}
+        {target, inside} = first_target(landings_of(own, prop), forwards, inside)
+        {target, leave(inside, key, target, walk.cut)}
+    end
+  end
+
+  defp first_target([], _forwards, walk), do: {nil, walk}
+
+  defp first_target([{component, lands} | rest], forwards, walk) do
+    case target_of(component, lands, forwards, walk) do
+      {nil, walk} -> first_target(rest, forwards, walk)
+      found -> found
+    end
+  end
+
+  defp landings_of(own, prop) do
+    case own do
+      %{props: %{^prop => landings}} -> landings
+      %{spread: nil} -> []
+      %{spread: spread} -> [{spread, prop}]
+    end
+  end
+
+  defp leave(walk, key, target, cut_before) do
+    walk = %{walk | route: MapSet.delete(walk.route, key)}
+
+    walk =
+      cond do
+        not walk.cut -> %{walk | known: Map.put(walk.known, key, target)}
+        target == nil -> %{walk | dead: MapSet.put(walk.dead, key)}
+        true -> walk
       end
+
+    %{walk | cut: walk.cut or cut_before}
+  end
+
+  # A walk that finds nothing shows that nothing it passed reaches a component.
+  defp settled(walk, nil), do: Enum.reduce(walk.dead, walk.known, &Map.put(&2, &1, nil))
+  defp settled(walk, _target), do: walk.known
+
+  # Where one component sends its class props: the tags each prop it names lands
+  # on, and the first tag its global attributes reach. A tag's children come
+  # before the tag, the order @shadcn/lint reads a template in.
+  defp forwards(project, component) do
+    handoffs =
+      for template <- component.templates,
+          {:ok, elements} <- [Template.elements(template)],
+          element <- children_first(elements),
+          attribute <- element.attributes,
+          handoff = handoff(attribute, component),
+          do: {resolve(project, template.module, element.type, element.name), handoff}
+
+    read = for {_target, {_lands, reads}} <- handoffs, prop <- reads, do: prop
+
+    declared =
+      for %{name: name, global: false} <- component.attrs,
+          HeexLint.Sites.class_attribute?(name),
+          do: name
+
+    props =
+      Map.new([@main_class_prop | declared ++ read], fn prop ->
+        landings =
+          for {target, handoff} <- handoffs,
+              target != nil,
+              lands = lands_as(handoff, prop, component),
+              do: {target, lands}
+
+        {prop, landings}
+      end)
+
+    spread = Enum.find_value(handoffs, fn {target, handoff} -> handoff == :spread && target end)
+
+    %{props: props, spread: spread}
+  end
+
+  defp children_first(elements) do
+    children = Enum.group_by(elements, & &1.parent)
+    children_first(Map.get(children, nil, []), children)
+  end
+
+  defp children_first(elements, children) do
+    Enum.flat_map(elements, fn element ->
+      children_first(Map.get(children, element.index, []), children) ++ [element]
     end)
   end
 
-  # `class={@class}`, `class={[..., @class]}` or `{@rest}` with global attrs.
-  defp forwards_class?(element, component) do
-    Enum.any?(element.attributes, fn
-      %{name: :root, value: {:expr, code, _}} ->
-        Component.global?(component) and Regex.match?(~r/^\s*@(\w+)\s*$/, code) and
-          (fn [_, name] -> match?(%{global: true}, Component.attr(component, name)) end).(
-            Regex.run(~r/^\s*@(\w+)\s*$/, code)
-          )
+  # Global attributes carry what the component does not declare. A class
+  # attribute hands on the assigns its value reads under its own name, and a map
+  # spread onto the tag under theirs.
+  defp lands_as(:spread, prop, component), do: if(!Component.attr(component, prop), do: prop)
+  defp lands_as({lands, reads}, prop, _component), do: if(prop in reads, do: lands || prop)
 
-      %{name: name, value: {:expr, code, _}} when is_binary(name) ->
-        HeexLint.Sites.class_attribute?(name) and
-          Regex.match?(~r/@(\w*class\w*)\b|assigns\.(\w*class\w*)\b/, code)
-
-      _ ->
-        false
-    end)
+  # What an attribute hands on: `:spread` for `{@rest}` with `attr :rest, :global`,
+  # `{name, assigns}` for `class={["w-full", @class]}`, `{nil, assigns}` for
+  # `{%{class: @class}}`.
+  defp handoff(%{name: :root, value: {:expr, code, _}}, component) do
+    with [_, name] <- Regex.run(~r/^\s*@(\w+)\s*$/, code),
+         %{global: true} <- Component.attr(component, name) do
+      :spread
+    else
+      _ -> {nil, class_props_read(code)}
+    end
   end
+
+  defp handoff(%{name: name, value: {:expr, code, _}}, _component) when is_binary(name) do
+    if HeexLint.Sites.class_attribute?(name), do: {name, class_props_read(code)}
+  end
+
+  defp handoff(_attribute, _component), do: nil
+
+  # The class props an expression reads: `@name`, `assigns.name`, `assigns[:name]`.
+  defp class_props_read(code) do
+    case Code.parse(code) do
+      {:ok, ast} ->
+        ast
+        |> Macro.prewalk([], fn node, acc -> {node, assign_read(node) ++ acc} end)
+        |> elem(1)
+        |> Enum.filter(&HeexLint.Sites.class_attribute?/1)
+
+      {:error, _} ->
+        []
+    end
+  end
+
+  defp assign_read({:@, _, [{name, _, context}]}) when is_atom(name) and is_atom(context),
+    do: [Atom.to_string(name)]
+
+  defp assign_read({{:., _, [{:assigns, _, context}, name]}, _, []})
+       when is_atom(name) and is_atom(context),
+       do: [Atom.to_string(name)]
+
+  defp assign_read({{:., _, [Access, :get]}, _, [{:assigns, _, context}, name]})
+       when is_atom(name) and is_atom(context),
+       do: [Atom.to_string(name)]
+
+  defp assign_read(_node), do: []
 end

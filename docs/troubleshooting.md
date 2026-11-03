@@ -15,7 +15,9 @@ only. Check that:
 
 A wrapper component outside the design system is checked when it forwards
 its `class` (`class={[..., @class]}`) or its global attributes (`{@rest}`
-with `attr :rest, :global`) to a design-system component.
+with `attr :rest, :global`) to a design-system component. Each class prop
+counts on its own: `<.panel title_class="...">` is checked only if `panel` hands
+`title_class` to one, and then against that one's contract.
 
 ## The theme has no tokens
 
