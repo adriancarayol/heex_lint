@@ -35,10 +35,14 @@ defmodule HeexLint.VariableChainsTest do
 
   defp assigned(name), do: "assigns = assign(assigns, :c, #{name})"
 
+  # A read that never ends takes all the memory before any timeout: it is killed.
   defp within_seconds(fun) do
-    {microseconds, result} = :timer.tc(fun)
-    assert microseconds < 5_000_000, "took #{div(microseconds, 1000)} ms"
-    result
+    task = Task.async(fun)
+
+    case Task.yield(task, 5_000) || Task.shutdown(task, :brutal_kill) do
+      {:ok, result} -> result
+      _ -> flunk("did not finish in 5 s")
+    end
   end
 
   # What each finding points at: its rule and the source text there.
@@ -531,6 +535,149 @@ defmodule HeexLint.VariableChainsTest do
 
       assert [%{message: message}] = lint(dir, style(body), rules: @styles)
       assert message =~ "--tone hardcodes a color"
+    end
+  end
+
+  describe "a default that reads its own prop" do
+    @both [no_inline_styles: :error, no_raw_colors: :error, require_static_classes: :error]
+
+    # A component with one attr, whose function head is `head`.
+    defp component(attr, template, head \\ "assigns", before \\ "") do
+      %{
+        @path => """
+        defmodule AppWeb.Page do
+          use AppWeb, :html
+          #{before}
+          attr #{attr}
+          def page(#{head}) do
+            ~H"#{template}"
+          end
+        end
+        """
+      }
+    end
+
+    @attr ":class, :string, default"
+    @hole ~S(<div style={\"--tone: #{@class}\"}></div>)
+
+    for {name, default, head, before, reads} <- [
+          {"through assigns", "assigns.class", "assigns", "", "default: assigns."},
+          {"through a module's assigns", "assigns.class", "assigns",
+           ~s(assigns = %{class: "px-2"}), "default: assigns."},
+          {"through the head of its function", "class", "%{class: class} = assigns",
+           ~s(class = "px-2"), "default: "}
+        ] do
+      test "ends in a hole #{name}", %{tmp_dir: dir} do
+        files = component("#{@attr}: #{unquote(default)}", @hole, unquote(head), unquote(before))
+
+        assert [] == within_seconds(fn -> lint(dir, files, rules: @both) end)
+      end
+
+      test "says nothing more about a class #{name}", %{tmp_dir: dir} do
+        files =
+          component(
+            "#{@attr}: #{unquote(default)}",
+            ~s(<.button class={@class}>x</.button>),
+            unquote(head),
+            unquote(before)
+          )
+
+        assert [] == within_seconds(fn -> lint(dir, files, rules: @both) end)
+      end
+
+      test "leaves a style dynamic #{name}", %{tmp_dir: dir} do
+        files =
+          component(
+            ":style, :string, default: #{String.replace(unquote(default), "class", "style")}",
+            ~s(<div style={@style}></div>),
+            String.replace(unquote(head), "class", "style"),
+            String.replace(unquote(before), "class", "style")
+          )
+
+        assert [%{message: message} = finding] =
+                 within_seconds(fn -> lint(dir, files, rules: @both) end)
+
+        assert message =~ "cannot be checked"
+        assert at([finding]) == [position(dir, unquote(reads))]
+      end
+    end
+
+    test "ends through a variable of its function", %{tmp_dir: dir} do
+      body = fn template ->
+        %{
+          @path => """
+          defmodule AppWeb.Page do
+            use AppWeb, :html
+            attr :class, :string, default: v
+            attr :style, :string, default: u
+            def page(assigns) do
+              v = assigns.class
+              u = assigns.style
+              _ = {v, u}
+              ~H"#{template}"
+            end
+          end
+          """
+        }
+      end
+
+      for template <- [@hole, ~s(<.button class={@class}>x</.button>)] do
+        assert [] == within_seconds(fn -> lint(dir, body.(template), rules: @both) end)
+      end
+
+      assert [%{message: message}] =
+               within_seconds(fn ->
+                 lint(dir, body.(~s(<div style={@style}></div>)), rules: @both)
+               end)
+
+      assert message =~ "cannot be checked"
+    end
+
+    test "ends when two defaults read each other", %{tmp_dir: dir} do
+      files = %{
+        @path => """
+        defmodule AppWeb.Page do
+          use AppWeb, :html
+          attr :class, :string, default: assigns.input_class
+          attr :input_class, :string, default: assigns.class
+          def page(assigns) do
+            ~H"#{@hole}"
+          end
+        end
+        """
+      }
+
+      assert [] == within_seconds(fn -> lint(dir, files, rules: @both) end)
+    end
+
+    test "is read again on a route it is not on", %{tmp_dir: dir} do
+      body = ~s[x = if(assigns.on, do: assigns.class, else: "bg-pink-500")]
+
+      for value <- ["[@class, x]", "[x, @class]"] do
+        template = "<.button class={#{value}}>x</.button>"
+        files = page(body, template, "attr :class, :string, default: x")
+
+        assert [%{rule: :require_static_classes} = dynamic, %{rule: :no_raw_colors}] =
+                 within_seconds(fn -> lint(dir, files, rules: @both) end)
+
+        assert at([dynamic]) == [position(dir, "default: ")]
+      end
+    end
+
+    test "keeps what else the default holds", %{tmp_dir: dir} do
+      default = ~s[if(assigns.on, do: assigns.class, else: "bg-pink-500")]
+      files = component("#{@attr}: #{default}", ~s(<.button class={@class}>x</.button>))
+      assert [%{rule: :no_raw_colors}] = within_seconds(fn -> lint(dir, files, rules: @both) end)
+
+      files = component("#{@attr}: #{String.replace(default, "bg-pink-500", "#ff0000")}", @hole)
+      assert [%{message: message}] = within_seconds(fn -> lint(dir, files, rules: @both) end)
+      assert message =~ "--tone hardcodes a color"
+
+      default = ~s[if(assigns.on, do: assigns.style, else: "color: red")]
+      files = component(":style, :string, default: #{default}", ~s(<div style={@style}></div>))
+      assert [dynamic, color] = within_seconds(fn -> lint(dir, files, rules: @both) end)
+      assert dynamic.message =~ "cannot be checked"
+      assert color.message =~ "Inline style sets color"
     end
   end
 

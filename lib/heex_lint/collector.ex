@@ -539,20 +539,29 @@ defmodule HeexLint.Collector do
       forwarded?(state, name) ->
         # The incoming prop stays opaque; its default is authored here.
         case component_default(state, name) do
-          nil ->
-            state
-
-          default ->
-            hop(
-              state,
-              {:default, name},
-              meta,
-              &visit(%{&1 | mode: :body, text: body_text(&1, meta)}, default)
-            )
+          nil -> state
+          default -> read_default(state, name, default, meta)
         end
 
       true ->
         unresolved(state, meta)
+    end
+  end
+
+  # A default that reads its own prop ends there. As in @shadcn/lint, a class
+  # says nothing more about it and a whole style cannot be checked.
+  defp read_default(state, name, default, meta) do
+    key = {:default, name}
+
+    cond do
+      not MapSet.member?(state.seen, key) ->
+        hop(state, key, meta, &visit(%{&1 | mode: :body, text: body_text(&1, meta)}, default))
+
+      state.kind == :style ->
+        state |> stop() |> unresolved(meta)
+
+      true ->
+        stop(state)
     end
   end
 

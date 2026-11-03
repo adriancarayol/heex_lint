@@ -11,7 +11,8 @@
   `"--tone: #{v}"`, has no limit, also as in @shadcn/lint: `no_inline_styles`
   reports a raw color any number of links from it. A binding is read once per
   site, so a generated chain of `if on, do: a, else: a` stays linear, also past
-  the limit or ending in a cycle.
+  the limit or ending in a cycle. A default that reads its own prop ends there:
+  a class says nothing more about it, and a whole `style` is reported as dynamic.
 - A variable a template reads directly, as in `<.button class={v}>`, is read
   where the function binds it. **This adds findings:** its classes used to be
   dropped, and now get reports and fixes at that place. `@name` in its value is
