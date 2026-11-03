@@ -43,10 +43,10 @@
   on it. **This adds findings** where that theme used the grammar or the standalone
   binary: `no_unknown_classes` now asks that Tailwind and offers suggestions.
 - `@import`s in the Node build now resolve the way @shadcn/lint's build does, which
-  also follows a package's `main`, `src/` and `imports` map where `@tailwindcss/node` did
-  not. **This adds findings:** a theme that warned and used the grammar over one of
-  these imports now gets Tailwind's answers. A plugin's `console.log` no longer
-  corrupts the answers either.
+  also follows a package's `main` and `src/` where `@tailwindcss/node` did not. **This
+  adds findings:** a theme that warned and used the grammar over one of these imports
+  now gets Tailwind's answers. `NODE_PATH` no longer counts for a stylesheet. A plugin's
+  `console.log` no longer corrupts the answers either.
 - A lookup on a map update reads `%{base | a: value}` as @shadcn/lint reads
   `{ ...base, a: value }`, in a variable or an assign. A key it writes has that value,
   any other key is its base's, and a key the base cannot answer is unreadable, as is a
