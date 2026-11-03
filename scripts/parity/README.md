@@ -67,6 +67,12 @@ on `PassedPanel`'s `otherClassName`, which nothing names.
 The drivers take the configuration, the theme and the class list from the
 `CONFIG`, `THEME` and `CASES` environment variables.
 
+`grammar_driver.ts` and `grammar_driver.exs` compare the class grammar on its own, with
+no theme: the group and category of every name in Tailwind's class list, with each
+modifier Tailwind lists for it and behind `hover:`, and of every variant in front of every
+97th class. That comes to 457,699 names at the pinned versions, and their line in the output
+says "findings" as the others do.
+
 `style_cases.txt` holds `no-inline-styles` on style values written in both languages,
 each with its own `allowDynamicIdentifiers`. `style_driver.ts` and `style_driver.exs`
 lint them and print each case's distinct messages, not where they are, since
@@ -97,3 +103,6 @@ HeexLint invented, a new `<` line one it lost.
 
 To move the pin, change `commit` and `deps` in `run.sh`; the script reinstalls
 and rebuilds when they change.
+
+A full run takes about a minute and a half. `docs/parity.md` has the last result; update its
+numbers when they move.
