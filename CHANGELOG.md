@@ -137,6 +137,10 @@ Each of these reports something that passed before.
   `tw:hovr:bg-primary` reads as a misspelled variant, where it was dropped without a word.
 - With `theme_imports`, the package's scales, values and resets apply: a `--radius-*:
   initial` in it makes `rounded-lg` unrecognized.
+- `scan_all_strings` now reads the string literals in template expressions, not only quoted
+  attribute values and Elixir code, so `no_raw_colors` and `no_arbitrary_values` report more
+  under it: `title={"bg-pink-500"}`, `data-class={if @on, do: "bg-pink-500"}`,
+  `<div>{"bg-pink-500"}</div>`, `<%= "bg-pink-500" %>` and `:if={@tone == "bg-pink-500"}`.
 
 ### Findings that go away
 
@@ -157,6 +161,11 @@ Each of these reports something that passed before.
   class={cn(%{"bg-red-500" => @on})} />`, a map a function returns, as in `cn(tones())` in a
   template, a map piped through another call first, as in `%{...} |> Map.put(...) |> cn()`,
   and a map reaching `cn(@tones)` as a component's prop or a `:for` variable.
+- `scan_all_strings` leaves a class a tag's class site reads to that site, so a component's
+  contract decides it: `<.button class="bg-pink-500">` under a contract allowing that class
+  is no longer reported. A string bound in code and read there is still reported.
+- `scan_all_strings` skips a string with no hyphen, such as a `"[padding:13px]"` outside a
+  class site. A class site still reads it.
 - Classes a wrapper does not hand to that component: `title_class` on a wrapper that
   forwards only `class`, `class` on one that forwards only another assign such as
   `@title_class` or `@merged_class`, and `class` declared with `attr` beside a `{@rest}`

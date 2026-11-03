@@ -251,6 +251,18 @@ defmodule HeexLint.Collector do
     Enum.reverse(visit(state, call).map_keys)
   end
 
+  @doc """
+  Collects from a piece of a template expression, such as one literal the caller
+  found by walking it, at its place in the template.
+  """
+  @spec template_expression(Macro.t(), HeexLint.Element.value(), map(), keyword()) :: t()
+  def template_expression(ast, {:expr, code, position}, context, opts \\ []) do
+    context
+    |> state(opts, expression_text(code, position, context), :template)
+    |> visit(ast)
+    |> result()
+  end
+
   # Positions inside a `{...}` expression, as they are in the template's file.
   defp expression_text(code, position, context) do
     %{

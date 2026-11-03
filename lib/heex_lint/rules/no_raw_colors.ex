@@ -27,8 +27,9 @@ defmodule HeexLint.Rules.NoRawColors do
     * `:allow`, `:deny`, `:contracts` - exceptions, as class patterns
       (`*-amber-*`), groups or categories. See `HeexLint.Policy`.
     * `:message` - replaces the text. Also `{{tokens}}` and `{{suggestion}}`.
-    * `:scan_all_strings` - check every string literal in the file except plain
-      map keys such as `%{"fill-color" => 1}`.
+    * `:scan_all_strings` - check every string literal with a hyphen in the
+      file, in code and in templates, except plain map keys such as
+      `%{"fill-color" => 1}`.
   """
 
   @behaviour HeexLint.Rule
@@ -170,53 +171,99 @@ defmodule HeexLint.Rules.NoRawColors do
       for site <- file.sites, site.kind == :class, string <- site.strings, do: {site, string}
 
     if Keyword.get(options, :scan_all_strings, false),
-      do: sites ++ Enum.map(all_strings(file), &{nil, &1}),
+      do: sites ++ Enum.map(all_strings(file, sites), &{nil, &1}),
       else: sites
   end
 
   @doc false
-  def all_strings(file) do
+  def all_strings(file, sites) do
     source = file.source
     merge = Map.get(file, :merge_functions, [])
 
     code_strings =
       if source.ast do
-        {_, strings} =
-          Macro.prewalk(source.ast, [], fn
-            {:sigil_H, _, _}, acc ->
-              {nil, acc}
+        context = %{project: file.project, source: source}
 
-            {:__block__, _, [text]} = node, acc when is_binary(text) ->
-              context = %{project: file.project, source: source}
-              {node, acc ++ Collector.expression(node, context).strings}
-
-            # A plain key names a field, not a class.
-            {:%{}, meta, entries}, acc ->
-              {{:%{}, meta, without_plain_keys(entries)}, acc}
-
-            node, acc ->
-              {node, acc}
-          end)
+        strings =
+          for node <- literals(source.ast),
+              string <- Collector.expression(node, context).strings,
+              do: string
 
         strings ++ class_map_keys(file, merge)
       else
         []
       end
 
+    # What a class site reads on a tag is that site's, as its component's
+    # contract may allow it. A string the code binds stays the code's, as in
+    # @shadcn/lint, which reaches it before the tag that reads it.
+    claimed =
+      for {_site, string} <- sites,
+          {:char, _text, position} <- string.items,
+          into: MapSet.new(),
+          do: position
+
     template_strings =
       for {template, elements} <- file.elements,
-          element <- elements,
-          %{value: {:string, _, _} = value} <- element.attributes,
-          string <-
-            Collector.attribute(value, %{
-              project: file.project,
-              source: source,
-              template: template
-            }).strings,
+          context = %{project: file.project, source: source, template: template},
+          string <- written_strings(elements, context) ++ expression_strings(template, context),
+          not claimed?(string, claimed),
           do: string
 
     code_strings ++ template_strings
   end
+
+  # A site reading "a " <> @b keeps the classes and not the space between them.
+  defp claimed?(string, claimed) do
+    Enum.any?(string.items, fn
+      {:char, text, position} -> String.trim(text) != "" and MapSet.member?(claimed, position)
+      _interpolation -> false
+    end)
+  end
+
+  # Quoted attribute values.
+  defp written_strings(elements, context) do
+    for element <- elements,
+        %{value: {:string, text, _} = value} <- element.attributes,
+        scanned?(text),
+        string <- Collector.attribute(value, context).strings,
+        do: string
+  end
+
+  # The literals of every {...} and <%= ... %>, whatever reads them. Text
+  # between tags is not a literal, as JSX text is not.
+  defp expression_strings(template, context) do
+    for {:expr, code, _position} = expression <- Element.expressions(template),
+        {:ok, ast} <- [Code.parse(code)],
+        node <- literals(ast),
+        string <- Collector.template_expression(node, expression, context).strings,
+        do: string
+  end
+
+  # The string literals of some code, without the plain keys of its maps.
+  defp literals(ast) do
+    {_, literals} =
+      Macro.prewalk(ast, [], fn
+        {:sigil_H, _, _}, acc ->
+          {nil, acc}
+
+        {:__block__, _, [text]} = node, acc when is_binary(text) ->
+          {node, if(scanned?(text), do: [node | acc], else: acc)}
+
+        # A plain key names a field, not a class.
+        {:%{}, meta, entries}, acc ->
+          {{:%{}, meta, without_plain_keys(entries)}, acc}
+
+        node, acc ->
+          {node, acc}
+      end)
+
+    Enum.reverse(literals)
+  end
+
+  # Without a hyphen, as @shadcn/lint has it, a string is left to the class sites
+  # that read it: "[padding:13px]" elsewhere is more likely text than a class.
+  defp scanned?(text), do: String.contains?(text, "-")
 
   # The entries of a map literal without their string keys, for
   # %{"fill-color" => 1} and %{map | "fill-color" => 1} alike. A key that

@@ -244,8 +244,11 @@ unreadable either: it is only looked through for raw colors.
 - `style` attributes and `<style>` elements; SVG color attributes `fill`,
   `stroke`, `color`, `stop-color`, `flood-color` and `lighting-color`.
 - Merge-function calls anywhere in a module, and `attr :class` defaults.
-- Every string literal, except plain map keys, when `scan_all_strings` is enabled on `no_raw_colors`
-  or `no_arbitrary_values`.
+- With `scan_all_strings` on `no_raw_colors` or `no_arbitrary_values`, every string literal
+  with a hyphen: in Elixir code, in quoted attribute values, and in a template's `{...}` and
+  `<%= ... %>`, `:if` and `:for` included. Plain map keys are skipped. Text between tags, an
+  interpolated string and a sigil are not literals here, though a class site reads the last
+  two.
 
 Files come from `inputs`, without any path that has a directory named `deps` in it.
 
@@ -262,6 +265,8 @@ Files come from `inputs`, without any path that has a directory named `deps` in 
   `<:title class={@title_class}>` inside a component is not followed either.
 - **Class map keys.** `cn(%{"bg-pink-500" => @on})` is read only under
   `scan_all_strings`, and there not when the map is written in a template.
+- **Templates inside expressions.** A `~H` in a template's `{...}`, as in
+  `{if @on, do: ~H|<b class="bg-pink-500" />|}`, is not read by any rule.
 - **Patterns.** `%{a: s} = %{a: "color: red"}` does not read `s`, which is dynamic.
 - **Plain CSS.** Stylesheets and `@apply` are outside these rules.
 - **Locally rebuilt components** are not the design system; token rules still

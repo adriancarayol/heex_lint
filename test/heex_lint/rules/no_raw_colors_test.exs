@@ -603,6 +603,198 @@ defmodule HeexLint.Rules.NoRawColorsTest do
     end
   end
 
+  describe "scan_all_strings in template expressions" do
+    @scan [no_raw_colors: {:error, scan_all_strings: true}]
+
+    # What each template reports, as {line, column} in the template and the text there.
+    defp in_template(dir, template, rules \\ @scan) do
+      files = %{
+        "lib/app_web/page.ex" => """
+        defmodule AppWeb.Page do
+          use Phoenix.Component
+          embed_templates "page/*"
+        end
+        """,
+        "lib/app_web/page/show.html.heex" => template <> "\n"
+      }
+
+      lines = String.split(template, "\n")
+
+      for finding <- lint(dir, files, rules: rules) do
+        assert Path.basename(finding.file) == "show.html.heex"
+
+        text =
+          lines
+          |> Enum.at(finding.line - 1)
+          |> String.slice(finding.column - 1, String.length("bg-pink-500"))
+
+        {finding.line, finding.column, text}
+      end
+    end
+
+    defp in_sigil(dir, template, rules) do
+      indented = template |> String.split("\n") |> Enum.map_join("\n", &("    " <> &1))
+
+      module = """
+      defmodule AppWeb.Page do
+        use Phoenix.Component
+
+        def page(assigns) do
+          ~H\"\"\"
+      #{indented}
+          \"\"\"
+        end
+      end
+      """
+
+      lines = String.split(module, "\n")
+
+      for finding <- lint(dir, %{"lib/app_web/page.ex" => module}, rules: rules) do
+        lines
+        |> Enum.at(finding.line - 1)
+        |> String.slice(finding.column - 1, String.length("bg-pink-500"))
+      end
+    end
+
+    @read [
+      {~S|<div title={"bg-pink-500"} />|, {1, 14}},
+      {~S|<div data-class={"bg-pink-500"} />|, {1, 19}},
+      {~S|<div title={if @a, do: "bg-pink-500", else: "x"} />|, {1, 25}},
+      {~S|<div title={%{"fill-color" => "bg-pink-500"}} />|, {1, 32}},
+      {~S|<div title={"x #{"bg-pink-500"}"} />|, {1, 19}},
+      {~S|<div {%{title: "bg-pink-500"}} />|, {1, 17}},
+      {~S|<div :if={@a == "bg-pink-500"} />|, {1, 18}},
+      {~S|<div :for={a <- ["bg-pink-500"]}>{a}</div>|, {1, 19}},
+      {~S|<div class={@a == "bg-pink-500" && "p-1"} />|, {1, 20}},
+      {~S|<div>{"bg-pink-500"}</div>|, {1, 8}},
+      {~S|<div><%= "bg-pink-500" %></div>|, {1, 11}},
+      {~S|<div><% a = "bg-pink-500" %></div>|, {1, 14}},
+      {~S|<%= if @a == "bg-pink-500" do %><b>x</b><% end %>|, {1, 15}},
+      {~s|<%= case @a do %>\n<% "bg-pink-500" -> %><b>x</b>\n<% end %>|, {2, 5}},
+      {~s|<div title={\n  "bg-pink-500"\n} />|, {2, 4}},
+      {~s|<div>{\n  "bg-pink-500"\n}</div>|, {2, 4}},
+      {~s|<div><%=\n  "bg-pink-500"\n%></div>|, {2, 4}},
+      {~s|<p>x</p>\n<p>{"bg-pink-500"}</p>|, {2, 6}}
+    ]
+
+    test "reads every literal, where it is written", %{tmp_dir: dir} do
+      for {template, {line, column}} <- @read do
+        assert in_template(dir, template) == [{line, column, "bg-pink-500"}], template
+      end
+    end
+
+    test "reads them in a sigil at the same places", %{tmp_dir: dir} do
+      for {template, _position} <- @read do
+        assert in_sigil(dir, template, @scan) == ["bg-pink-500"], template
+      end
+    end
+
+    test "reads nothing of them without the option", %{tmp_dir: dir} do
+      for {template, _position} <- @read, not String.contains?(template, "class=") do
+        assert in_template(dir, template, no_raw_colors: :error) == [], template
+      end
+    end
+
+    test "reports what a class site also reads once", %{tmp_dir: dir} do
+      for template <- [
+            ~S|<div class={"bg-pink-500"} />|,
+            ~S|<div class={if @a, do: "bg-pink-500"} />|,
+            ~S|<div class={["p-1", "bg-pink-500"]} />|,
+            ~S|<div class="bg-pink-500" />|
+          ] do
+        assert [{1, _column, "bg-pink-500"}] = in_template(dir, template), template
+      end
+    end
+
+    test "text and comments are not literals", %{tmp_dir: dir} do
+      for template <- [
+            ~S|<div>bg-pink-500</div>|,
+            ~S|<%!-- bg-pink-500 --%><div />|,
+            ~S|<div phx-no-curly-interpolation>{"bg-pink-500"}</div>|,
+            ~S|<%= if @a do %><b>x</b><% else %><b>y</b><% end %>|
+          ] do
+        assert in_template(dir, template) == [], template
+      end
+    end
+
+    test "a plain map key still names a field", %{tmp_dir: dir} do
+      assert in_template(dir, ~S|<div title={%{"bg-pink-500" => 1}} />|) == []
+      assert in_template(dir, ~S|<.a :let={%{"bg-pink-500" => a}}>{a}</.a>|) == []
+    end
+
+    test "no_arbitrary_values reads them too", %{tmp_dir: dir} do
+      rules = [no_arbitrary_values: {:error, scan_all_strings: true}]
+
+      assert [{1, 14, "p-[13px]" <> _}] = in_template(dir, ~S|<div title={"p-[13px]"} />|, rules)
+    end
+
+    test "a string with no hyphen is left to the class sites", %{tmp_dir: dir} do
+      rules = [no_arbitrary_values: {:error, scan_all_strings: true}]
+
+      for template <- [
+            ~S|<div title="[padding:13px]" />|,
+            ~S|<div title={"[padding:13px]"} />|,
+            ~S|<div>{"[padding:13px]"}</div>|
+          ] do
+        assert in_template(dir, template, rules) == [], template
+      end
+
+      module = ~S|defmodule AppWeb.Text do def text, do: "[padding:13px]" end|
+      assert lint(dir, %{"lib/app_web/text.ex" => module}, rules: rules) == []
+
+      assert [_] = in_template(dir, ~S|<div class="[padding:13px]" />|, rules)
+      assert [_] = in_template(dir, ~S|<div class={"[padding:13px]"} />|, rules)
+    end
+
+    @contract [
+      no_raw_colors:
+        {:error, scan_all_strings: true, contracts: [[pattern: "^button$", allow: ["bg-pink-*"]]]}
+    ]
+
+    test "a component's contract keeps what its class site reads", %{tmp_dir: dir} do
+      for template <- [
+            ~S|<.button class="bg-pink-500">x</.button>|,
+            ~S|<.button class={"bg-pink-500"}>x</.button>|,
+            ~S|<.button class={if @a, do: "bg-pink-500"}>x</.button>|,
+            ~S|<.button class={cn("bg-pink-500")}>x</.button>|,
+            ~S|<.button class={"bg-pink-500 #{@a}"}>x</.button>|,
+            ~S|<.button class={"bg-pink-500 " <> @a}>x</.button>|,
+            ~S|<.button class={@a <> " bg-pink-500"}>x</.button>|,
+            ~S|<.button class={"p-1 #{"bg-pink-500"}"}>x</.button>|
+          ] do
+        files = %{"lib/app_web/live/page_live.ex" => live(template)}
+        assert lint(dir, files, rules: @contract) == [], template
+      end
+    end
+
+    test "but not the other literals on that component", %{tmp_dir: dir} do
+      for template <- [
+            ~S|<.button title="bg-pink-500">x</.button>|,
+            ~S|<.button title={"bg-pink-500"}>x</.button>|,
+            ~S|<.button class={@a == "bg-pink-500" && "p-1"}>x</.button>|
+          ] do
+        files = %{"lib/app_web/live/page_live.ex" => live(template)}
+        assert [_] = lint(dir, files, rules: @contract), template
+      end
+    end
+
+    test "a string the code binds stays the code's", %{tmp_dir: dir} do
+      module = """
+      defmodule AppWeb.PageLive do
+        use AppWeb, :live_view
+
+        def render(assigns) do
+          tone = "bg-pink-500"
+          ~H"<.button class={tone}>x</.button>"
+        end
+      end
+      """
+
+      assert [finding] = lint(dir, %{"lib/app_web/live/page_live.ex" => module}, rules: @contract)
+      assert finding.line == 5
+    end
+  end
+
   test "a color function over one theme variable is not a raw color" do
     for value <- [
           "oklch(var(--primary-oklch))",

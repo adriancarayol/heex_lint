@@ -123,27 +123,40 @@ defmodule HeexLint.Element do
             %{value: {:expr, _, _} = value} <- element.attributes,
             do: value
 
+      # The tokenizer places these at their `{`.
       text =
         for {:body_expr, code, meta} <-
               Tokenizer.finalize(tokens, template.file, cont, template.source),
-            do: {:expr, code, {meta.line, meta.column}}
+            do: {:expr, code, {meta.line, meta.column + 1}}
 
       embedded =
-        for {:expr, _marker, code, meta} <- eex,
-            do: {:expr, List.to_string(code), {meta.line, meta.column}}
+        for {:expr, marker, code, meta} <- eex,
+            do: {:expr, List.to_string(code), eex_code_start(marker, meta)}
 
       # <%= if cn(@tones) do %> needs its end to parse.
       opening =
-        for {:start_expr, _marker, code, meta} <- eex,
-            do: {:expr, List.to_string(code) <> "\nend", {meta.line, meta.column}}
+        for {:start_expr, marker, code, meta} <- eex,
+            do: {:expr, List.to_string(code) <> "\nend", eex_code_start(marker, meta)}
 
-      attributes ++ text ++ embedded ++ opening
+      # <% "a" -> %> needs a function around it, placed so that its code stays
+      # where it is. <% else %> does not parse that way, and has nothing to read.
+      clauses =
+        for {:middle_expr, marker, code, meta} <- eex do
+          {line, column} = eex_code_start(marker, meta)
+          {:expr, "fn " <> List.to_string(code) <> "\nnil\nend", {line, column - 3}}
+        end
+
+      attributes ++ text ++ embedded ++ opening ++ clauses
     else
       {:error, _message} -> []
     end
   rescue
     _ in [Tokenizer.ParseError, EEx.SyntaxError] -> []
   end
+
+  # EEx places its tokens at their `<%`.
+  defp eex_code_start(marker, meta),
+    do: {meta.line, meta.column + length(~c"<%") + length(marker)}
 
   defp tokenize(template) do
     eex = eex_tokens(template)
