@@ -705,8 +705,11 @@ defmodule HeexLint.Tailwind do
           bare <- bare_candidates(variants, base),
           do: bare
 
+    probes = Enum.flat_map(tokens, &font_size_probes/1)
+
     candidates =
-      Enum.uniq(tokens ++ bases) |> Enum.reject(&String.contains?(&1, ["\"", "\\", "{", "}"]))
+      Enum.uniq(tokens ++ bases ++ probes)
+      |> Enum.reject(&String.contains?(&1, ["\"", "\\", "{", "}"]))
 
     input = Path.join(dir, "input.css")
     args = ["--input", input, "--output", Path.join(dir, "output.css")]
@@ -805,7 +808,33 @@ defmodule HeexLint.Tailwind do
         %{token: token, suggestion: nil, base_known: Enum.any?(bare, known?)}
       end
 
-    {unknown, Enum.filter(tokens, &sets_font_size?(css, &1))}
+    font_sizes =
+      Enum.filter(tokens, fn token ->
+        token |> font_size_probes() |> Enum.any?(&sets_font_size?(css, &1))
+      end)
+
+    {unknown, font_sizes}
+  end
+
+  # What generates a font size is what Tailwind's answer for the class would say, and
+  # the output cannot tell that from a rule the theme's own CSS has for the class, as
+  # in `.text-primary { font-size: 1rem }` or `.card .text-primary { ... }`. A plugin
+  # may also generate one with a selector just like those, as `.card .text-body`. So
+  # the build is asked for the class under a variant that changes nothing, a name only
+  # Tailwind can have written a rule for. Only `text-*` classes are ever asked about.
+  # It goes after a prefix, and the build says which name that is.
+  defp font_size_probes(token) do
+    if String.starts_with?(Classes.normalize(token), "text-") do
+      case Classes.split_variants(token) do
+        {[], _base} ->
+          ["[&]:" <> token]
+
+        {[first | _], _base} ->
+          ["[&]:" <> token, first <> ":[&]:" <> String.replace_prefix(token, first <> ":", "")]
+      end
+    else
+      []
+    end
   end
 
   defp build_error(state, job, message) do

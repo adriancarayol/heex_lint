@@ -16,7 +16,9 @@
   started it. **This removes findings:** `no_raw_colors` no longer calls `text-body`
   from a `fontSize` an undeclared color. **It also adds findings:** `deny` naming
   typography now reaches it, and `allow: ["color"]` no longer covers it. The standalone
-  binary takes one build for the classes a run's files and contract entries name.
+  binary takes one build for the classes a run's files and contract entries name, and
+  a rule in the theme's own CSS, such as `.card .text-primary { font-size: 1rem }`, does
+  not make a class a font size there, as it does not through Node.
 - The Tailwind process cannot outlive the linter or stall it. The Node process runs
   Tailwind on a worker thread and ends within moments of its stdin closing, whatever a
   plugin is doing. Each question has a deadline, 60 seconds for a stylesheet's first

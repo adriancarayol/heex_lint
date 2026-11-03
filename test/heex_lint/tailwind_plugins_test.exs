@@ -305,6 +305,31 @@ defmodule HeexLint.TailwindPluginsTest do
     end
   end
 
+  # Font sizes under the selectors a theme might write for a class of its own.
+  @selector_plugin """
+  module.exports = function ({ addUtilities }) {
+    addUtilities({
+      ".text-plain": { "font-size": "1rem" },
+      ".text-child > p": { "font-size": "1rem" },
+      ".wrap .text-under": { "font-size": "1rem" },
+      ".text-both.x": { "font-size": "1rem" },
+    })
+  }
+  """
+
+  defp selector_files(theme_rules, classes, import \\ ~s(@import "tailwindcss";)) do
+    %{
+      "assets/css/app.css" => """
+      #{import}
+      @plugin "./plugin.js";
+      @theme inline { --color-primary: #123456; }
+      #{theme_rules}
+      """,
+      "assets/css/plugin.js" => @selector_plugin,
+      "lib/app_web/live/page_live.ex" => live(button(classes))
+    }
+  end
+
   defp owns(result, token) do
     result
     |> found_on(token)
@@ -312,6 +337,93 @@ defmodule HeexLint.TailwindPluginsTest do
   end
 
   for {way, tag} <- [node: :tailwind, standalone: :standalone] do
+    describe "the theme's own CSS and a font size, through #{way}" do
+      @describetag tag
+      @way way
+
+      for {shape, rule} <- [
+            {"alone", ".text-primary { font-size: 0.9rem; }"},
+            {"in a layer", "@layer components { .text-primary { font-size: 0.9rem; } }"},
+            {"in the utilities layer",
+             "@layer utilities { .text-primary { font-size: 0.9rem; } }"},
+            {"in @media", "@media (width >= 48rem) { .text-primary { font-size: 0.9rem; } }"},
+            {"under another class", ".card .text-primary { font-size: 0.9rem; }"},
+            {"above a child", ".text-primary > p { font-size: 0.9rem; }"},
+            {"with another class", ".text-primary.card { font-size: 0.9rem; }"},
+            {"with a pseudo-class", ".text-primary:hover { font-size: 0.9rem; }"},
+            {"first in a list", ".text-primary, .other { font-size: 0.9rem; }"},
+            {"last in a list", ".other, .text-primary { font-size: 0.9rem; }"},
+            {"nested", ".card { .text-primary { font-size: 0.9rem; } }"},
+            {"inside :not", ".card:not(.text-primary) { font-size: 0.9rem; }"}
+          ] do
+        @rule rule
+        test "a rule for the class #{shape} leaves it a color", %{tmp_dir: dir} do
+          rules = @rule <> "\n" <> String.replace(@rule, "text-primary", "text-undeclared")
+
+          result =
+            lint_with(@way, dir, selector_files(rules, "text-primary text-undeclared"),
+              no_restyle: {:error, allow: ["layout"]},
+              no_raw_colors: :error
+            )
+
+          assert owns(result, "text-primary") == ["color"]
+          assert owns(result, "text-undeclared") == ["color"]
+          assert Enum.any?(found_on(result, "text-undeclared"), &(&1 =~ "not a declared theme"))
+          assert result.warnings == []
+        end
+      end
+
+      test "a plugin's font size stays one, whatever selector it has", %{tmp_dir: dir} do
+        result =
+          lint_with(
+            @way,
+            dir,
+            selector_files(
+              ".card .text-plain { color: red; }",
+              "text-plain text-child text-under text-both md:text-plain hover:text-under text-plain!"
+            ),
+            no_restyle: {:error, allow: ["layout"]}
+          )
+
+        for token <- ~w(text-plain text-child text-under text-both md:text-plain) do
+          assert owns(result, token) == ["typography"], token
+        end
+
+        assert owns(result, "hover:text-under") == ["typography"]
+        assert owns(result, "text-plain!") == ["typography"]
+      end
+
+      test "the theme's rule does not hide the plugin's for the same class", %{tmp_dir: dir} do
+        result =
+          lint_with(
+            @way,
+            dir,
+            selector_files(".text-plain { font-size: 2rem; }", "text-plain"),
+            no_restyle: {:error, allow: ["layout"]}
+          )
+
+        assert owns(result, "text-plain") == ["typography"]
+      end
+
+      test "is read behind a prefix", %{tmp_dir: dir} do
+        result =
+          lint_with(
+            @way,
+            dir,
+            selector_files(
+              ".tw\\:text-primary { font-size: 0.9rem; }",
+              "tw:text-plain tw:md:text-plain tw:text-primary",
+              ~s|@import "tailwindcss" prefix(tw);|
+            ),
+            no_restyle: {:error, allow: ["layout"]}
+          )
+
+        assert owns(result, "tw:text-plain") == ["typography"]
+        assert owns(result, "tw:md:text-plain") == ["typography"]
+        assert owns(result, "tw:text-primary") == ["color"]
+      end
+    end
+
     describe "classes expected ahead of a question, through #{way}" do
       @describetag tag
       @way way
