@@ -56,14 +56,20 @@ theme applies to every app.
 `no_unknown_classes` needs the project's Tailwind v4:
 
 - **Node**: `tailwindcss` installed where the theme resolves it
-  (`assets/node_modules` or the project root), and `node` on the `PATH`.
+  (`assets/node_modules` or the project root), or beside a stylesheet the theme
+  imports that imports Tailwind, and `node` on the `PATH`.
 - **Standalone binary**: the `tailwind` hex package installs it in
   `_build/tailwind-<target>`; run `mix tailwind.install` if it is missing, or
   set `tailwind_bin`.
 
-When neither works, the run warns once and the rule falls back to the class
-grammar, which checks less: it cannot know a plugin's classes, and gives no
-spelling suggestions. Fix the warning before relying on a clean result.
+When neither works, the run warns once and every rule that asks Tailwind falls back
+to the class grammar, which checks less: it cannot know a plugin's classes, and gives
+no spelling suggestions. Fix the warning before relying on a clean result.
+
+If the warning says Tailwind did not answer in time, the theme's build took longer
+than the wait: 60 seconds for a stylesheet's first answer and 30 for later ones. A
+plugin stuck in a loop or a cycle of `@import`s does this. On a machine that is only
+slow, raise the wait with `HEEX_LINT_TAILWIND_TIMEOUT`, in milliseconds.
 
 ## A class is reported unknown but has CSS
 

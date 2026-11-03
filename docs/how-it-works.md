@@ -143,16 +143,38 @@ steps.
 generates CSS, with your theme's imports, custom utilities, variants and
 plugins:
 
-- **Node.** When `tailwindcss` resolves from the theme's directory, a Node
-  process loads the design system through `@tailwindcss/node` (the loader
-  Tailwind's own CLI and Vite plugin use) and suggests the nearest real class
-  or variant.
+- **Node.** When `tailwindcss` resolves from the theme's directory, or from the
+  directory of a stylesheet the theme imports that imports Tailwind, a Node process
+  loads the design system and suggests the nearest real class or variant. In a
+  workspace or an umbrella, that second place is where only a UI package depends on
+  Tailwind. Plugins and configs load through `@tailwindcss/node` when it is installed
+  (the loader Tailwind's own CLI and Vite plugin use), and otherwise through Node's
+  own `import()`.
 - **Standalone CLI.** Otherwise, the binary the `tailwind` hex package
   installs in `_build/` (or `tailwind_bin`) builds your theme with the
   candidates as `@source inline(...)`; a class is known when its whole selector
   is in the output. No suggestions this way.
 - **Grammar.** Without either, the class grammar, `@utility` names and class
   selectors answer; that checks less.
+
+Tailwind cannot outlive the linter or stall it. The linter waits up to 60 seconds for
+a stylesheet's first answer and 30 seconds for later ones; set
+`HEEX_LINT_TAILWIND_TIMEOUT` to a number of milliseconds to change both, and anything
+but a positive number is ignored. A process past that wait is killed, with whatever it
+started, and that stylesheet uses the grammar for the rest of the run, with a warning.
+Another stylesheet gets a new process, and two failures with no good answer between
+them turn Tailwind off for the run. The Node process also ends within moments of the
+linter going away, however it goes and whatever a plugin is doing, and the standalone
+binary is stopped the same way.
+
+A class longer than 10,000 characters or with more than 64 variants is not judged,
+since Tailwind can stall or overflow its stack on one. Neither is a class that makes a
+plugin throw: Node asks about it alone, and the standalone binary, where a throw fails
+the whole build, searches for it once a build fails and the theme builds without any
+classes. A build with `@import`s that reach more than 10,000 stylesheets is refused
+through Node, as those form a cycle with fan-out: Tailwind reads a file again wherever
+it is imported and stops only 100 levels down. The standalone binary has only the wait
+to stop one, and can use several gigabytes by then.
 
 Under `@import "tailwindcss" prefix(tw)`, only `tw:flex` is a Tailwind class.
 `no_raw_colors` judges the class behind the prefix and leaves an unprefixed one

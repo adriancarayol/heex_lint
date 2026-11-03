@@ -12,8 +12,6 @@ defmodule HeexLint do
   # Class helpers known in the Elixir ecosystem, on top of the configured ones.
   @default_merge_functions ["cn", "Tails.classes", "TwMerge.merge", "Twix.tw"]
 
-  @oracle_rules [HeexLint.Rules.NoUnknownClasses, HeexLint.Rules.NoRawColors]
-
   @type result :: %{
           diagnostics: [Diagnostic.t()],
           failures: [{String.t(), String.t()}],
@@ -52,9 +50,10 @@ defmodule HeexLint do
     theme_files = Map.new(targets, &{&1, Project.for_file(project, &1).theme_file})
     themes = theme_files |> Map.values() |> Enum.uniq()
 
+    # Nothing runs until a rule asks something only Tailwind can answer.
     oracle =
-      if project.entry && Enum.any?(pairs, fn {module, _} -> module in @oracle_rules end) do
-        {:ok, pid} = Tailwind.start_link(project)
+      if Enum.any?(Map.values(project.themes), & &1.entry) do
+        {:ok, pid} = Tailwind.start(project)
         pid
       end
 

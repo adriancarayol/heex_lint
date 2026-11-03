@@ -2,6 +2,36 @@
 
 ## Unreleased
 
+- The Tailwind process cannot outlive the linter or stall it. The Node process runs
+  Tailwind on a worker thread and ends within moments of its stdin closing, whatever a
+  plugin is doing. Each question has a deadline, 60 seconds for a stylesheet's first
+  answer and 30 for later ones, and `HEEX_LINT_TAILWIND_TIMEOUT`, in milliseconds,
+  replaces both. Past it the process is killed, with whatever it started, and the
+  standalone binary is treated the same. That stylesheet then uses the class grammar
+  for the rest of the run, with a warning, and two failures turn Tailwind off for the
+  run. Where a slow Tailwind or a dead oracle used to end the run with an exit, every
+  rule now falls back to the grammar and says so. **This changes findings only for
+  those stylesheets:** the grammar accepts less of what a plugin generates, so
+  `no_unknown_classes` can report a plugin's class there.
+- A theme whose `@import`s form a cycle with fan-out no longer runs until the machine
+  is out of files. Through Node, past 10,000 stylesheets the build is refused at once,
+  with a warning, and every rule uses the grammar. The standalone binary is stopped at
+  the deadline.
+- As in @shadcn/lint, a class longer than 10,000 characters or with more than 64
+  variants is not judged, and a class that makes a plugin throw costs only its own
+  answer, through Node and through the standalone binary, where one used to take the
+  whole theme down to the grammar. **This removes findings** on such classes, and
+  **adds some:** the other classes of a theme with such a plugin are judged by Tailwind
+  again rather than the grammar, as `no_unknown_classes` and `no_raw_colors` do.
+- As in @shadcn/lint, Tailwind is also looked for beside a stylesheet the theme imports
+  that imports Tailwind, for a workspace or an umbrella where only a UI package depends
+  on it. **This adds findings** where that theme used the grammar or the standalone
+  binary: `no_unknown_classes` now asks that Tailwind and offers suggestions.
+- `@import`s in the Node build now resolve the way @shadcn/lint's build does, which
+  also follows a package's `main`, `src/` and `imports` map where `@tailwindcss/node` did
+  not. **This adds findings:** a theme that warned and used the grammar over one of
+  these imports now gets Tailwind's answers. A plugin's `console.log` no longer
+  corrupts the answers either.
 - A lookup on a map update reads `%{base | a: value}` as @shadcn/lint reads
   `{ ...base, a: value }`, in a variable or an assign. A key it writes has that value,
   any other key is its base's, and a key the base cannot answer is unreadable, as is a

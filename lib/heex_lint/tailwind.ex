@@ -4,10 +4,10 @@ defmodule HeexLint.Tailwind do
 
   Two ways, tried in order for each stylesheet:
 
-    * **Node**: when `node` and the project's `tailwindcss` (or
-      `@tailwindcss/node`) resolve from the stylesheet, a long-lived Node
-      process loads the design system with its imports and plugins and
-      answers with spelling and variant suggestions.
+    * **Node**: when `node` and the project's `tailwindcss` resolve from the
+      stylesheet or from a stylesheet it imports, a long-lived Node process
+      loads the design system with its imports and plugins and answers with
+      spelling and variant suggestions.
     * **Standalone CLI**: otherwise, the `tailwind` binary Phoenix installs
       in `_build/` (or `:tailwind_bin`) builds the theme with the
       candidates as `@source inline(...)`, and a class is known when its
@@ -15,20 +15,63 @@ defmodule HeexLint.Tailwind do
 
   When neither works, `unknown/2` returns nil and rules fall back to the
   class grammar. Answers are cached for the run, per stylesheet.
+
+  Neither process can outlive the linter or take longer than a deadline: 60
+  seconds for a stylesheet's first answer and 30 for later ones, and
+  `HEEX_LINT_TAILWIND_TIMEOUT`, a number of milliseconds, replaces both. A
+  process past its deadline is killed and that stylesheet uses the grammar for
+  the rest of the run, with a warning. Two such failures in a row turn the
+  oracle off. Node only starts once a question needs it.
   """
 
   use GenServer
 
   alias HeexLint.Grammar.Classes
+  alias HeexLint.Theme
 
-  @timeout 120_000
+  # Only there to catch a dead Tailwind. A loaded machine can take seconds over a
+  # warm answer, and a timeout costs the rest of the run its project classes.
+  @first_timeout 60_000
+  @timeout 30_000
+
+  # The most Process.send_after and a receive take.
+  @max_timeout 4_294_967_295
+
+  # A caller outwaits the deadlines ahead of it: two failures turn the oracle off,
+  # and then its own question. The margin is for an oracle that cannot answer at all.
+  @calls_ahead 3
+  @call_margin 5_000
+
+  # Far past any real class, as in the Node worker: a class past either limit is
+  # not judged.
+  @max_candidate_length 10_000
+  @max_variants 64
+
+  # The standalone binary reads no stdin, so nothing tells it the linter died: a
+  # build started like this is killed when stdin closes, whatever ended the VM. The
+  # wrapper leads its process group, which takes along whatever the build started.
+  @guarded_build ~S"""
+  exec 3<&0
+  "$@" </dev/null 3<&- &
+  build=$!
+  { while read -r _ <&3; do :; done; kill -KILL "$build"; kill -KILL -$$; } >/dev/null 2>&1 &
+  watcher=$!
+  wait "$build"
+  status=$?
+  kill -KILL "$watcher" 2>/dev/null
+  exit "$status"
+  """
 
   @type unknown :: %{token: String.t(), suggestion: String.t() | nil, base_known: boolean()}
 
   ## Client
 
-  @doc "Starts an oracle for one run."
-  def start_link(project), do: GenServer.start_link(__MODULE__, project)
+  @doc """
+  Starts an oracle for one run. It ends with the calling process, which a crash
+  of the oracle does not take down: questions then answer nil.
+  """
+  def start(project),
+    do: GenServer.start(__MODULE__, {Map.take(project, [:root, :settings]), self()})
 
   @doc "Stops an oracle."
   def stop(nil), do: :ok
@@ -55,22 +98,79 @@ defmodule HeexLint.Tailwind do
         nil
 
       true ->
-        GenServer.call(project.oracle, {:unknown, project.entry, Enum.uniq(tokens)}, @timeout)
+        ask(project.oracle, {:unknown, project.entry, Enum.uniq(tokens)})
     end
   end
 
   @doc "The strategy the oracle uses for `entry`, and why, for diagnostics."
   def status(nil, _entry), do: {:none, "not started"}
-  def status(pid, entry), do: GenServer.call(pid, {:status, entry}, @timeout)
+
+  def status(pid, entry) do
+    GenServer.call(pid, {:status, entry}, call_timeout())
+  catch
+    :exit, _ -> {:none, "the oracle stopped"}
+  end
 
   @doc "The warnings an oracle collected, such as a theme that could not be built."
   def warnings(nil), do: []
-  def warnings(pid), do: GenServer.call(pid, :warnings, @timeout)
+
+  def warnings(pid) do
+    GenServer.call(pid, :warnings, call_timeout())
+  catch
+    :exit, _ ->
+      [
+        "The Tailwind oracle stopped during the run; the Tailwind build was unavailable, so rules used the class grammar for some files."
+      ]
+  end
+
+  # Every deadline ends in an answer, so this only fires for an oracle that cannot
+  # give one. That costs the caller's file its project classes, not the run.
+  defp ask(pid, request) do
+    GenServer.call(pid, request, call_timeout())
+  catch
+    :exit, reason ->
+      GenServer.cast(
+        pid,
+        {:warn,
+         "The Tailwind oracle did not answer (#{exit_reason(reason)}); the Tailwind build was unavailable, so rules checked a file with the class grammar and may report project classes as unknown."}
+      )
+
+      nil
+  end
+
+  defp exit_reason({:timeout, _call}), do: "timed out after #{seconds(call_timeout())} s"
+  defp exit_reason({reason, _call}), do: inspect(reason)
+  defp exit_reason(reason), do: inspect(reason)
+
+  defp call_timeout, do: min(timeout_for(true) * @calls_ahead + @call_margin, @max_timeout)
+
+  @doc false
+  # How long a question may take, in milliseconds. A stylesheet's first answer pays
+  # for loading Tailwind. Anything but a positive number replaces neither.
+  def timeout_for(cold?) do
+    case parse_timeout(System.get_env("HEEX_LINT_TAILWIND_TIMEOUT")) do
+      nil -> if(cold?, do: @first_timeout, else: @timeout)
+      milliseconds -> milliseconds
+    end
+  end
+
+  defp parse_timeout(nil), do: nil
+
+  defp parse_timeout(text) do
+    case Float.parse(String.trim(text)) do
+      {number, ""} when number > 0 -> number |> ceil() |> min(@max_timeout)
+      _ -> nil
+    end
+  end
+
+  defp seconds(milliseconds), do: milliseconds / 1000
 
   ## Server
 
   @impl true
-  def init(project) do
+  def init({project, owner}) do
+    Process.monitor(owner)
+
     {:ok,
      %{
        project: project,
@@ -78,7 +178,12 @@ defmodule HeexLint.Tailwind do
        reasons: %{},
        port: nil,
        buffer: "",
-       pending: %{},
+       # The one question being worked on, and those waiting their turn.
+       job: nil,
+       waiting: [],
+       warm: MapSet.new(),
+       failures: 0,
+       off: false,
        next: 1,
        cache: %{},
        warnings: []
@@ -94,28 +199,12 @@ defmodule HeexLint.Tailwind do
   def handle_call(:warnings, _from, state), do: {:reply, Enum.reverse(state.warnings), state}
 
   def handle_call({:unknown, entry, tokens}, from, state) do
-    {strategy, state} = strategy(state, entry)
-    missing = Enum.reject(tokens, &Map.has_key?(state.cache, {entry, &1}))
-
-    case strategy do
-      :none ->
-        {:reply, nil, state}
-
-      :standalone ->
-        state = run_standalone(state, entry, missing)
-        {:reply, answer(state, entry, tokens), state}
-
-      :node when missing == [] ->
-        {:reply, answer(state, entry, tokens), state}
-
-      :node ->
-        id = state.next
-        request = JSON.encode!(%{id: id, css: entry, candidates: missing})
-        Port.command(state.port, request <> "\n")
-        pending = Map.put(state.pending, id, {from, entry, tokens, missing})
-        {:noreply, %{state | pending: pending, next: id + 1}}
-    end
+    request = %{from: from, entry: entry, tokens: tokens}
+    {:noreply, pump(%{state | waiting: state.waiting ++ [request]})}
   end
+
+  @impl true
+  def handle_cast({:warn, message}, state), do: {:noreply, warn(state, message)}
 
   @impl true
   def handle_info({port, {:data, data}}, %{port: port} = state) do
@@ -123,78 +212,106 @@ defmodule HeexLint.Tailwind do
     {:noreply, Enum.reduce(lines, %{state | buffer: rest}, &node_answer/2)}
   end
 
-  def handle_info({port, {:exit_status, _status}}, %{port: port} = state) do
-    for {_id, {from, _entry, _tokens, _missing}} <- state.pending, do: GenServer.reply(from, nil)
-
-    strategies =
-      Map.new(state.strategies, fn {entry, s} -> {entry, if(s == :node, do: :none, else: s)} end)
-
-    state = %{state | strategies: strategies, port: nil, pending: %{}}
-
-    {:noreply,
-     warn(state, "The Tailwind process exited; no_unknown_classes is using the class grammar.")}
+  def handle_info({port, {:exit_status, status}}, %{port: port} = state) do
+    job = node_job(state)
+    state = %{state | port: nil, buffer: ""}
+    {:noreply, transport_failed(state, job, "exited with status #{status}")}
   end
 
+  def handle_info({port, {:data, data}}, %{job: %{port: port} = job} = state) do
+    {:noreply, %{state | job: %{job | output: keep_output(job.output, data)}}}
+  end
+
+  def handle_info({port, {:exit_status, status}}, %{job: %{port: port}} = state) do
+    {:noreply, build_finished(state, status)}
+  end
+
+  def handle_info({:deadline, ref}, %{job: %{ref: ref} = job} = state) do
+    state = stop_process_of(state, job)
+    what = "did not answer about #{job.entry} within #{seconds(job.timeout)} s"
+    {:noreply, transport_failed(state, job, what)}
+  end
+
+  def handle_info({:DOWN, _ref, :process, _pid, _reason}, state), do: {:stop, :normal, state}
+
+  # From a process already stopped, or a deadline already met.
   def handle_info(_message, state), do: {:noreply, state}
 
   @impl true
-  def terminate(_reason, %{port: port}) when port != nil do
-    Port.close(port)
-  catch
-    _, _ -> :ok
-  end
+  def terminate(_reason, state) do
+    kill(state.port)
 
-  def terminate(_reason, _state), do: :ok
-
-  defp split_lines(buffer) do
-    parts = String.split(buffer, "\n")
-    {Enum.drop(parts, -1), List.last(parts)}
-  end
-
-  defp node_answer(line, state) do
-    with {:ok, %{"id" => id} = answer} <- JSON.decode(line),
-         {{from, entry, tokens, missing}, pending} <- Map.pop(state.pending, id),
-         true <- from != nil do
-      state = %{state | pending: pending}
-
-      case answer do
-        %{"ok" => true, "unknown" => unknown} ->
-          results =
-            Enum.map(unknown, fn item ->
-              %{
-                token: item["token"],
-                suggestion: item["suggestion"],
-                base_known: item["baseKnown"] == true
-              }
-            end)
-
-          state = cache(state, entry, missing, results)
-          GenServer.reply(from, answer(state, entry, tokens))
-          state
-
-        %{"ok" => false, "reason" => reason} ->
-          # Fall back to the standalone CLI, then to the grammar.
-          state = %{state | reasons: Map.put(state.reasons, entry, reason)}
-
-          case standalone_binary(state.project) do
-            nil ->
-              GenServer.reply(from, nil)
-
-              state
-              |> put_strategy(entry, :none)
-              |> warn(
-                "The Tailwind theme at #{entry} could not be built (#{reason}); no_unknown_classes is using the class grammar."
-              )
-
-            _bin ->
-              state = run_standalone(put_strategy(state, entry, :standalone), entry, missing)
-              GenServer.reply(from, answer(state, entry, tokens))
-              state
-          end
-      end
-    else
-      _ -> state
+    if state.job do
+      kill(state.job[:port])
+      clean_build(state.job)
     end
+
+    :ok
+  end
+
+  ## Questions
+
+  # One question at a time, since a deadline has to know which it is for. Everyone
+  # waiting on a stylesheet shares the next question about it, so a project's files
+  # cost one build between them, not one each.
+  defp pump(%{job: nil, waiting: [first | _]} = state) do
+    {requests, others} = Enum.split_with(state.waiting, &(&1.entry == first.entry))
+    {strategy, state} = strategy(%{state | waiting: others}, first.entry)
+
+    missing =
+      requests
+      |> Enum.flat_map(& &1.tokens)
+      |> Enum.uniq()
+      |> Enum.reject(&Map.has_key?(state.cache, {first.entry, &1}))
+
+    job = %{entry: first.entry, requests: requests, missing: missing}
+
+    cond do
+      strategy == :none or missing == [] -> state |> reply_all(job) |> pump()
+      strategy == :node -> ask_node(state, job)
+      strategy == :standalone -> start_build(state, job)
+    end
+  end
+
+  defp pump(state), do: state
+
+  defp reply_all(state, job) do
+    Enum.each(job.requests, &GenServer.reply(&1.from, answer(state, &1)))
+    %{state | job: nil}
+  end
+
+  defp answer(state, %{entry: entry, tokens: tokens}) do
+    if state.strategies[entry] == :none do
+      nil
+    else
+      for token <- tokens,
+          result = Map.get(state.cache, {entry, token}),
+          is_map(result),
+          do: result
+    end
+  end
+
+  # The deadline runs from here, and `ref` tells a late one from the current one.
+  defp arm(job, timeout) do
+    ref = make_ref()
+
+    Map.merge(job, %{
+      ref: ref,
+      timeout: timeout,
+      timer: Process.send_after(self(), {:deadline, ref}, timeout)
+    })
+  end
+
+  defp disarm(job), do: Process.cancel_timer(job.timer)
+
+  defp answered(state, job, results) do
+    disarm(job)
+
+    state
+    |> cache(job.entry, job.missing, results)
+    |> Map.merge(%{failures: 0, warm: MapSet.put(state.warm, job.entry)})
+    |> reply_all(job)
+    |> pump()
   end
 
   defp cache(state, entry, missing, results) do
@@ -208,17 +325,6 @@ defmodule HeexLint.Tailwind do
     %{state | cache: cache}
   end
 
-  defp answer(state, entry, tokens) do
-    if state.strategies[entry] == :none do
-      nil
-    else
-      for token <- tokens,
-          result = Map.get(state.cache, {entry, token}),
-          is_map(result),
-          do: result
-    end
-  end
-
   defp put_strategy(state, entry, strategy),
     do: %{state | strategies: Map.put(state.strategies, entry, strategy)}
 
@@ -228,13 +334,14 @@ defmodule HeexLint.Tailwind do
       {:ok, strategy} ->
         {strategy, state}
 
-      :error ->
-        port = if node_tailwind?(entry), do: state.port || start_node(state)
+      :error when state.off ->
+        {:none, put_strategy(state, entry, :none)}
 
+      :error ->
         state =
           cond do
-            port != nil ->
-              put_strategy(%{state | port: port}, entry, :node)
+            node_available?() and node_tailwind?(entry) ->
+              put_strategy(state, entry, :node)
 
             standalone_binary(state.project) ->
               put_strategy(state, entry, :standalone)
@@ -251,31 +358,206 @@ defmodule HeexLint.Tailwind do
     end
   end
 
-  defp start_node(state) do
-    node = System.find_executable("node")
-    script = Application.app_dir(:heex_lint, "priv/tailwind_oracle.mjs")
+  # What was being asked did this, so that stylesheet stops being asked: a restart
+  # would get no other answer. Another stylesheet may start a new process, but two
+  # failures with no good answer between them turn the oracle off.
+  defp transport_failed(state, job, what) do
+    if job, do: disarm(job)
 
-    if node && File.regular?(script) do
-      Port.open({:spawn_executable, node}, [
-        :binary,
-        :exit_status,
-        :use_stdio,
-        args: [script],
-        cd: state.project.root
-      ])
+    state = %{state | failures: state.failures + 1, warm: MapSet.new()}
+    state = if job, do: put_strategy(%{state | job: nil}, job.entry, :none), else: state
+
+    state =
+      if state.failures >= 2 do
+        strategies = Map.new(state.strategies, fn {entry, _strategy} -> {entry, :none} end)
+
+        warn(
+          %{state | off: true, strategies: strategies},
+          "The Tailwind process failed twice (it #{what}); the Tailwind build is unavailable, so rules use the class grammar for the rest of this run."
+        )
+      else
+        warn(
+          state,
+          "The Tailwind process #{what} and was stopped; the Tailwind build is unavailable for that stylesheet, so rules use the class grammar there for the rest of this run and may report project classes as unknown."
+        )
+      end
+
+    state = if job, do: reply_all(state, job), else: state
+    pump(state)
+  end
+
+  ## Processes
+
+  defp open_port(nil, _args, _opts), do: nil
+
+  defp open_port(executable, args, opts) do
+    Port.open(
+      {:spawn_executable, executable},
+      [:binary, :exit_status, :use_stdio, {:args, args} | opts]
+    )
+  rescue
+    # No such file, not executable, or no file descriptors left.
+    _ -> nil
+  end
+
+  # Port.close only closes the pipes, and a process that does not read them never
+  # finds out. A port program leads its own process group, so this reaches what it
+  # started too. When even this cannot run, closing still ends both of ours: the
+  # worker and the guarded build each watch stdin.
+  defp kill(nil), do: :ok
+
+  defp kill(port) do
+    case Port.info(port, :os_pid) do
+      {:os_pid, os_pid} when is_integer(os_pid) -> kill_os_process(os_pid)
+      _ -> :ok
+    end
+
+    close(port)
+  end
+
+  defp close(port) do
+    Port.close(port)
+  rescue
+    ArgumentError -> :ok
+  end
+
+  defp kill_os_process(os_pid) do
+    case :os.type() do
+      {:win32, _} ->
+        System.cmd("taskkill", ["/F", "/T", "/PID", to_string(os_pid)], stderr_to_stdout: true)
+
+      _ ->
+        script = "kill -KILL -#{os_pid} 2>/dev/null; kill -KILL #{os_pid} 2>/dev/null; :"
+        System.cmd("sh", ["-c", script], stderr_to_stdout: true)
+    end
+  rescue
+    _ -> :ok
+  catch
+    _, _ -> :ok
+  end
+
+  defp stop_process_of(state, %{port: _} = job) do
+    kill(job.port)
+    clean_build(job)
+    state
+  end
+
+  defp stop_process_of(state, _node_job) do
+    kill(state.port)
+    %{state | port: nil, buffer: ""}
+  end
+
+  ## Node
+
+  defp ask_node(state, job) do
+    case state.port || start_node(state) do
+      nil ->
+        build_failed_in_node(state, job, "node could not be started")
+
+      port ->
+        id = state.next
+        request = JSON.encode!(%{id: id, css: job.entry, candidates: job.missing})
+        timeout = timeout_for(not MapSet.member?(state.warm, job.entry))
+        # A send, not Port.command, which suspends this process for as long as a
+        # worker reading nothing keeps its stdin full: no deadline could fire.
+        send(port, {self(), {:command, request <> "\n"}})
+
+        job = job |> Map.put(:id, id) |> arm(timeout)
+        %{state | port: port, next: id + 1, job: job}
     end
   end
 
-  # tailwindcss is installed where Node would resolve it from the theme.
+  defp start_node(state) do
+    open_port(System.find_executable("node"), [oracle_script()], cd: state.project.root)
+  end
+
+  defp oracle_script, do: Application.app_dir(:heex_lint, "priv/tailwind_oracle.mjs")
+
+  defp node_available? do
+    System.find_executable("node") != nil and File.regular?(oracle_script())
+  end
+
+  defp node_job(%{job: %{id: _} = job}), do: job
+  defp node_job(_state), do: nil
+
+  # tailwindcss is installed where Node would resolve it from the theme, or from a
+  # stylesheet the theme imports: in a workspace or an umbrella, only the UI package
+  # may depend on Tailwind.
   defp node_tailwind?(entry) do
-    entry
-    |> Path.dirname()
-    |> Stream.iterate(&Path.dirname/1)
-    |> Enum.take(32)
+    [Path.dirname(entry) | tailwind_importers([entry], MapSet.new())]
+    |> Enum.flat_map(&(&1 |> Stream.iterate(fn dir -> Path.dirname(dir) end) |> Enum.take(32)))
     |> Enum.uniq()
-    |> Enum.any?(fn dir ->
-      File.regular?(Path.join([dir, "node_modules", "tailwindcss", "package.json"]))
-    end)
+    |> Enum.any?(&File.regular?(Path.join([&1, "node_modules", "tailwindcss", "package.json"])))
+  end
+
+  # The directories of the stylesheets that import Tailwind, reached through the
+  # entry's imports. What a stylesheet imports is read once, so a cycle ends.
+  defp tailwind_importers([], _seen), do: []
+
+  defp tailwind_importers([file | rest], seen) do
+    case not MapSet.member?(seen, file) and File.read(file) do
+      {:ok, css} ->
+        dir = Path.dirname(file)
+        {tailwind, others} = css |> Theme.parse_imports() |> Enum.split_with(&tailwind_import?/1)
+        next = others |> Enum.map(&Theme.resolve_stylesheet(dir, &1)) |> Enum.reject(&is_nil/1)
+        importers = tailwind_importers(rest ++ next, MapSet.put(seen, file))
+        if tailwind == [], do: importers, else: [dir | importers]
+
+      _ ->
+        tailwind_importers(rest, seen)
+    end
+  end
+
+  defp tailwind_import?(id), do: id == "tailwindcss" or String.starts_with?(id, "tailwindcss/")
+
+  defp split_lines(buffer) do
+    parts = String.split(buffer, "\n")
+    {Enum.drop(parts, -1), List.last(parts)}
+  end
+
+  defp node_answer(line, %{job: %{id: id} = job} = state) do
+    case JSON.decode(line) do
+      {:ok, %{"id" => ^id, "ok" => true} = answer} ->
+        results =
+          Enum.map(answer["unknown"], fn item ->
+            %{
+              token: item["token"],
+              suggestion: item["suggestion"],
+              base_known: item["baseKnown"] == true
+            }
+          end)
+
+        answered(state, job, results)
+
+      {:ok, %{"id" => ^id} = answer} ->
+        disarm(job)
+        build_failed_in_node(state, job, to_string(answer["reason"]))
+
+      _ ->
+        state
+    end
+  end
+
+  defp node_answer(_line, state), do: state
+
+  # Fall back to the standalone CLI, then to the grammar.
+  defp build_failed_in_node(state, job, reason) do
+    job = Map.drop(job, [:id, :ref, :timer, :timeout])
+    state = %{state | job: nil, reasons: Map.put(state.reasons, job.entry, reason)}
+
+    case standalone_binary(state.project) do
+      nil ->
+        state
+        |> put_strategy(job.entry, :none)
+        |> warn(
+          "The Tailwind theme at #{job.entry} could not be built (#{reason}); the Tailwind build is unavailable there, so rules use the class grammar."
+        )
+        |> reply_all(job)
+        |> pump()
+
+      _bin ->
+        start_build(put_strategy(state, job.entry, :standalone), job)
+    end
   end
 
   ## Standalone CLI
@@ -298,67 +580,153 @@ defmodule HeexLint.Tailwind do
     end
   end
 
-  defp run_standalone(state, entry, missing) do
-    case standalone(state.project, entry, missing) do
-      {:ok, results} ->
-        cache(state, entry, missing, results)
+  # One deadline for the whole question, however many builds it takes. A chunk is
+  # classes and whether to build what their variants stand on as well.
+  defp start_build(state, job) do
+    checked = Enum.filter(job.missing, &checkable?/1)
 
-      {:error, message} ->
-        state
-        |> put_strategy(entry, :none)
-        |> warn(message <> " no_unknown_classes is using the class grammar.")
-    end
+    job
+    |> Map.merge(%{
+      bin: standalone_binary(state.project),
+      chunks: if(checked == [], do: [], else: [{checked, true}]),
+      unknown: [],
+      theme_builds: false
+    })
+    |> arm(timeout_for(true))
+    |> then(&next_build(state, &1))
   end
 
-  defp standalone(_project, _entry, []), do: {:ok, []}
+  defp checkable?(token) do
+    {variants, _base} = Classes.split_variants(token)
+    String.length(token) <= @max_candidate_length and length(variants) <= @max_variants
+  end
 
-  defp standalone(project, entry, tokens) do
-    bin = standalone_binary(project)
+  defp next_build(state, %{chunks: []} = job), do: answered(state, job, job.unknown)
+
+  defp next_build(state, %{chunks: [{[], _bases} | chunks], theme_builds: true} = job),
+    do: next_build(state, %{job | chunks: chunks})
+
+  defp next_build(state, %{chunks: [chunk | _]} = job) do
+    run_build(state, job, chunk)
+  rescue
+    error -> build_error(state, job, Exception.message(error))
+  end
+
+  defp run_build(state, job, {tokens, with_bases}) do
     dir = Path.join(System.tmp_dir!(), "heex_lint_#{System.unique_integer([:positive])}")
     File.mkdir_p!(dir)
 
-    try do
-      bases =
-        for token <- tokens,
-            {variants, base} = Classes.split_variants(token),
-            bare <- bare_candidates(variants, base),
-            do: bare
+    bases =
+      for token <- tokens,
+          with_bases,
+          {variants, base} = Classes.split_variants(token),
+          bare <- bare_candidates(variants, base),
+          do: bare
 
-      candidates =
-        Enum.uniq(tokens ++ bases) |> Enum.reject(&String.contains?(&1, ["\"", "\\", "{", "}"]))
+    candidates =
+      Enum.uniq(tokens ++ bases) |> Enum.reject(&String.contains?(&1, ["\"", "\\", "{", "}"]))
 
-      input = Path.join(dir, "input.css")
-      output = Path.join(dir, "output.css")
+    input = Path.join(dir, "input.css")
+    args = ["--input", input, "--output", Path.join(dir, "output.css")]
 
-      File.write!(input, """
-      @import "#{entry}";
-      @source inline("#{Enum.join(candidates, " ")}");
-      """)
+    File.write!(input, """
+    @import "#{job.entry}";
+    @source inline("#{Enum.join(candidates, " ")}");
+    """)
 
-      case System.cmd(bin, ["--input", input, "--output", output],
-             stderr_to_stdout: true,
-             cd: Path.dirname(entry)
-           ) do
-        {_out, 0} ->
-          css = File.read!(output)
-          known? = &selector?(css, &1)
+    case open_build(job.bin, args, cd: Path.dirname(job.entry)) do
+      nil ->
+        File.rm_rf(dir)
+        build_error(state, job, "it could not be started")
 
-          results =
-            for token <- tokens, not known?.(token) do
-              {variants, base} = Classes.split_variants(token)
-              bare = bare_candidates(variants, base)
-              %{token: token, suggestion: nil, base_known: Enum.any?(bare, known?)}
-            end
-
-          {:ok, results}
-
-        {out, _status} ->
-          {:error,
-           "The Tailwind theme at #{entry} could not be built with #{bin}: #{String.slice(out, 0, 300)}."}
-      end
-    after
-      File.rm_rf(dir)
+      port ->
+        %{state | job: Map.merge(job, %{port: port, dir: dir, output: ""})}
     end
+  end
+
+  defp open_build(bin, args, opts) do
+    opts = [:stderr_to_stdout | opts]
+
+    case System.find_executable("sh") do
+      nil -> open_port(bin, args, opts)
+      sh -> open_port(sh, ["-c", @guarded_build, "heex_lint_tailwind", bin | args], opts)
+    end
+  end
+
+  defp keep_output(output, _data) when byte_size(output) > 4096, do: output
+  defp keep_output(output, data), do: output <> data
+
+  defp clean_build(%{dir: dir}), do: File.rm_rf(dir)
+  defp clean_build(_job), do: :ok
+
+  defp build_finished(%{job: job} = state, 0) do
+    [{tokens, _bases} | chunks] = job.chunks
+    output = File.read(Path.join(job.dir, "output.css"))
+    clean_build(job)
+
+    case output do
+      {:ok, css} ->
+        job = %{job | chunks: chunks, unknown: job.unknown ++ read_build(css, tokens)}
+        next_build(state, %{job | theme_builds: true})
+
+      {:error, reason} ->
+        build_error(state, job, "it wrote no output (#{reason})")
+    end
+  end
+
+  # A plugin that throws on a class takes the whole build down with it, where the
+  # Node worker's answer costs that class alone. So when the theme builds without any
+  # classes, they are halved until the class at fault is by itself, and it goes
+  # unjudged.
+  defp build_finished(%{job: job} = state, _status) do
+    clean_build(job)
+    [chunk | chunks] = job.chunks
+
+    case after_failure(chunk) do
+      :theme ->
+        build_error(state, job, String.slice(job.output, 0, 300))
+
+      parts ->
+        parts = if job.theme_builds, do: parts, else: [{[], false} | parts]
+        next_build(state, %{job | chunks: parts ++ chunks})
+    end
+  end
+
+  defp after_failure({[], _bases}), do: :theme
+
+  defp after_failure({[token], true}) do
+    {variants, base} = Classes.split_variants(token)
+    if bare_candidates(variants, base) == [], do: [], else: [{[token], false}]
+  end
+
+  defp after_failure({[_token], false}), do: []
+
+  defp after_failure({tokens, bases}) do
+    {left, right} = Enum.split(tokens, div(length(tokens), 2))
+    [{left, bases}, {right, bases}]
+  end
+
+  defp read_build(css, tokens) do
+    known? = &selector?(css, &1)
+
+    for token <- tokens, not known?.(token) do
+      {variants, base} = Classes.split_variants(token)
+      bare = bare_candidates(variants, base)
+      %{token: token, suggestion: nil, base_known: Enum.any?(bare, known?)}
+    end
+  end
+
+  defp build_error(state, job, message) do
+    disarm(job)
+
+    state
+    |> Map.put(:job, nil)
+    |> put_strategy(job.entry, :none)
+    |> warn(
+      "The Tailwind theme at #{job.entry} could not be built with #{job.bin}: #{message}. The Tailwind build is unavailable there, so rules use the class grammar."
+    )
+    |> reply_all(job)
+    |> pump()
   end
 
   @doc false
