@@ -47,6 +47,16 @@ Each configuration also runs `themed_cases.txt` under each theme in `themes/`:
   Nothing in the CSS names their classes, so only Tailwind can say what they are:
   `text-body` is a font size, `text-brand` a color, and the plugin throws on `boom-bad`,
   which costs that class its answer and nothing else.
+- `hostile_values`: a value that fans out to a million copies, which both linters give
+  up on, the small chain beside it, which still resolves, values followed by thousands
+  of spaces, and a color past the float range.
+
+`themed_cases.txt` ends with classes written to be read badly: numbers past the float
+range, modifiers and values of a thousand unclosed brackets, a thousand digits. Two such
+classes stay out, because the difference is in what JavaScript's Infinity and NaN print,
+and `docs/parity.md` has both: `bg-[rgb(1e300,0,0)]`, whose NaN distance makes
+@shadcn/lint name the first token, and a 308-digit `p-[...px]`, whose step it prints
+with an exponent.
 
 The wrappers are `Panel`, which hands `className` to Card, `titleClassName` to
 CardTitle and `footerClassName` to a plain element, and `PassedPanel`, which hands
