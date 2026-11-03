@@ -39,6 +39,10 @@ Each configuration also runs `themed_cases.txt` under each theme in `themes/`:
   own `@import "tailwindcss"` stays out.
 - `installed_unnamed`: the same package by a specifier `theme_imports` does not
   name, so its tokens do not count.
+- `installed_resolution`: named imports of the shapes the resolver has to read: a
+  `style` condition beside a `default`, where Tailwind builds one file and both
+  linters read the other, an array target, the package's `imports` map (`#tokens`),
+  and `installed_bare/`, a package with no `package.json`.
 
 The wrappers are `Panel`, which hands `className` to Card, `titleClassName` to
 CardTitle and `footerClassName` to a plain element, and `PassedPanel`, which hands

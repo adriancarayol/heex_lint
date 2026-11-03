@@ -3,6 +3,15 @@
   "version": "1.0.0",
   "exports": {
     "./theme.css": "./styles/theme.css",
-    "./unnamed.css": "./styles/unnamed.css"
+    "./unnamed.css": "./styles/unnamed.css",
+    "./theme-conditions.css": {
+      "style": "./styles/conditions-style.css",
+      "default": "./styles/conditions-default.css"
+    },
+    "./theme-array.css": ["./styles/array.css"],
+    "./theme-imports.css": "./styles/imports.css"
+  },
+  "imports": {
+    "#tokens": "./styles/hash.css"
   }
 }

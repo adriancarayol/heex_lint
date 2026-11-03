@@ -23,7 +23,7 @@ commit="9231259"
 deps="cn@0.4.0 @eslint/core@0.17.0 eslint@9.39.5 @typescript-eslint/parser@8.72.1 typescript@5.9.3 tsx@4.23.15 tsdown@0.12.9 tailwindcss@4.3.3 @tailwindcss/node@4.3.3"
 configs="1 2 3"
 # Every theme but the default runs the shorter themed_cases.txt.
-themes="scales radius_reset full_reset scoped_values explicit_imports workspace_package prefixed installed_package installed_unnamed"
+themes="scales radius_reset full_reset scoped_values explicit_imports workspace_package prefixed installed_package installed_unnamed installed_resolution"
 
 # The same bytes order on every machine, so known_gaps/ does not depend on it.
 export LC_ALL=C
@@ -51,8 +51,9 @@ ln -sfn ../workspace_kit node_modules/parity-workspace-kit
 
 # A design system installed as a package: a real directory under node_modules,
 # so its tokens count only where both drivers' theme_imports name its import.
-rm -rf node_modules/parity-installed-kit
+rm -rf node_modules/parity-installed-kit node_modules/parity-installed-bare
 cp -R installed_kit node_modules/parity-installed-kit
+cp -R installed_bare node_modules/parity-installed-bare
 
 # The built package carries the Tailwind worker no-unknown-classes needs.
 dist=shadcn-lint/packages/lint/dist

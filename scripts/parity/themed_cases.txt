@@ -80,6 +80,12 @@ bg-kit-primary
 ring-kit-primary/60
 text-kit-muted
 border-kit-brand
+bg-kit-style
+bg-kit-default
+bg-kit-array
+bg-kit-imports
+bg-kit-hash
+bg-kit-bare
 bg-spotlight
 rounded-kit
 text-kicker
