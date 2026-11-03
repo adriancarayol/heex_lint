@@ -147,9 +147,11 @@ plugins:
   directory of a stylesheet the theme imports that imports Tailwind, a Node process
   loads the design system and suggests the nearest real class or variant. In a
   workspace or an umbrella, that second place is where only a UI package depends on
-  Tailwind. Plugins and configs load through `@tailwindcss/node` when it is installed
-  (the loader Tailwind's own CLI and Vite plugin use), and otherwise through Node's
-  own `import()`.
+  Tailwind. Node follows a package's `style` condition to find it, so only Node can
+  say: it starts when any `node_modules` is in reach of those stylesheets, and moves
+  on without a word when none holds Tailwind. Plugins and configs load through
+  `@tailwindcss/node` when it is installed (the loader Tailwind's own CLI and Vite
+  plugin use), and otherwise through Node's own `import()`.
 - **Standalone CLI.** Otherwise, the binary the `tailwind` hex package
   installs in `_build/` (or `tailwind_bin`) builds your theme with the
   candidates as `@source inline(...)`; a class is known when its whole selector

@@ -6,8 +6,9 @@
 //   {"id": 1, "css": "/abs/app.css", "candidates": ["flex", "hovr:flex"]}
 // answered by one JSON line on stdout,
 //   {"id": 1, "ok": true, "unknown": [{"token", "suggestion", "baseKnown"}], "fontSizes": ["text-sm"]}
-// or {"id": 1, "ok": false, "reason": "...", "final": false}, where `final` says the
-// standalone binary would do no better.
+// or {"id": 1, "ok": false, "reason": "...", "final": false, "absent": false}, where
+// `final` says the standalone binary would do no better, and `absent` that nothing
+// named tailwindcss was anywhere this looked, so no theme failed to build.
 //
 // Two threads. Tailwind and the project's plugins run in a worker thread, where
 // they can spin for as long as they like. This file's main thread only passes
@@ -555,7 +556,11 @@ function realpathOf(file) {
 async function build(cssFile) {
   const dir = path.dirname(cssFile)
   const tailwind = await loadTailwind(cssFile)
-  if (!tailwind) throw new Error(`tailwindcss v4 could not be resolved from ${dir}`)
+  if (!tailwind) {
+    const error = new Error(`tailwindcss v4 could not be resolved from ${dir}`)
+    error.absent = ![...tailwindBases(cssFile)].some((from) => findUp(from, path.join("node_modules", "tailwindcss")))
+    throw error
+  }
   let loader
   let reads = 0
   const ds = await tailwind.api.__unstable__loadDesignSystem(fs.readFileSync(cssFile, "utf-8"), {
@@ -678,7 +683,7 @@ async function query(cssFile, candidates) {
   try {
     system = await systemFor(cssFile)
   } catch (error) {
-    return { ok: false, reason: reasonOf(error), final: error?.final === true }
+    return { ok: false, reason: reasonOf(error), final: error?.final === true, absent: error?.absent === true }
   }
   const checked = candidates.filter(checkable)
   const css = cssOfAll(system, checked)

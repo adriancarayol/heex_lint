@@ -4,10 +4,10 @@ defmodule HeexLint.Tailwind do
 
   Two ways, tried in order for each stylesheet:
 
-    * **Node**: when `node` and the project's `tailwindcss` resolve from the
-      stylesheet or from a stylesheet it imports, a long-lived Node process
-      loads the design system with its imports and plugins and answers with
-      spelling and variant suggestions.
+    * **Node**: when `node` is installed and a `node_modules` is in reach of the
+      stylesheet or of a stylesheet it imports, a long-lived Node process looks for
+      the project's `tailwindcss` from there. It loads the design system with its
+      imports and plugins and answers with spelling and variant suggestions.
     * **Standalone CLI**: otherwise, the `tailwind` binary Phoenix installs
       in `_build/` (or `:tailwind_bin`) builds the theme with the
       candidates as `@source inline(...)`, and a class is known when its
@@ -52,6 +52,8 @@ defmodule HeexLint.Tailwind do
   # the words of a data file must not be what runs it out. Past this they ask as they
   # come up.
   @max_expected 2_000
+
+  @no_tailwind "neither the tailwindcss package nor a tailwind binary was found"
 
   @font_size ~r/(?:^|[;{\s])font-size\s*:/
 
@@ -411,22 +413,24 @@ defmodule HeexLint.Tailwind do
       :error ->
         state =
           cond do
-            node_available?() and node_tailwind?(entry) ->
+            node_available?() and node_modules_in_reach?(entry, state.project.root) ->
               put_strategy(state, entry, :node)
 
             standalone_binary(state.project) ->
               put_strategy(state, entry, :standalone)
 
             true ->
-              reason = "neither the tailwindcss package nor a tailwind binary was found"
-
-              state
-              |> put_strategy(entry, :none)
-              |> Map.update!(:reasons, &Map.put(&1, entry, reason))
+              no_tailwind(state, entry)
           end
 
         {state.strategies[entry], state}
     end
+  end
+
+  defp no_tailwind(state, entry) do
+    state
+    |> put_strategy(entry, :none)
+    |> Map.update!(:reasons, &Map.put(&1, entry, @no_tailwind))
   end
 
   # What was being asked did this, so that stylesheet stops being asked: a restart
@@ -551,35 +555,45 @@ defmodule HeexLint.Tailwind do
   defp node_job(%{job: %{id: _} = job}), do: job
   defp node_job(_state), do: nil
 
-  # tailwindcss is installed where Node would resolve it from the theme, or from a
-  # stylesheet the theme imports: in a workspace or an umbrella, only the UI package
-  # may depend on Tailwind.
-  defp node_tailwind?(entry) do
-    [Path.dirname(entry) | tailwind_importers([entry], MapSet.new())]
-    |> Enum.flat_map(&(&1 |> Stream.iterate(fn dir -> Path.dirname(dir) end) |> Enum.take(32)))
-    |> Enum.uniq()
-    |> Enum.any?(&File.regular?(Path.join([&1, "node_modules", "tailwindcss", "package.json"])))
+  # Whether Node might find Tailwind for `entry`, which only it can say: it follows a
+  # package's `style` condition where the theme read does not, so an import can lead
+  # it to a stylesheet that imports Tailwind and that this side never reads. What this
+  # side can say is that nothing is there to find, which spares the usual Phoenix
+  # project a Node process: the two only part ways at a package, so before they do,
+  # a stylesheet they both read has a node_modules in reach. Node also looks from the
+  # directory it runs in, which is the root.
+  defp node_modules_in_reach?(entry, root) do
+    node_modules_above?(root) or reaches_node_modules?([entry], MapSet.new())
   end
 
-  # The directories of the stylesheets that import Tailwind, reached through the
-  # entry's imports. What a stylesheet imports is read once, so a cycle ends.
-  defp tailwind_importers([], _seen), do: []
+  defp node_modules_above?(dir) do
+    File.dir?(Path.join(dir, "node_modules")) or
+      (Path.dirname(dir) != dir and node_modules_above?(Path.dirname(dir)))
+  end
 
-  defp tailwind_importers([file | rest], seen) do
-    case not MapSet.member?(seen, file) and File.read(file) do
-      {:ok, css} ->
-        dir = Path.dirname(file)
-        {tailwind, others} = css |> Theme.parse_imports() |> Enum.split_with(&tailwind_import?/1)
-        next = others |> Enum.map(&Theme.resolve_stylesheet(dir, &1)) |> Enum.reject(&is_nil/1)
-        importers = tailwind_importers(rest ++ next, MapSet.put(seen, file))
-        if tailwind == [], do: importers, else: [dir | importers]
+  # What a stylesheet imports is read once, so a cycle ends.
+  defp reaches_node_modules?([], _seen), do: false
 
-      _ ->
-        tailwind_importers(rest, seen)
+  defp reaches_node_modules?([file | rest], seen) do
+    cond do
+      MapSet.member?(seen, file) -> reaches_node_modules?(rest, seen)
+      node_modules_above?(Path.dirname(file)) -> true
+      true -> reaches_node_modules?(rest ++ imports_of(file), MapSet.put(seen, file))
     end
   end
 
-  defp tailwind_import?(id), do: id == "tailwindcss" or String.starts_with?(id, "tailwindcss/")
+  defp imports_of(file) do
+    case File.read(file) do
+      {:ok, css} ->
+        css
+        |> Theme.parse_imports()
+        |> Enum.map(&Theme.resolve_stylesheet(Path.dirname(file), &1))
+        |> Enum.reject(&is_nil/1)
+
+      {:error, _} ->
+        []
+    end
+  end
 
   defp split_lines(buffer) do
     parts = String.split(buffer, "\n")
@@ -604,9 +618,17 @@ defmodule HeexLint.Tailwind do
         disarm(job)
         reason = to_string(answer["reason"])
 
-        if answer["final"] == true,
-          do: state |> Map.put(:job, nil) |> no_build(job, reason),
-          else: build_failed_in_node(state, job, reason)
+        cond do
+          answer["final"] == true ->
+            state |> Map.put(:job, nil) |> no_build(job, reason)
+
+          # No failure: a node_modules with no Tailwind in it says nothing about the theme.
+          answer["absent"] == true and standalone_binary(state.project) == nil ->
+            state |> Map.put(:job, nil) |> no_tailwind(job.entry) |> reply_all(job) |> pump()
+
+          true ->
+            build_failed_in_node(state, job, reason)
+        end
 
       _ ->
         state

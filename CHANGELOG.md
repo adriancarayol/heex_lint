@@ -42,8 +42,11 @@
   again rather than the grammar, as `no_unknown_classes` and `no_raw_colors` do.
 - As in @shadcn/lint, Tailwind is also looked for beside a stylesheet the theme imports
   that imports Tailwind, for a workspace or an umbrella where only a UI package depends
-  on it. **This adds findings** where that theme used the grammar or the standalone
-  binary: `no_unknown_classes` now asks that Tailwind and offers suggestions.
+  on it, including one only a package's `style` condition leads to. So Node now starts
+  for a question whenever a `node_modules` is in reach, and gives way to the standalone
+  binary or the grammar when none holds Tailwind. **This adds findings** where that
+  theme used the grammar or the standalone binary: `no_unknown_classes` now asks that
+  Tailwind and offers suggestions.
 - `@import`s in the Node build now resolve the way @shadcn/lint's build does, which
   also follows a package's `main` and `src/` where `@tailwindcss/node` did not. **This
   adds findings:** a theme that warned and used the grammar over one of these imports

@@ -45,6 +45,25 @@ defmodule HeexLint.TailwindOracleTest do
     file
   end
 
+  defp write_dir(dir, path) do
+    full = Path.join(dir, path)
+    File.mkdir_p!(full)
+    full
+  end
+
+  # A `node` on the PATH that only notes it was started.
+  defp fake_node_starts(dir) do
+    starts = Path.join(dir, "node.starts")
+
+    script(dir, "fake/bin/node", """
+    #!/bin/sh
+    echo $$ >> "#{starts}"
+    """)
+
+    System.put_env("PATH", Path.join(dir, "fake/bin") <> ":" <> System.get_env("PATH"))
+    starts
+  end
+
   # What a fake appends each time it starts.
   defp pids(file) do
     case File.read(file) do
@@ -1046,6 +1065,163 @@ defmodule HeexLint.TailwindOracleTest do
       assert result.warnings == []
       assert [message] = kit_messages(result)
       assert message =~ ~s(Did you mean "kit-frame"?)
+    end
+
+    # A kit whose exports take Tailwind's build and the theme read to different files.
+    # Tailwind is only in reach of the one the build takes.
+    defp style_kit(dir, default) do
+      write(
+        dir,
+        "kit/package.json",
+        JSON.encode!(%{
+          name: "kit",
+          exports: %{"." => %{style: "./dist/styles.css", default: default}}
+        })
+      )
+
+      write(
+        dir,
+        "kit/dist/styles.css",
+        ~s(@import "tailwindcss";\n@utility kit-frame { display: flex; }\n)
+      )
+
+      File.ln_s!(
+        Path.expand("../fixtures/node/node_modules", __DIR__),
+        Path.join(dir, "kit/node_modules")
+      )
+
+      root = Path.join(dir, "apps/web")
+      File.mkdir_p!(Path.join(root, "node_modules"))
+      File.ln_s!(Path.join(dir, "kit"), Path.join(root, "node_modules/kit"))
+      root
+    end
+
+    @tag :tailwind
+    test "is found through a package's style condition", %{tmp_dir: dir} do
+      root = style_kit(dir, "./dist/styles.js")
+      write(dir, "kit/dist/styles.js", "export default {}\n")
+      entry = write(root, "assets/css/app.css", ~s(@import "kit";\n))
+      {:ok, oracle} = Tailwind.start(%{root: root, settings: %{}})
+
+      assert {:node, nil} = Tailwind.status(oracle, entry)
+
+      assert [%{token: "kit-frmae", suggestion: "kit-frame"}] =
+               Tailwind.unknown(%{entry: entry, oracle: oracle}, ~w(kit-frame flex kit-frmae))
+
+      assert Tailwind.warnings(oracle) == []
+      Tailwind.stop(oracle)
+    end
+
+    # As @shadcn/lint's run does: its theme read sees an import of Tailwind, at a file
+    # the build never reads, so this theme has an entry.
+    @tag :tailwind
+    test "is found in a run where the theme read ends somewhere else", %{tmp_dir: dir} do
+      root = style_kit(dir, "./tokens/index.css")
+      write(dir, "shared/tokens/index.css", ~s(@import "tailwindcss/theme.css";\n))
+      File.ln_s!(Path.join(dir, "shared/tokens"), Path.join(dir, "kit/tokens"))
+
+      result =
+        run(
+          root,
+          Map.merge(page(@kit_template), %{"assets/css/app.css" => ~s(@import "kit";\n)}),
+          rules: [no_unknown_classes: :error],
+          settings: [theme: "assets/css/app.css"]
+        )
+
+      assert result.warnings == []
+      assert [message] = kit_messages(result)
+      assert message =~ ~s(Did you mean "kit-frame"?)
+    end
+
+    @tag :tailwind
+    test "is found from the directory Node runs in", %{tmp_dir: dir} do
+      with_tailwind(write_dir(dir, "root"))
+      root = Path.join(dir, "root")
+      entry = write(dir, "elsewhere/app.css", ~s(@import "#{root}/theme.css";\n))
+      write(root, "theme.css", "@theme { --color-brand: #123456; }\n")
+      {:ok, oracle} = Tailwind.start(%{root: root, settings: %{}})
+
+      assert {:node, nil} = Tailwind.status(oracle, entry)
+      Tailwind.stop(oracle)
+    end
+
+    @tag :tailwind
+    test "a node_modules with no Tailwind in it says nothing against the theme", %{tmp_dir: dir} do
+      write(dir, "node_modules/topbar/package.json", ~s({"name": "topbar"}))
+      entry = write(dir, "assets/css/app.css", ~s(@import "tailwindcss";\n))
+      {:ok, oracle} = Tailwind.start(%{root: dir, settings: %{}})
+
+      assert Tailwind.unknown(%{entry: entry, oracle: oracle}, ~w(zorblax)) == nil
+
+      assert Tailwind.status(oracle, entry) ==
+               {:none, "neither the tailwindcss package nor a tailwind binary was found"}
+
+      assert Tailwind.warnings(oracle) == []
+      Tailwind.stop(oracle)
+    end
+
+    @tag :tailwind
+    @tag :standalone
+    test "a node_modules with no Tailwind in it leaves the binary to answer", %{tmp_dir: dir} do
+      write(dir, "node_modules/topbar/package.json", ~s({"name": "topbar"}))
+      entry = write(dir, "assets/css/app.css", ~s(@import "tailwindcss";\n))
+      {:ok, oracle} = Tailwind.start(%{root: dir, settings: %{tailwind_bin: standalone_bin()}})
+
+      assert [%{token: "zorblax"}] =
+               Tailwind.unknown(%{entry: entry, oracle: oracle}, ~w(flex zorblax))
+
+      assert {:standalone, reason} = Tailwind.status(oracle, entry)
+      assert reason =~ "could not be resolved"
+      assert Tailwind.warnings(oracle) == []
+      Tailwind.stop(oracle)
+    end
+
+    @tag :tailwind
+    test "a Tailwind that cannot be loaded is no absence, and warns", %{tmp_dir: dir} do
+      write(
+        dir,
+        "node_modules/tailwindcss/package.json",
+        ~s({"name": "tailwindcss", "exports": {"./theme.css": "./theme.css"}})
+      )
+
+      entry = write(dir, "assets/css/app.css", ~s(@import "./tokens.css";\n))
+      write(dir, "assets/css/tokens.css", "@theme { --color-brand: #123456; }\n")
+      {:ok, oracle} = Tailwind.start(%{root: dir, settings: %{}})
+
+      assert Tailwind.unknown(%{entry: entry, oracle: oracle}, ~w(zorblax)) == nil
+      assert [warning] = Tailwind.warnings(oracle)
+      assert warning =~ "could not be built (tailwindcss v4 could not be resolved"
+      Tailwind.stop(oracle)
+    end
+
+    @tag :standalone
+    test "no Node starts where no node_modules is in reach", %{tmp_dir: dir} do
+      starts = fake_node_starts(dir)
+
+      entry =
+        write(dir, "assets/css/app.css", ~s(@import "tailwindcss";\n@import "./more.css";\n))
+
+      write(dir, "assets/css/more.css", "@theme { --color-brand: #123456; }\n")
+      {:ok, oracle} = Tailwind.start(%{root: dir, settings: %{tailwind_bin: standalone_bin()}})
+
+      assert [%{token: "zorblax"}] =
+               Tailwind.unknown(%{entry: entry, oracle: oracle}, ~w(flex zorblax))
+
+      assert {:standalone, nil} = Tailwind.status(oracle, entry)
+      refute File.exists?(starts)
+      Tailwind.stop(oracle)
+    end
+
+    # Only says which way to ask, so no Tailwind ever reads this graph.
+    test "looking for a node_modules ends on a cycle of imports", %{tmp_dir: dir} do
+      entry = write(dir, "assets/css/app.css", ~s(@import "./a.css";\n@import "./b.css";\n))
+      write(dir, "assets/css/a.css", ~s(@import "./app.css";\n@import "./b.css";\n))
+      write(dir, "assets/css/b.css", ~s(@import "./app.css";\n@import "./a.css";\n))
+      {:ok, oracle} = Tailwind.start(%{root: dir, settings: %{}})
+
+      assert {strategy, _reason} = Tailwind.status(oracle, entry)
+      assert strategy in [:none, :standalone]
+      Tailwind.stop(oracle)
     end
 
     @tag :tailwind
