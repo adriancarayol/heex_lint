@@ -146,13 +146,7 @@ defmodule HeexLint.Element do
   end
 
   defp tokenize(template) do
-    {:ok, eex} =
-      EEx.tokenize(template.source,
-        line: template.line,
-        # EEx adds the indentation to the starting column itself.
-        column: template.column - template.indentation,
-        indentation: template.indentation
-      )
+    eex = eex_tokens(template)
 
     state = Tokenizer.init(template.indentation, template.file, template.source, TagHandler)
 
@@ -167,6 +161,30 @@ defmodule HeexLint.Element do
       end)
 
     {eex, tokens, cont}
+  end
+
+  defp eex_tokens(template) do
+    tokens =
+      EEx.tokenize(template.source,
+        line: template.line,
+        # EEx adds the indentation to the starting column itself.
+        column: template.column - template.indentation,
+        indentation: template.indentation
+      )
+
+    case tokens do
+      {:ok, eex} ->
+        eex
+
+      # An unclosed <%. Its message ends in a snippet that counts lines from the file's
+      # first, which is the wrong line for a sigil, so only the first line says anything.
+      {:error, message, meta} ->
+        raise Tokenizer.ParseError,
+          file: template.file,
+          line: meta.line,
+          column: meta.column,
+          description: message |> String.split("\n", parts: 2) |> hd()
+    end
   end
 
   @doc """

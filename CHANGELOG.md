@@ -9,6 +9,9 @@
 - A stylesheet with a byte that is not UTF-8, such as a comment saved as Latin-1, ended
   the run, wherever it sat in the project. It is read like any other. An `.ex` or `.heex`
   file with one ended it too, and now counts as a file that cannot be parsed.
+- A `<%` with no `%>`, such as `class="p-1<%x"`, ended the run, in a `.heex` file or a
+  `~H`. That file now counts as one that cannot be parsed, and the others are linted.
+  **In runs that used to crash, this adds the findings they never got to.**
 - A theme value past the float range, such as `--radius-x: 1e999px` or
   `--color-x: oklab(1e200 0 0)`, no longer ends the run. Such a length is further than
   any step and such a color is near no other, which is what @shadcn/lint's Infinity comes

@@ -9,7 +9,7 @@ defmodule HeexLint.HostileInputTest do
 
   alias HeexLint.Grammar.{Classes, Classifier, Colors, Lengths, Validators}
   alias HeexLint.Rules.NoArbitraryValues
-  alias HeexLint.{Collector, Suggest, Theme}
+  alias HeexLint.{Collector, Element, Suggest, Template, Theme}
 
   @moduletag :tmp_dir
 
@@ -199,6 +199,71 @@ defmodule HeexLint.HostileInputTest do
         assert [{file, message}] = result.failures
         assert String.ends_with?(file, unquote(path))
         assert message =~ "not valid UTF-8"
+      end
+    end
+  end
+
+  describe "an unclosed EEx tag" do
+    for {name, template, closing, column} <- [
+          {"in a class string", ~s(<div class="p-1<%x" />), "%>", 16},
+          {"in a class expression", ~s(<div class={"p-1<%x"} />), "%>", 17},
+          {"on its own", "<% x = 1", "%>", 1},
+          {"of a comment", "<%!-- x", "--%>", 1}
+        ] do
+      test "#{name} of a .heex file is a file that cannot be parsed, and the others are linted",
+           %{tmp_dir: dir} do
+        result =
+          run(
+            dir,
+            page(~s(<div class="bg-pink-500" />))
+            |> Map.put("lib/app_web/bad.html.heex", unquote(template) <> "\n"),
+            rules: [no_raw_colors: :error]
+          )
+
+        assert [%{rule: :no_raw_colors}] = result.diagnostics
+        assert [{file, message}] = result.failures
+        assert String.ends_with?(file, "lib/app_web/bad.html.heex")
+
+        assert message =~
+                 ":1:#{unquote(column)}: expected closing '#{unquote(closing)}' for EEx expression"
+
+        refute message =~ "\n"
+      end
+
+      # The heredoc's text starts on line 6 of the file, indented by four.
+      test "#{name} of a sigil is a file that cannot be parsed, and the others are linted", %{
+        tmp_dir: dir
+      } do
+        result =
+          run(
+            dir,
+            page(~s(<div class="bg-pink-500" />))
+            |> Map.put("lib/app_web/live/bad_live.ex", live(unquote(template), "BadLive")),
+            rules: [no_raw_colors: :error]
+          )
+
+        assert [%{rule: :no_raw_colors}] = result.diagnostics
+        assert [{file, message}] = result.failures
+        assert String.ends_with?(file, "lib/app_web/live/bad_live.ex")
+
+        assert message =~
+                 ":6:#{unquote(column) + 4}: expected closing '#{unquote(closing)}' for EEx expression"
+      end
+    end
+
+    test "has no elements and no expressions" do
+      template = %Template{file: "bad.heex", source: ~s(<div class={"p-1<%x"} />)}
+
+      assert {:error, message} = Element.from_template(template)
+      assert message =~ "bad.heex:1:17:"
+      assert Template.elements(template) == {:error, message}
+      assert Element.expressions(template) == []
+    end
+
+    test "is not what <%% writes, or a tag that closes" do
+      for source <- [~s(<div class="p-1<%%x" />), ~s(<div class={"p-1"} /><%= @x %>)] do
+        assert {:ok, [%{name: "div"}]} =
+                 Element.from_template(%Template{file: "ok.heex", source: source})
       end
     end
   end
