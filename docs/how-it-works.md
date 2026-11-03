@@ -145,8 +145,8 @@ plugins:
   or variant.
 - **Standalone CLI.** Otherwise, the binary the `tailwind` hex package
   installs in `_build/` (or `tailwind_bin`) builds your theme with the
-  candidates as `@source inline(...)`; a class is known when its selector is
-  in the output. No suggestions this way.
+  candidates as `@source inline(...)`; a class is known when its whole selector
+  is in the output. No suggestions this way.
 - **Grammar.** Without either, the class grammar, `@utility` names and class
   selectors answer; that checks less.
 

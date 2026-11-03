@@ -581,6 +581,94 @@ defmodule HeexLint.TailwindPrefixTest do
     end
   end
 
+  describe "the standalone binary reads whole selectors" do
+    @describetag :standalone
+
+    test "a class is not known because a longer one is built", %{tmp_dir: dir} do
+      assert classes(
+               standalone(dir, ~s(<div class="tw:fle tw:flex tw:flex-col tw:flex!" />),
+                 no_unknown_classes: :error
+               )
+             ) == [~s("tw:fle")]
+    end
+
+    test "without a prefix too", %{tmp_dir: dir} do
+      plain = ~S|@import "tailwindcss"; @theme { --color-primary: #171717; }|
+
+      assert classes(
+               standalone(
+                 dir,
+                 ~s(<div class="fle flex flex-col bg-primary/50 hover:flex" />),
+                 [no_unknown_classes: :error],
+                 %{"assets/css/app.css" => plain}
+               )
+             ) == [~s("fle")]
+    end
+
+    test "a selector that only starts with the class does not count", %{tmp_dir: dir} do
+      assert classes(
+               standalone(
+                 dir,
+                 ~s(<div class="tw tw:flex hover tw:hover:flex tw:text tw:text-lg" />),
+                 no_unknown_classes: :error
+               )
+             ) == [~s("tw"), ~s("hover"), ~s("tw:text")]
+    end
+
+    test "a variant's selector still counts", %{tmp_dir: dir} do
+      plain = ~S|@import "tailwindcss"; @theme { --color-primary: #171717; }|
+
+      assert standalone(
+               dir,
+               ~s(<div class="hover:flex md:flex group-hover:flex dark:flex [&_svg]:size-4 2xl:flex *:flex" />),
+               [no_unknown_classes: :error],
+               %{"assets/css/app.css" => plain}
+             ) == []
+    end
+  end
+
+  describe "Tailwind.selector?/2" do
+    # Called at run time, so this file compiles against a Tailwind without it.
+    defp selector?(css, class), do: apply(HeexLint.Tailwind, :selector?, [css, class])
+
+    test "finds a class however its selector goes on" do
+      for css <- [
+            ".ledger",
+            ".ledger {",
+            ".ledger{",
+            ".ledger:hover {",
+            ".ledger::before {",
+            ".ledger, .x {",
+            ".ledger > .x {",
+            ".ledger.x {",
+            ".x .ledger {",
+            ":is(.ledger) {",
+            ".ledger[data-x] {"
+          ] do
+        assert selector?(css, "ledger"), css
+      end
+    end
+
+    test "every character that continues a name makes it another class" do
+      for rest <- ["_row", "-row", "Row", "row", "9", "é", "\\:row"] do
+        refute selector?(".ledger#{rest} {", "ledger"), rest
+      end
+    end
+
+    test "finds it past a longer one" do
+      assert selector?(".flex-col { } .flex { }", "flex")
+    end
+
+    test "escapes the class the way Tailwind does" do
+      assert selector?(".tw\\:hover\\:flex:hover {", "tw:hover:flex")
+      assert selector?(".tw\\:p-0\\.5 {", "tw:p-0.5")
+      assert selector?(".\\32 xl\\:flex {", "2xl:flex")
+      refute selector?(".tw\\:flex {", "flex")
+      refute selector?(".tw\\:flex {", "tw")
+      refute selector?(".tw\\:flex\\! {", "tw:flex")
+    end
+  end
+
   describe "no_unknown_classes without a Tailwind to ask" do
     test "the grammar answers, and it knows no prefix", %{tmp_dir: dir} do
       findings =

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- With the standalone Tailwind binary, a class is known only when its whole selector
+  is in the build. **This adds findings, with or without a prefix:** `fle` beside
+  `flex`, or `hover` beside `hover:flex`, read as known because a longer selector
+  started with them. The Node path always asked for the class itself.
 - Under `@import "tailwindcss" prefix(tw)`, only `tw:flex` is a Tailwind class, as in
   @shadcn/lint. `no_raw_colors` leaves an unprefixed class alone, where it called
   `text-muted` an undeclared color, and judges `tw:text-muted` as before. **This

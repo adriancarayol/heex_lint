@@ -341,7 +341,7 @@ defmodule HeexLint.Tailwind do
            ) do
         {_out, 0} ->
           css = File.read!(output)
-          known? = fn candidate -> String.contains?(css, "." <> css_escape(candidate)) end
+          known? = &selector?(css, &1)
 
           results =
             for token <- tokens, not known?.(token) do
@@ -359,6 +359,24 @@ defmodule HeexLint.Tailwind do
     after
       File.rm_rf(dir)
     end
+  end
+
+  @doc false
+  # Whether the output has `class` as a whole selector: .flex-col does not make
+  # flex known, nor .tw\:flex make tw:fle known.
+  def selector?(css, class) do
+    selector = "." <> css_escape(class)
+
+    css
+    |> :binary.matches(selector)
+    |> Enum.any?(fn {at, length} -> selector_end?(css, at + length) end)
+  end
+
+  defp selector_end?(css, at) when at == byte_size(css), do: true
+
+  defp selector_end?(css, at) do
+    c = :binary.at(css, at)
+    not (c in ?a..?z or c in ?A..?Z or c in ?0..?9 or c in [?-, ?_, ?\\] or c >= 0x80)
   end
 
   # The utility a token's variants stand on, to tell a misspelled variant from
