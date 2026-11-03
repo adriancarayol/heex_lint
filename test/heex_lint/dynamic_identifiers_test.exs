@@ -379,6 +379,305 @@ defmodule HeexLint.DynamicIdentifiersTest do
     end
   end
 
+  describe "an assign read through assigns" do
+    for read <- [
+          "assigns.s",
+          "assigns[:s]",
+          "Map.get(assigns, :s)",
+          "Map.fetch!(assigns, :s)",
+          "assigns |> Map.get(:s)"
+        ] do
+      test "#{read} checks a value written out", %{tmp_dir: dir} do
+        body = ~s|assigns = assign(assigns, :s, "color: red")|
+
+        assert styled(dir, body, unquote(read), ["assigns.s"]) == [@color]
+        assert styled(dir, body, unquote(read), ["unrelated"]) == [@color]
+      end
+
+      test "#{read} goes by its name, and by what it reads", %{tmp_dir: dir} do
+        body = "assigns = assign(assigns, :s, Floating.compute())"
+
+        assert styled(dir, body, unquote(read), ["assigns.s"]) == []
+        assert styled(dir, body, unquote(read), ["Floating.compute"]) == []
+        assert styled(dir, body, unquote(read), ["@s"]) == [@dynamic]
+        assert styled(dir, body, unquote(read), ["unrelated"]) == [@dynamic]
+      end
+    end
+
+    for {how, body} <- [
+          {"a keyword list", ~s|assigns = assign(assigns, s: "color: red")|},
+          {"a map", ~s|assigns = assign(assigns, %{s: "color: red"})|},
+          {"assign_new", ~s|assigns = assign_new(assigns, :s, fn -> "color: red" end)|},
+          {"update", ~s|assigns = update(assigns, :s, fn _ -> "color: red" end)|},
+          {"Map.put", ~s|assigns = Map.put(assigns, :s, "color: red")|},
+          {"a pipe", ~s|assigns = assigns \|> assign(:s, "color: red")|}
+        ] do
+      test "follows #{how}, as @name does", %{tmp_dir: dir} do
+        assert styled(dir, unquote(body), "assigns.s", ["assigns.s"]) == [@color]
+        assert styled(dir, unquote(body), "@s", ["@s"]) == [@color]
+      end
+    end
+
+    test "and @name are spellings of one read, each with its own name", %{tmp_dir: dir} do
+      body = "assigns = assign(assigns, :s, Floating.compute())"
+
+      for value <- ["[@s, assigns.s]", "[assigns.s, @s]"] do
+        assert styled(dir, body, value, ["@s"]) == [@dynamic]
+        assert styled(dir, body, value, ["assigns.s"]) == [@dynamic]
+        assert styled(dir, body, value, ["@s", "assigns.s"]) == []
+        assert styled(dir, body, value, ["Floating.compute"]) == []
+      end
+    end
+
+    test "and @name are one finding on a value written out", %{tmp_dir: dir} do
+      body = ~s|assigns = assign(assigns, :s, "color: red")|
+
+      assert styled(dir, body, "[@s, assigns.s]", ["@s", "assigns.s"]) == [@color]
+    end
+
+    test "keeps what a default says", %{tmp_dir: dir} do
+      body = ~s|assigns = assign(assigns, :s, Floating.compute())|
+      value = ~s|Map.get(assigns, :s, "color: red")|
+
+      assert styled(dir, body, value, ["assigns.s"]) == [@color]
+    end
+
+    test "is looked through for raw colors in a hole", %{tmp_dir: dir} do
+      body = ~s|assigns = assign(assigns, :tone, "#ff0000")|
+
+      assert [message] = styled(dir, body, ~S|"--tone: #{assigns.tone}"|, ["assigns.tone"])
+      assert message =~ "--tone hardcodes a color"
+    end
+
+    test "is read in a map spread onto an element", %{tmp_dir: dir} do
+      files =
+        page(~s|assigns = assign(assigns, :s, "color: red")|, "<div {%{style: assigns.s}} />")
+
+      assert findings(dir, files, ["assigns.s"]) == [@color]
+    end
+
+    test "in its own value is what came in", %{tmp_dir: dir} do
+      body = ~s|assigns = assign(assigns, :s, [assigns.s, "color: red"])|
+
+      for value <- ["assigns.s", "@s"] do
+        assert styled(dir, body, value, ["assigns.s"]) == [@color]
+        assert styled(dir, body, value, ["unrelated"]) == [@dynamic, @color]
+      end
+    end
+
+    test "in code is what came in, as code reads it before it assigns", %{tmp_dir: dir} do
+      body = ~s|base = assigns.s\nassigns = assign(assigns, :s, [base, "color: red"])|
+
+      assert styled(dir, body, "base", ["assigns.s"]) == []
+      assert styled(dir, body, "base", ["unrelated"]) == [@dynamic]
+      assert styled(dir, body, "@s", ["assigns.s"]) == [@color]
+    end
+
+    test "of a received style keeps its default", %{tmp_dir: dir} do
+      files = %{
+        @path => """
+        defmodule AppWeb.Page do
+          use AppWeb, :html
+
+          attr :style, :string, default: "margin: 0"
+
+          def panel(assigns) do
+            assigns = assign(assigns, :style, [assigns.style, "color: red"])
+            ~H"<div style={assigns.style} />"
+          end
+        end
+        """
+      }
+
+      assert [margin, color] = findings(dir, files, ["unrelated"])
+      assert margin =~ "sets margin"
+      assert color == @color
+    end
+
+    test "of a class reads the assign as @name does", %{tmp_dir: dir} do
+      rules = [no_raw_colors: :error, require_static_classes: :error]
+      body = ~s|assigns = assign(assigns, :x, "bg-pink-500")|
+
+      for read <- ["assigns.x", "assigns[:x]", "Map.get(assigns, :x)", "@x"] do
+        files = page(body, "<.button class={#{read}}>x</.button>")
+        assert [%{rule: :no_raw_colors}] = lint(dir, files, rules: rules)
+      end
+    end
+
+    test "of a class in its own value stays what came in", %{tmp_dir: dir} do
+      rules = [no_raw_colors: :error, require_static_classes: :error]
+      body = ~s|assigns = assign(assigns, :class, [assigns.class, "bg-pink-500"])|
+
+      files = %{
+        @path => """
+        defmodule AppWeb.Page do
+          use AppWeb, :html
+
+          attr :class, :string, default: nil
+
+          def panel(assigns) do
+            #{body}
+            ~H"<.button class={assigns.class}>x</.button>"
+          end
+        end
+        """
+      }
+
+      assert [%{rule: :no_raw_colors}] = lint(dir, files, rules: rules)
+    end
+  end
+
+  describe "a table an assign holds" do
+    for {value, name} <- [
+          {"@styles.popper", "@styles.popper"},
+          {"@styles[:popper]", "@styles.popper"},
+          {"Map.get(@styles, :popper)", "@styles.popper"},
+          {"Map.fetch!(@styles, :popper)", "@styles.popper"},
+          {"Keyword.get(@styles, :popper)", "@styles.popper"},
+          {"assigns.styles.popper", "assigns.styles.popper"},
+          {"assigns[:styles].popper", "assigns.styles.popper"},
+          {"assigns[:styles][:popper]", "assigns.styles.popper"},
+          {"Map.get(assigns, :styles).popper", "assigns.styles.popper"},
+          {"Map.fetch!(assigns, :styles)[:popper]", "assigns.styles.popper"}
+        ] do
+      test "#{value} checks an entry written out", %{tmp_dir: dir} do
+        body = ~s|assigns = assign(assigns, :styles, %{popper: "color: red"})|
+
+        assert styled(dir, body, unquote(value), [unquote(name)]) == [@color]
+        assert styled(dir, body, unquote(value), ["unrelated"]) == [@color]
+      end
+
+      test "#{value} goes by its name on an entry it cannot read", %{tmp_dir: dir} do
+        body = ~s|assigns = assign(assigns, :styles, %{popper: Popper.compute()})|
+
+        assert styled(dir, body, unquote(value), [unquote(name)]) == []
+        assert styled(dir, body, unquote(value), ["Popper.compute"]) == []
+        assert styled(dir, body, unquote(value), ["unrelated"]) == [@dynamic]
+      end
+    end
+
+    test "reads only the entry a name is for", %{tmp_dir: dir} do
+      body =
+        ~s|assigns = assign(assigns, :styles, %{popper: Popper.compute(), arrow: "color: red"})|
+
+      assert styled(dir, body, "@styles.arrow", ["@styles.arrow"]) == [@color]
+      assert styled(dir, body, "@styles.popper", ["@styles.arrow"]) == [@dynamic]
+    end
+
+    test "has each spelling of a path go by its own name", %{tmp_dir: dir} do
+      body = ~s|assigns = assign(assigns, :styles, %{popper: Popper.compute()})|
+
+      for value <- [
+            "[@styles.popper, assigns.styles.popper]",
+            "[assigns.styles.popper, @styles.popper]"
+          ] do
+        assert styled(dir, body, value, ["@styles.popper"]) == [@dynamic]
+        assert styled(dir, body, value, ["assigns.styles.popper"]) == [@dynamic]
+        assert styled(dir, body, value, ["@styles.popper", "assigns.styles.popper"]) == []
+      end
+    end
+
+    test "is read through a variable", %{tmp_dir: dir} do
+      body = ~s|table = %{popper: "color: red"}\nassigns = assign(assigns, :styles, table)|
+
+      assert styled(dir, body, "@styles.popper", ["@styles.popper"]) == [@color]
+    end
+
+    test "is not one when a call sets it", %{tmp_dir: dir} do
+      body = "assigns = assign(assigns, :styles, Popper.compute())"
+
+      assert styled(dir, body, "@styles.popper", ["@styles.popper"]) == []
+      assert styled(dir, body, "@styles.popper", ["unrelated"]) == [@dynamic]
+    end
+
+    test "assigned twice has no one value, so it is exempt", %{tmp_dir: dir} do
+      body =
+        ~s|assigns = assign(assigns, :styles, %{popper: "color: red"})\n| <>
+          ~s|assigns = assign(assigns, :styles, Popper.compute(assigns.styles))|
+
+      assert styled(dir, body, "@styles.popper", ["@styles.popper"]) == []
+    end
+
+    test "reading itself reads what came in", %{tmp_dir: dir} do
+      body = ~s|assigns = assign(assigns, :t, %{a: [assigns.t.a, "color: red"]})|
+
+      assert styled(dir, body, "@t.a", ["assigns.t.a"]) == [@color]
+      assert styled(dir, body, "@t.a", ["@t.a"]) == [@dynamic, @color]
+    end
+
+    test "read in code is what came in", %{tmp_dir: dir} do
+      body =
+        ~s|t = assigns.styles\nassigns = assign(assigns, :styles, %{popper: "color: red"})|
+
+      assert styled(dir, body, "t.popper", ["t.popper"]) == []
+      assert styled(dir, body, "t.popper", ["unrelated"]) == [@dynamic]
+    end
+
+    test "is looked through for raw colors in a hole", %{tmp_dir: dir} do
+      body = ~s|assigns = assign(assigns, :tones, %{warn: "#ff0000"})|
+
+      for value <- [~S|"--tone: #{@tones.warn}"|, ~S|"--tone: #{assigns.tones.warn}"|] do
+        assert [message] = styled(dir, body, value, ["@tones.warn", "assigns.tones.warn"])
+        assert message =~ "--tone hardcodes a color"
+      end
+    end
+
+    test "is read in a map spread onto an element", %{tmp_dir: dir} do
+      files =
+        page(
+          ~s|assigns = assign(assigns, :styles, %{popper: "color: red"})|,
+          "<div {%{style: @styles.popper}} />"
+        )
+
+      assert findings(dir, files, ["@styles.popper"]) == [@color]
+    end
+
+    test "of classes is read too", %{tmp_dir: dir} do
+      rules = [no_raw_colors: :error, require_static_classes: :error]
+      body = ~s|assigns = assign(assigns, :t, %{a: "bg-pink-500"})|
+
+      for read <- ["@t.a", "assigns.t.a", "@t[:a]", "Map.get(@t, :a)"] do
+        files = page(body, "<.button class={#{read}}>x</.button>")
+        assert [%{rule: :no_raw_colors}] = lint(dir, files, rules: rules)
+      end
+    end
+  end
+
+  describe "a value assigned in another function" do
+    defp mounted(read) do
+      %{
+        "lib/app_web/live/page_live.ex" => """
+        defmodule AppWeb.PageLive do
+          use AppWeb, :live_view
+
+          def mount(_params, _session, socket) do
+            {:ok, assign(socket, :s, "color: red")}
+          end
+
+          def render(assigns) do
+            ~H"<div style={#{read}} />"
+          end
+        end
+        """
+      }
+    end
+
+    test "is not read, so a name allows it like any other", %{tmp_dir: dir} do
+      assert findings(dir, mounted("@s"), ["@s"]) == []
+      assert findings(dir, mounted("@s"), ["unrelated"]) == [@dynamic]
+      assert findings(dir, mounted("assigns.s"), ["assigns.s"]) == []
+      assert findings(dir, mounted("assigns.s"), ["unrelated"]) == [@dynamic]
+    end
+
+    test "is not read from a helper either", %{tmp_dir: dir} do
+      extra = ~s|defp prepare(assigns), do: assign(assigns, :s, "color: red")|
+      files = page("assigns = prepare(assigns)", "<div style={@s} />", extra)
+
+      assert findings(dir, files, ["@s"]) == []
+      assert findings(dir, files, ["unrelated"]) == [@dynamic]
+    end
+  end
+
   describe "several routes" do
     @shared "x = Floating.compute()\ns = x\nt = x"
 

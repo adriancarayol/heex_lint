@@ -171,8 +171,9 @@ A class value is read through:
 - interpolation and `<>`, where text glued to a runtime value
   (`"bg-#{@tone}"`) is no class of its own and the value is unreadable, while
   a value standing alone (`"px-2 #{@extra}"`) is read on its own;
-- in a template, `@name` follows `assign(assigns, :name, ...)`,
-  `assign_new` and `update` in the rendering function;
+- in a template, `@name` and `assigns.name` follow `assign(assigns, :name, ...)`,
+  `assign_new` and `update` in the rendering function, and so does a lookup on them
+  (`@name.key`);
 - in a function component, the received `class` (and any `*_class`) is the
   component's own input: accepted as-is, with its `attr` default checked;
 - further along a chain, up to 64 bindings: variables bound in the function,

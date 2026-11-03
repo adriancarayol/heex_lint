@@ -498,6 +498,17 @@ defmodule HeexLint.Rules.NoRawColorsTest do
       end
     end
 
+    test "class map keys stay unread in a table an assign holds", %{tmp_dir: dir} do
+      body = ~S"""
+      def a(assigns) do
+        assigns = assign(assigns, :tones, %{warn: %{"bg-pink-500" => true}})
+        ~H"<div class={cn(@tones.warn)} />"
+      end
+      """
+
+      assert templated(dir, body) == []
+    end
+
     test "class map keys count when an embedded template reads them", %{tmp_dir: dir} do
       template = ~S|<div class={cn(@tones)} />|
 

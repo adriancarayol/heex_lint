@@ -11,12 +11,13 @@ defmodule HeexLint.Collector do
     * strings, `~w(...)`, lists, `&&`/`||`, `if`/`unless`/`case`/`cond`
     * interpolation and `<>`, where text glued to a runtime value is no
       class of its own and the value is unresolved
-    * in a template, `@name` follows `assign(assigns, :name, ...)` in the
-      rendering function; in a function component, the received `class`
-      is the component's own input: accepted, with its authored default read
-    * in function bodies, variables, module attributes, `assigns.name`,
-      same-module functions, map lookups (`Map.fetch!(%{...}, key)`), and
-      the configured merge and variant functions
+    * in a template, `@name` and `assigns.name` follow `assign(assigns, :name, ...)`
+      in the rendering function, and so does a lookup on them; in a function
+      component, the received `class` is the component's own input: accepted, with
+      its authored default read
+    * in function bodies, variables, module attributes, `assigns.name` as it came
+      in, same-module functions, map lookups (`Map.fetch!(%{...}, key)`), and the
+      configured merge and variant functions
 
   A route to a class follows 64 bindings; the next one is unresolved at the place
   that reads it. Each binding is read once per site, so a class reached through
@@ -35,7 +36,7 @@ defmodule HeexLint.Collector do
   alias HeexLint.Project
   alias HeexLint.Project.{Component, ModuleInfo}
 
-  @no_reads %{within: %{}, names: %{}, at: %{}}
+  @no_reads %{within: %{}, at: %{}}
 
   defstruct strings: [], unresolved: [], reads: @no_reads
 
@@ -60,13 +61,13 @@ defmodule HeexLint.Collector do
 
   @typedoc """
   How a style value's reads hang together, as `outside_names/2` needs them: what
-  each read went on to read (`within`, from the value itself, `:value`), what a read
-  is called (`names`, on the reads a name can exempt), and which read reached each
-  unresolved position under what name (`at`). Empty for a class.
+  each read went on to read and what it called that (`within`, from the value itself,
+  `:value`, with nil where no name can exempt it, and one entry per spelling, as
+  `@x` and `assigns.x` are one read), and which read reached each unresolved position
+  under what name (`at`). Empty for a class.
   """
   @type reads :: %{
-          within: %{term() => MapSet.t(term())},
-          names: %{term() => String.t()},
+          within: %{term() => MapSet.t({term(), String.t() | nil})},
           at: %{{pos_integer(), pos_integer()} => MapSet.t({term(), String.t() | nil})}
         }
 
@@ -151,9 +152,9 @@ defmodule HeexLint.Collector do
 
   defp live_reads([read | rest], live, reads, names) do
     next =
-      for inner <- Map.get(reads.within, read, []),
+      for {inner, name} <- Map.get(reads.within, read, []),
           not MapSet.member?(live, inner),
-          not MapSet.member?(names, Map.get(reads.names, inner)),
+          not MapSet.member?(names, name),
           do: inner
 
     live_reads(next ++ rest, Enum.into(next, live), reads, names)
@@ -404,7 +405,7 @@ defmodule HeexLint.Collector do
   # @name: an assign in a template, a module attribute in code.
   defp visit(%{mode: :template} = state, {:@, meta, [{name, _, ctx}]})
        when is_atom(name) and is_atom(ctx),
-       do: assign(state, Atom.to_string(name), meta)
+       do: assign(state, Atom.to_string(name), meta, "@#{name}")
 
   defp visit(%{mode: :body} = state, {:@, meta, [{name, _, ctx}]})
        when is_atom(name) and is_atom(ctx),
@@ -413,11 +414,11 @@ defmodule HeexLint.Collector do
   # assigns.name, assigns[:name]
   defp visit(state, {{:., _, [{:assigns, _, ctx}, name]}, meta, []})
        when is_atom(ctx) and is_atom(name),
-       do: received(state, Atom.to_string(name), meta, "assigns.#{name}")
+       do: assigns_read(state, Atom.to_string(name), meta)
 
   defp visit(state, {{:., _, [Access, :get]}, meta, [{:assigns, _, ctx}, name]})
        when is_atom(ctx) and is_atom(name),
-       do: received(state, Atom.to_string(name), meta, "assigns.#{name}")
+       do: assigns_read(state, Atom.to_string(name), meta)
 
   # A variable.
   defp visit(state, {name, meta, ctx}) when is_atom(name) and is_atom(ctx),
@@ -438,7 +439,7 @@ defmodule HeexLint.Collector do
          {{:., _, [{:__aliases__, _, [:Map]}, fun]}, meta, [{:assigns, _, ctx}, key | rest]}
        )
        when fun in [:get, :fetch!] and is_atom(ctx) and is_atom(key) do
-    state = received(state, Atom.to_string(key), meta, "assigns.#{key}")
+    state = assigns_read(state, Atom.to_string(key), meta)
     if rest != [], do: visit(state, hd(rest)), else: state
   end
 
@@ -605,9 +606,9 @@ defmodule HeexLint.Collector do
   defp written_out?(_values), do: false
 
   defp link(%{kind: :style, reads: reads} = state, read) do
-    within = Map.update(reads.within, state.read, MapSet.new([read]), &MapSet.put(&1, read))
-    names = if state.naming, do: Map.put(reads.names, read, state.naming), else: reads.names
-    %{state | reads: %{reads | within: within, names: names}, naming: nil}
+    route = {read, state.naming}
+    within = Map.update(reads.within, state.read, MapSet.new([route]), &MapSet.put(&1, route))
+    %{state | reads: %{reads | within: within}, naming: nil}
   end
 
   defp link(state, _read), do: state
@@ -640,25 +641,32 @@ defmodule HeexLint.Collector do
 
   ## Names
 
-  defp assign(%{map_keys: keys} = state, name, meta) when is_list(keys),
+  defp assign(%{map_keys: keys} = state, name, meta, _written) when is_list(keys),
     do: assign_in_module(state, name, meta)
 
-  defp assign(state, name, meta) do
+  defp assign(state, name, meta, written) do
     key = {:assign, name}
 
     with false <- MapSet.member?(state.seen, key),
          [_ | _] = values <- assigned_values(state.clause, name) do
       state
-      |> named("@" <> name, values)
+      |> named(written, values)
       |> hop(key, meta, fn state ->
         state = %{state | mode: :body, text: body_text(state, meta)}
         Enum.reduce(values, state, &visit(&2, &1))
       end)
     else
       true -> stop(state)
-      _ -> received(state, name, meta, "@" <> name)
+      _ -> received(state, name, meta, written)
     end
   end
+
+  # `@name` by another spelling in a template. In code it is what came in, as code
+  # reads it to work out a new value: `assign(assigns, :class, [assigns.class, "p-2"])`.
+  defp assigns_read(%{mode: :template} = state, name, meta),
+    do: assign(state, name, meta, "assigns." <> name)
+
+  defp assigns_read(state, name, meta), do: received(state, name, meta, "assigns." <> name)
 
   # What any function of the module assigns to `name`, each value read in its
   # own clause, and the defaults its components declare for it.
@@ -1021,7 +1029,35 @@ defmodule HeexLint.Collector do
     end
   end
 
+  # `@styles.popper` and `assigns.styles.popper`. What the assign holds is code of
+  # the function that assigns it.
+  defp table(%{mode: :template, map_keys: nil} = state, node, route) do
+    with name when is_binary(name) <- assign_read(node),
+         [value] <- assigned_values(state.clause, name) do
+      alias_of(%{state | mode: :body}, {:assign, name}, value, route)
+    else
+      _ -> nil
+    end
+  end
+
   defp table(_state, _other, _route), do: nil
+
+  defp assign_read({:@, _, [{name, _, ctx}]}) when is_atom(name) and is_atom(ctx),
+    do: Atom.to_string(name)
+
+  defp assign_read({{:., _, [{:assigns, _, ctx}, name]}, _, []})
+       when is_atom(ctx) and is_atom(name),
+       do: Atom.to_string(name)
+
+  defp assign_read({{:., _, [Access, :get]}, _, [{:assigns, _, ctx}, name]})
+       when is_atom(ctx) and is_atom(name),
+       do: Atom.to_string(name)
+
+  defp assign_read({{:., _, [{:__aliases__, _, [:Map]}, fun]}, _, [{:assigns, _, ctx}, name]})
+       when fun in [:get, :fetch!] and is_atom(ctx) and is_atom(name),
+       do: Atom.to_string(name)
+
+  defp assign_read(_other), do: nil
 
   defp alias_of(state, key, value, route) do
     cond do

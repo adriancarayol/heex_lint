@@ -43,8 +43,10 @@ defmodule HeexLint.Rules.NoInlineStyles do
           with any arguments or piped into.
 
       A value written out where the name is bound (a string, `<>`, a sigil, a list
-      or a map) is still checked. Any other value is exempt along with whatever it
-      goes on to read. See `docs/rules.md`.
+      or a map) is still checked, as is one the rendering function assigns to it.
+      Any other value is exempt along with whatever it goes on to read, which
+      includes a value assigned in another function, such as `mount/3`, since it
+      cannot be read. See `docs/rules.md`.
     * `:message` - replaces the text. `{{property}}` is the property.
   """
 

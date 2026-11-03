@@ -274,7 +274,10 @@ What the name holds decides the rest:
 
 - A value written out where the name is bound is still checked, since it can be read:
   a string, `<>`, a sigil, a list, or a map, which stays reported as dynamic.
-  `floating_styles = "color: red"` is reported.
+  `floating_styles = "color: red"` is reported. So is
+  `assign(assigns, :floating_styles, "color: red")` under `@floating_styles` or
+  `assigns.floating_styles`, and `assign(assigns, :styles, %{popper: "color: red"})`
+  under `@styles.popper` or `assigns.styles.popper`.
 - Any other value is exempt along with everything it goes on to read, literals
   included: `floating_styles = if assigns.open, do: "color: red", else: Floating.compute()`
   and an alias of another name both report nothing under `floating_styles`. So does a
@@ -287,6 +290,11 @@ What the name holds decides the rest:
 - A value reached another way is still reported: with `allow_dynamic_identifiers:
   ["a"]`, `a = x`, `b = x` and `style={if @on, do: a, else: b}`, `x` is reported through
   `b`.
+- A template reads only what the function rendering it assigns. A value assigned
+  anywhere else, such as `assign(socket, :floating_styles, "color: red")` in `mount/3`
+  or in a helper the function calls, cannot be read: it is reported as dynamic, and
+  exempt when named, whatever it holds. In a function body, `assigns.floating_styles`
+  is what came in, whatever the function goes on to assign.
 
 The option does not reach holes or forwarded styles. A hole, as in
 `"--tone: #{tone}"`, is never reported for being unreadable, and a raw color in one is

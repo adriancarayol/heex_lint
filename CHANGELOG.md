@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- In a template, `assigns.name`, `assigns[:name]`, `Map.get(assigns, :name)` and
+  `Map.fetch!(assigns, :name)` read what the rendering function assigns, as `@name`
+  does, and a lookup on them or on `@name` reads a table assigned there, as in
+  `@styles.popper`. **This adds findings:** `assign(assigns, :s, "color: red")` with
+  `style={assigns.s}` reports `color`, and a `class` read the same way reaches
+  `no_raw_colors` and the other class rules. The dynamic or `require_static_classes`
+  finding those values had goes away.
 - The default of `Map.get` and `Keyword.get` is read when the map cannot be, as it
   already was when the map could. **This adds findings:**
   `style={Map.get(@styles, :popper, "color: red")}` reports `color` as well as the
