@@ -4,7 +4,12 @@
    --l0 is a million copies of --l6 and both linters give up on it. The small chain
    below it still resolves. --line-breaks-1 is 1600px written with a line break pair
    every few characters: about 145,000 UTF-16 units spent, which is past the budget,
-   and fewer than 100,000 if a pair counted as the one character it reads as. */
+   and fewer than 100,000 if a pair counted as the one character it reads as.
+
+   A variable reads the same however often it is named, unless it is named too deep.
+   --memo-shared is 1701px on its own and past six levels through --memo-1, which would
+   read 1707px, and --late-shared is the same the other way round. --within-1 spends just
+   under the budget, so two tokens can each read it, and --past-1 just over. */
 @theme {
   --color-fan: var(--l0);
   --radius-fan: var(--l0);
@@ -17,6 +22,14 @@
   --color-long-value: var(--long-value);
   --color-unreadable: rgb(1e999 0 0);
   --radius-line-breaks: calc(var(--line-breaks-1));
+  --radius-memo-shallow: var(--memo-shared);
+  --radius-memo-deep: var(--memo-1);
+  --radius-late-deep: var(--late-1);
+  --radius-late-shallow: var(--late-shared);
+  --radius-within: var(--within-1);
+  --radius-within-again: calc(var(--within-1) + 1px);
+  --radius-past: var(--past-1);
+  --radius-fallbacks: calc(var(--no-such-value, 1901px) + var(--no-such-value, 1px));
 }
 
 :root {
@@ -40,6 +53,26 @@
 
 
 + 0px;
+  --memo-1: calc(var(--memo-2) + 1px);
+  --memo-2: calc(var(--memo-3) + 1px);
+  --memo-3: calc(var(--memo-4) + 1px);
+  --memo-4: calc(var(--memo-5) + 1px);
+  --memo-5: calc(var(--memo-6) + 1px);
+  --memo-6: calc(var(--memo-shared) + 1px);
+  --memo-shared: calc(var(--memo-leaf) + 0px);
+  --memo-leaf: 1701px;
+  --late-1: calc(var(--late-2) + 1px);
+  --late-2: calc(var(--late-3) + 1px);
+  --late-3: calc(var(--late-4) + 1px);
+  --late-4: calc(var(--late-5) + 1px);
+  --late-5: calc(var(--late-6) + 1px);
+  --late-6: calc(var(--late-shared) + 1px);
+  --late-shared: calc(var(--late-leaf) + 0px);
+  --late-leaf: 1801px;
+  --within-1: calc(var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2));
+  --past-1: calc(var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2) + var(--within-2));
+  --within-2: var(--within-3) + var(--within-3) + var(--within-3) + var(--within-3) + var(--within-3) + var(--within-3) + var(--within-3) + var(--within-3) + var(--within-3) + var(--within-3) + var(--within-3) + var(--within-3) + var(--within-3) + var(--within-3) + var(--within-3) + var(--within-3) + var(--within-3) + var(--within-3) + var(--within-3) + var(--within-3) + var(--within-3) + var(--within-3) + var(--within-3) + var(--within-3) + var(--within-3) + var(--within-3) + var(--within-3) + var(--within-3) + var(--within-3) + var(--within-3) + var(--within-3) + var(--within-3) + var(--within-3) + var(--within-3) + var(--within-3) + var(--within-3) + var(--within-3) + var(--within-3) + var(--within-3) + var(--within-3);
+  --within-3: 1px;
   --small-color: var(--small-color-2);
   --small-color-2: #123456;
   --small-radius: calc(var(--small-radius-2) + var(--small-radius-2));
