@@ -585,6 +585,90 @@ defmodule HeexLint.HostileInputTest do
       assert Theme.resolve_variables("var(--b)", deep.(50_000)) == nil
     end
 
+    # JavaScript's `.length` of the text Node reads, where a run of bytes it cannot decode
+    # is one U+FFFD. Each pair is what upstream's resolveVariables charges it.
+    test "spends UTF-16 units, not characters or bytes" do
+      for {text, units} <- [
+            {<<0x301::utf8>>, 1},
+            {<<"e", 0x301::utf8>>, 2},
+            {"\r\n", 2},
+            {<<0xE9::utf8>>, 1},
+            {<<0x20AC::utf8>>, 1},
+            {<<0x1F600::utf8>>, 2},
+            {<<0x80>>, 1},
+            {<<0xE2, 0x82>>, 1},
+            {<<0xF0, 0x9F, 0x98>>, 1},
+            {<<0xC0, 0x80>>, 2},
+            {<<0xED, 0xA0, 0x80>>, 3}
+          ] do
+        # A letter at each end, so that none of it trims away.
+        leaf = fn size ->
+          times = div(size - 2, units)
+          "x" <> repeat(text, times) <> repeat("y", size - 2 - times * units) <> "x"
+        end
+
+        assert Theme.resolve_variables("var(--a)", %{"a" => leaf.(99_999)}) == leaf.(99_999)
+        assert Theme.resolve_variables("var(--a)", %{"a" => leaf.(100_000)}) == nil
+      end
+    end
+
+    test "a value can take three bytes for each unit and still fit" do
+      for text <- [<<0x20AC::utf8>>, <<0xF0, 0x9F, 0x98>>] do
+        assert Theme.resolve_variables("var(--a)", %{"a" => repeat(text, 99_999)}) ==
+                 repeat(text, 99_999)
+
+        assert Theme.resolve_variables("var(--a)", %{"a" => repeat(text, 100_000)}) == nil
+      end
+    end
+
+    # One character to a count of characters, however many copies are made of its marks.
+    test "a letter with thousands of combining marks gives up like any other value" do
+      bottom = "a" <> repeat(<<0x301::utf8>>, 20_000)
+
+      assert quick(fn -> Theme.resolve_variables("var(--v0)", fan_out(10, 6, bottom)) end) == nil
+    end
+
+    test "a theme of those letters loads, with those values unresolved", %{tmp_dir: dir} do
+      levels =
+        Enum.map_join(0..5, " ", fn level ->
+          "--l#{level}: #{repeat("var(--l#{level + 1}) ", 10)};"
+        end)
+
+      theme =
+        quick(fn ->
+          load(dir, """
+          @theme {
+            --color-fan: var(--l0);
+            --color-ok: #111111;
+            --radius-fan: var(--l0);
+            --spacing: var(--l0);
+          }
+          :root { #{levels} --l6: a#{repeat(<<0x301::utf8>>, 20_000)}; }
+          """)
+        end)
+
+      refute Map.has_key?(theme.colors, "fan")
+      assert Map.has_key?(theme.colors, "ok")
+      refute Map.has_key?(Map.new(Theme.scale(theme, :radius)), "fan")
+      assert theme.spacing == nil
+    end
+
+    # Each token pays for it, and past the budget nothing needs to read it.
+    test "a value far past the budget costs what names it nothing", %{tmp_dir: dir} do
+      tokens = Enum.map_join(1..1000, " ", &"--color-t#{&1}: var(--big);")
+
+      for big <- [
+            repeat(<<0x20AC::utf8>>, 333_333),
+            "a" <> repeat(<<0x301::utf8>>, 500_000),
+            repeat(<<0x80>>, 1_000_000)
+          ] do
+        theme = quick(fn -> load(dir, "@theme { #{tokens} } :root { --big: #{big}; }") end)
+
+        assert MapSet.member?(theme.tokens, "t1000")
+        assert theme.colors == %{}
+      end
+    end
+
     test "a value with no reference spends nothing" do
       long = repeat("x", 200_000)
       assert Theme.resolve_variables(long, %{}) == long

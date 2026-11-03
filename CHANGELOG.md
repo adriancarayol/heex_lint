@@ -25,8 +25,8 @@
   other. **This changes findings on such a class only:** `bg-red-500/[a[b]` is an
   undeclared color rather than a palette class, and `bg-primary/[a[b]`, which had no
   finding, is now reported as one.
-- A theme variable stops resolving once its value would grow past 100,000 characters, as
-  in @shadcn/lint, and is unresolved like one with no value. A kilobyte of `var()` naming
+- A theme variable stops resolving once its value would grow past 100,000 UTF-16 units,
+  as in @shadcn/lint, and is unresolved like one with no value. A kilobyte of `var()` naming
   `var()` 16 times over six levels took 15 seconds to load, and takes milliseconds.
 - A theme value with more than about 4,500 spaces inside it was dropped without a word,
   by a limit in the regex engine, and is now read, as in @shadcn/lint. **This can add

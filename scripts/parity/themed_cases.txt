@@ -184,3 +184,5 @@ bg-spaced
 bg-long-value
 bg-[#123456]
 bg-[#654321]
+rounded-line-breaks
+rounded-[1600px]

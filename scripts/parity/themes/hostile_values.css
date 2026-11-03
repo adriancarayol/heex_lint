@@ -2,7 +2,9 @@
 
 /* Values read past what any theme needs. Each level names the next ten times, so
    --l0 is a million copies of --l6 and both linters give up on it. The small chain
-   below it still resolves. */
+   below it still resolves. --line-breaks-1 is 1600px written with a line break pair
+   every few characters: about 145,000 UTF-16 units spent, which is past the budget,
+   and fewer than 100,000 if a pair counted as the one character it reads as. */
 @theme {
   --color-fan: var(--l0);
   --radius-fan: var(--l0);
@@ -14,6 +16,7 @@
   --color-spaced: var(--spaced);
   --color-long-value: var(--long-value);
   --color-unreadable: rgb(1e999 0 0);
+  --radius-line-breaks: calc(var(--line-breaks-1));
 }
 
 :root {
@@ -24,6 +27,19 @@
   --l4: var(--l5) var(--l5) var(--l5) var(--l5) var(--l5) var(--l5) var(--l5) var(--l5) var(--l5) var(--l5);
   --l5: var(--l6) var(--l6) var(--l6) var(--l6) var(--l6) var(--l6) var(--l6) var(--l6) var(--l6) var(--l6);
   --l6: 1px;
+  --line-breaks-1: var(--line-breaks-2) + var(--line-breaks-2) + var(--line-breaks-2) + var(--line-breaks-2) + var(--line-breaks-2) + var(--line-breaks-2) + var(--line-breaks-2) + var(--line-breaks-2) + var(--line-breaks-2) + var(--line-breaks-2) + var(--line-breaks-2) + var(--line-breaks-2) + var(--line-breaks-2) + var(--line-breaks-2) + var(--line-breaks-2) + var(--line-breaks-2) + var(--line-breaks-2) + var(--line-breaks-2) + var(--line-breaks-2) + var(--line-breaks-2) + var(--line-breaks-2) + var(--line-breaks-2) + var(--line-breaks-2) + var(--line-breaks-2) + var(--line-breaks-2) + var(--line-breaks-2) + var(--line-breaks-2) + var(--line-breaks-2) + var(--line-breaks-2) + var(--line-breaks-2) + var(--line-breaks-2) + var(--line-breaks-2) + var(--line-breaks-2) + var(--line-breaks-2) + var(--line-breaks-2) + var(--line-breaks-2) + var(--line-breaks-2) + var(--line-breaks-2) + var(--line-breaks-2) + var(--line-breaks-2);
+  --line-breaks-2: var(--line-breaks-3) + var(--line-breaks-3) + var(--line-breaks-3) + var(--line-breaks-3) + var(--line-breaks-3) + var(--line-breaks-3) + var(--line-breaks-3) + var(--line-breaks-3) + var(--line-breaks-3) + var(--line-breaks-3) + var(--line-breaks-3) + var(--line-breaks-3) + var(--line-breaks-3) + var(--line-breaks-3) + var(--line-breaks-3) + var(--line-breaks-3) + var(--line-breaks-3) + var(--line-breaks-3) + var(--line-breaks-3) + var(--line-breaks-3) + var(--line-breaks-3) + var(--line-breaks-3) + var(--line-breaks-3) + var(--line-breaks-3) + var(--line-breaks-3) + var(--line-breaks-3) + var(--line-breaks-3) + var(--line-breaks-3) + var(--line-breaks-3) + var(--line-breaks-3) + var(--line-breaks-3) + var(--line-breaks-3) + var(--line-breaks-3) + var(--line-breaks-3) + var(--line-breaks-3) + var(--line-breaks-3) + var(--line-breaks-3) + var(--line-breaks-3) + var(--line-breaks-3) + var(--line-breaks-3);
+  --line-breaks-3: 1px
+
+
+
+
+
+
+
+
+
++ 0px;
   --small-color: var(--small-color-2);
   --small-color-2: #123456;
   --small-radius: calc(var(--small-radius-2) + var(--small-radius-2));

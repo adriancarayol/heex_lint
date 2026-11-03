@@ -835,8 +835,8 @@ defmodule HeexLint.Theme do
 
   # Far past any real theme value. A value that names a variable k times, each
   # naming another k times, grows as k^6 through six levels: k = 10 builds 4 MB and
-  # k = 16 takes seconds to. Every substitution spends its length and one more from
-  # a budget shared by the whole resolution.
+  # k = 16 takes seconds to. Every substitution spends its length in UTF-16 units and
+  # one more from a budget shared by the whole resolution.
   @resolve_budget 100_000
 
   @doc false
@@ -878,7 +878,7 @@ defmodule HeexLint.Theme do
 
       inner ->
         {resolved, left} = resolve_within(String.trim(inner), values, depth + 1, left)
-        left = left - 1 - if(resolved, do: String.length(resolved), else: 0)
+        left = if resolved, do: spend(resolved, left - 1), else: left - 1
 
         if resolved == nil or left < 0 do
           {nil, left}
@@ -889,6 +889,20 @@ defmodule HeexLint.Theme do
         end
     end
   end
+
+  # What remains once `text` is paid for at JavaScript's `.length`: UTF-16 units, of the
+  # text Node reads, where each run of bytes it cannot decode is one U+FFFD. Characters
+  # will not do: one letter with any number of combining marks would cost 1, and every
+  # substitution copies all of them. No unit takes more than three bytes, so a text past
+  # three times what remains is over without reading it.
+  defp spend(text, left) when byte_size(text) > 3 * left, do: -1
+  defp spend(text, left), do: spend_units(text, left)
+
+  defp spend_units(<<char::utf8, rest::binary>>, left),
+    do: spend_units(rest, left - if(char > 0xFFFF, do: 2, else: 1))
+
+  defp spend_units(<<>>, left), do: left
+  defp spend_units(rest, left), do: rest |> String.replace_invalid() |> spend_units(left)
 
   defp colors_of(theme) do
     for token <- theme.tokens,
