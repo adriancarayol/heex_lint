@@ -31,6 +31,11 @@
 - A theme variable stops resolving once its value would grow past 100,000 UTF-16 units,
   as in @shadcn/lint, and is unresolved like one with no value. A kilobyte of `var()` naming
   `var()` 16 times over six levels took 15 seconds to load, and takes milliseconds.
+- A theme reads each variable once, where a long `var()` fallback was read again at every
+  reference. A 300 KB stylesheet that named one 20,000 times took 3 seconds per token to
+  load, and with 500 tokens takes 50 milliseconds. No findings change, except that bytes
+  that are not UTF-8 cut apart by a `var()` count as Node reads them, which only matters
+  right at the budget.
 - A theme value with more than about 4,500 spaces inside it was dropped without a word,
   by a limit in the regex engine, and is now read, as in @shadcn/lint. **This can add
   findings** where that value was what a token or step named.

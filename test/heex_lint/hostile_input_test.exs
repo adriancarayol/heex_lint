@@ -734,6 +734,158 @@ defmodule HeexLint.HostileInputTest do
       end
     end
 
+    # Bytes a reference cuts apart stay apart, as Node decoded the file before reading it:
+    # <<0xE2>> and <<0x82, 0xAC>> are three units, not the euro sign they join into.
+    test "spends what each piece of a value is, not what the pieces join into" do
+      values = fn times ->
+        %{"a" => <<0x82, 0xAC>>, "b" => repeat(<<0xE2>> <> "var(--a)", times)}
+      end
+
+      assert Theme.resolve_variables("var(--b)", values.(16_666)) ==
+               repeat(<<0xE2, 0x82, 0xAC>>, 16_666)
+
+      assert Theme.resolve_variables("var(--b)", values.(16_667)) == nil
+    end
+
+    test "a variable named again spends what it spent the first time" do
+      values = fn size -> %{"b" => "var(--a)", "a" => repeat("x", size)} end
+
+      # 1 + size to read --a, and 1 + size for the reference to --b, twice.
+      assert Theme.resolve_variables("var(--b)var(--b)", values.(24_999)) == repeat("x", 49_998)
+      assert Theme.resolve_variables("var(--b)var(--b)", values.(25_000)) == nil
+
+      # What surrounds a reference counts when the value holding it is substituted.
+      around = fn size -> %{"b" => "y var(--a) z", "a" => repeat("x", size)} end
+      assert byte_size(Theme.resolve_variables("var(--b)", around.(49_997))) == 50_001
+      assert Theme.resolve_variables("var(--b)", around.(49_998)) == nil
+    end
+
+    test "a fallback belongs to the reference that holds it" do
+      values = %{"a" => "1px"}
+
+      assert Theme.resolve_variables("var(--missing, 1px) var(--missing, 2px)", values) ==
+               "1px 2px"
+
+      assert Theme.resolve_variables("var(--a, 2px) var(--a, 3px)", values) == "1px 1px"
+      assert Theme.resolve_variables("var(--missing, 1px) var(--missing)", values) == nil
+    end
+
+    # --shared is read at the seventh level through the chain, where a value with a
+    # reference left in it is too deep, and at the first level on its own.
+    test "a variable too deep on one route is not on another" do
+      values =
+        fan_out(1, 5, "var(--shared)") |> Map.merge(%{"shared" => "var(--leaf)", "leaf" => "1px"})
+
+      assert Theme.resolve_variables("var(--shared)", values) == "1px"
+      assert Theme.resolve_variables("var(--v0)", values) == nil
+      assert Theme.resolve_variables("var(--shared) var(--v0)", values) == nil
+      assert Theme.resolve_variables("var(--v0) var(--shared)", values) == nil
+    end
+
+    test "a theme's tokens read a variable by their own route, in either order", %{tmp_dir: dir} do
+      chain = fn prefix, shared ->
+        Enum.map_join(0..5, " ", fn level ->
+          next = if level == 5, do: shared, else: "#{prefix}#{level + 1}"
+          "--#{prefix}#{level}: var(--#{next});"
+        end)
+      end
+
+      theme =
+        load(dir, """
+        @theme {
+          --color-a-shallow: var(--first-shared);
+          --color-b-deep: var(--first0);
+          --color-c-deep: var(--last0);
+          --color-d-shallow: var(--last-shared);
+          --radius-shallow: var(--size-shared);
+          --radius-deep: var(--size0);
+          --radius-deep-first: var(--other0);
+          --radius-shallow-after: var(--other-shared);
+        }
+        :root {
+          #{chain.("first", "first-shared")}
+          #{chain.("last", "last-shared")}
+          #{chain.("size", "size-shared")}
+          #{chain.("other", "other-shared")}
+          --first-shared: var(--leaf);
+          --last-shared: var(--leaf);
+          --size-shared: var(--size-leaf);
+          --other-shared: var(--size-leaf);
+          --leaf: #123456;
+          --size-leaf: 3px;
+        }
+        """)
+
+      assert theme.colors |> Map.keys() |> Enum.sort() == ["a-shallow", "d-shallow"]
+
+      radius = Map.new(Theme.scale(theme, :radius))
+      assert radius["shallow"] == 3.0
+      assert radius["shallow-after"] == 3.0
+      refute Map.has_key?(radius, "deep")
+      refute Map.has_key?(radius, "deep-first")
+    end
+
+    # A reference spends what it yields, 4 units each here, while a read of --pad scans
+    # 100 KB. Reading it again at each reference took 3 s per token.
+    defp long_fallback(references) do
+      """
+      --k: 1;
+      --pad: var(--k, #{repeat("a", 100_000)});
+      --top: #{repeat("var(--pad) ", references)};
+      """
+    end
+
+    test "a long fallback costs one read, whatever names it and however often", %{tmp_dir: dir} do
+      names = fn prefix -> Enum.map_join(1..5000, " ", &"--#{prefix}-t#{&1}: var(--top);") end
+
+      theme =
+        quick(fn ->
+          load(dir, """
+          @theme {
+            #{names.("color")}
+            #{names.("radius")}
+            #{names.("text")}
+            --color-ok: #111111;
+            --radius-ok: 9px;
+          }
+          :root { #{long_fallback(20_000)} }
+          """)
+        end)
+
+      assert MapSet.member?(theme.tokens, "t5000")
+      assert Map.keys(theme.colors) == ["ok"]
+      refute Map.has_key?(Map.new(Theme.scale(theme, :radius)), "t5000")
+      assert Map.new(Theme.scale(theme, :radius))["ok"] == 9.0
+    end
+
+    # Each token has the whole budget, and spends 48,000 reading --pad.
+    test "a long fallback that fits resolves for every token that names it", %{tmp_dir: dir} do
+      values =
+        %{"k" => "1px", "pad" => "var(--k, #{repeat("a", 100_000)})"}
+        |> Map.put("top", "calc(#{repeat("var(--pad) + ", 6000)}0px)")
+
+      resolved = quick(fn -> Theme.resolve_variables("var(--top)", values) end)
+      assert resolved == "calc(#{repeat("1px + ", 6000)}0px)"
+
+      names = Enum.map_join(1..100, " ", &"--radius-t#{&1}: var(--top);")
+
+      theme =
+        quick(fn ->
+          load(dir, """
+          @theme { #{names} --spacing: var(--top); }
+          :root {
+            --k: 1px;
+            --pad: #{values["pad"]};
+            --top: #{values["top"]};
+          }
+          """)
+        end)
+
+      radius = Map.new(Theme.scale(theme, :radius))
+      assert for(i <- 1..100, do: radius["t#{i}"]) == List.duplicate(6000.0, 100)
+      assert theme.spacing == 6000.0
+    end
+
     test "a value with no reference spends nothing" do
       long = repeat("x", 200_000)
       assert Theme.resolve_variables(long, %{}) == long

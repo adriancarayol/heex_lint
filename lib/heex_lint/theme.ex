@@ -843,77 +843,123 @@ defmodule HeexLint.Theme do
   # Resolves var() references against `values`; nil when a variable has no value
   # and no fallback, or when resolving the value would spend more than the budget.
   def resolve_variables(value, values, depth \\ 0) do
-    {resolved, _left} = resolve_within(value, values, depth, @resolve_budget)
+    {resolved, _known} = resolve_known(value, values, %{}, depth)
     resolved
   end
 
-  defp resolve_within(value, values, depth, left) do
+  # The budget pays for what a substitution yields, not for the text read to get there:
+  # `--pad: var(--k, ...)` with a fallback of 100 KB, named 20,000 times, reads 2 GB for
+  # 80,000 units. So `known` keeps what each variable comes to, per level since a level
+  # can be too deep, and a theme's values read against the same `values` share it.
+  #
+  # That leaves the results as they were. A resolution stops at the first failure and
+  # all it returns then is nil, so a variable either fails from any budget, or spends the
+  # same amount from any budget and fits or does not. A read is `{text, units, spent}`,
+  # or nil when it fails from a full budget. `text` is iodata, because a copy of each
+  # result is up to 300 KB kept per variable.
+  defp resolve_known(value, values, known, depth \\ 0) do
+    case read_value(value, values, depth, known) do
+      {nil, known} -> {nil, known}
+      {{text, _units, _spent}, known} -> {IO.iodata_to_binary(text), known}
+    end
+  end
+
+  defp read_value(value, values, depth, known) do
     cond do
       not String.contains?(value, "var(") ->
-        {value, left}
+        {{value, units(value), 0}, known}
 
       depth > 6 ->
-        {nil, left}
+        {nil, known}
 
       true ->
         ~r/var\(\s*--([\w-]+)\s*(?:,\s*([^()]*(?:\([^()]*\)[^()]*)*))?\)/
         |> Regex.scan(value, return: :index)
-        |> substitute(value, values, depth, left, 0, [])
+        |> substitute(value, values, depth, known, {0, [], 0, 0})
     end
   end
 
-  defp substitute([], value, _values, _depth, left, from, parts) do
+  defp substitute([], value, _values, _depth, known, {from, parts, units, spent}) do
     rest = binary_part(value, from, byte_size(value) - from)
-    {IO.iodata_to_binary(Enum.reverse([rest | parts])), left}
+    {{Enum.reverse([rest | parts]), units + units(rest), spent}, known}
   end
 
   # Left to right, stopping at the first that fails: what follows one past the
   # budget would only spend more.
-  defp substitute([[{start, length} | groups] | matches], value, values, depth, left, from, parts) do
+  defp substitute(
+         [[{start, length} | groups] | matches],
+         value,
+         values,
+         depth,
+         known,
+         {from, parts, units, spent}
+       ) do
     [name | rest] = Enum.map(groups, fn {s, l} -> if s >= 0, do: binary_part(value, s, l) end)
 
-    case Map.get(values, name, List.first(rest)) do
-      nil ->
-        {nil, left}
+    case read_reference(name, List.first(rest), values, depth + 1, known) do
+      {nil, known} ->
+        {nil, known}
 
-      inner ->
-        {resolved, left} = resolve_within(String.trim(inner), values, depth + 1, left)
-        left = if resolved, do: spend(resolved, left - 1), else: left - 1
+      {{text, text_units, text_spent}, known} ->
+        spent = spent + text_spent + 1 + text_units
 
-        if resolved == nil or left < 0 do
-          {nil, left}
+        if spent > @resolve_budget do
+          {nil, known}
         else
           before = binary_part(value, from, start - from)
-          parts = [resolved, before | parts]
-          substitute(matches, value, values, depth, left, start + length, parts)
+
+          read =
+            {start + length, [text, before | parts], units + units(before) + text_units, spent}
+
+          substitute(matches, value, values, depth, known, read)
         end
     end
   end
 
-  # What remains once `text` is paid for at JavaScript's `.length`: UTF-16 units, of the
-  # text Node reads, where each run of bytes it cannot decode is one U+FFFD. Characters
-  # will not do: one letter with any number of combining marks would cost 1, and every
-  # substitution copies all of them. No unit takes more than three bytes, so a text past
-  # three times what remains is over without reading it.
-  defp spend(text, left) when byte_size(text) > 3 * left, do: -1
-  defp spend(text, left), do: spend_units(text, left)
+  # A fallback is part of the value that holds it, which is read once.
+  defp read_reference(name, fallback, values, depth, known) do
+    case {Map.fetch(known, {name, depth}), Map.fetch(values, name)} do
+      {{:ok, read}, _value} ->
+        {read, known}
 
-  defp spend_units(<<char::utf8, rest::binary>>, left),
-    do: spend_units(rest, left - if(char > 0xFFFF, do: 2, else: 1))
+      {:error, {:ok, value}} ->
+        {read, known} = read_value(String.trim(value), values, depth, known)
+        {read, Map.put(known, {name, depth}, read)}
 
-  defp spend_units(<<>>, left), do: left
-  defp spend_units(rest, left), do: rest |> String.replace_invalid() |> spend_units(left)
+      {:error, :error} when fallback == nil ->
+        {nil, known}
+
+      {:error, :error} ->
+        read_value(String.trim(fallback), values, depth, known)
+    end
+  end
+
+  # JavaScript's `.length`: UTF-16 units, of the text Node reads, where each run of bytes
+  # it cannot decode is one U+FFFD. Characters will not do: one letter with any number of
+  # combining marks would cost 1, and every substitution copies all of them. No unit takes
+  # more than three bytes, so a text past three times the budget is over without reading it.
+  defp units(text) when byte_size(text) > 3 * @resolve_budget, do: @resolve_budget + 1
+  defp units(text), do: count_units(text, 0)
+
+  defp count_units(<<char::utf8, rest::binary>>, count),
+    do: count_units(rest, count + if(char > 0xFFFF, do: 2, else: 1))
+
+  defp count_units(<<>>, count), do: count
+  defp count_units(rest, count), do: rest |> String.replace_invalid() |> count_units(count)
 
   defp colors_of(theme) do
-    for token <- theme.tokens,
-        raw = Map.get(theme.values, "color-" <> token),
-        raw != nil,
-        resolved = resolve_variables(raw, theme.values),
-        resolved != nil,
-        lab = Colors.parse(resolved),
-        lab != nil,
-        into: %{},
-        do: {token, lab}
+    {colors, _known} =
+      for token <- theme.tokens,
+          raw = Map.get(theme.values, "color-" <> token),
+          raw != nil,
+          reduce: {%{}, %{}} do
+        {colors, known} ->
+          {resolved, known} = resolve_known(raw, theme.values, known)
+          lab = resolved && Colors.parse(resolved)
+          {if(lab, do: Map.put(colors, token, lab), else: colors), known}
+      end
+
+    colors
   end
 
   defp default_scale(kind) do
@@ -940,22 +986,22 @@ defmodule HeexLint.Theme do
       |> Enum.with_index(fn {name, px}, order -> {name, {order, px}} end)
       |> Map.new()
 
-    {steps, _next} =
-      Enum.reduce(theme.declarations, {declared, map_size(declared)}, fn
+    {steps, _next, _known} =
+      Enum.reduce(theme.declarations, {declared, map_size(declared), %{}}, fn
         %{theme: false}, read ->
           read
 
-        %{name: "*", value: value}, read ->
-          if String.trim(value) == "initial", do: {%{}, elem(read, 1)}, else: read
+        %{name: "*", value: value}, {_steps, next, known} = read ->
+          if String.trim(value) == "initial", do: {%{}, next, known}, else: read
 
-        %{name: name, value: value}, {steps, next} = read ->
+        %{name: name, value: value}, {steps, next, known} = read ->
           if String.starts_with?(name, prefix) and not String.contains?(name, "--") do
             step = String.slice(name, String.length(prefix)..-1//1)
             reset = String.trim(value) == "initial"
 
             cond do
-              step == "*" -> if reset, do: {%{}, next}, else: read
-              reset -> {Map.delete(steps, step), next}
+              step == "*" -> if reset, do: {%{}, next, known}, else: read
+              reset -> {Map.delete(steps, step), next, known}
               true -> scale_step(read, step, value, theme.values)
             end
           else
@@ -968,17 +1014,14 @@ defmodule HeexLint.Theme do
     |> Enum.map(fn {name, {_order, px}} -> {name, px} end)
   end
 
-  defp scale_step({steps, next}, step, value, values) do
-    px =
-      case resolve_variables(value, values) do
-        nil -> nil
-        resolved -> Lengths.px(resolved)
-      end
+  defp scale_step({steps, next, known}, step, value, values) do
+    {resolved, known} = resolve_known(value, values, known)
+    px = resolved && Lengths.px(resolved)
 
     case {px, steps} do
-      {nil, steps} -> {Map.delete(steps, step), next}
-      {px, %{^step => {order, _old}}} -> {Map.put(steps, step, {order, px}), next}
-      {px, steps} -> {Map.put(steps, step, {next, px}), next + 1}
+      {nil, steps} -> {Map.delete(steps, step), next, known}
+      {px, %{^step => {order, _old}}} -> {Map.put(steps, step, {order, px}), next, known}
+      {px, steps} -> {Map.put(steps, step, {next, px}), next + 1, known}
     end
   end
 
