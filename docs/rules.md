@@ -54,7 +54,8 @@ An omitted `allow` and an empty `allow` differ when `deny` is present:
 The policy only affects what the rule checks: `deny: ["bg-primary"]` does
 not make a declared token a raw color, class exceptions do not bypass SVG
 attribute checks, and property exceptions do not bypass `<style>` or
-dynamic-style checks.
+dynamic-style checks. For a style value a library computes, see
+[dynamic style identifiers](#dynamic-style-identifiers).
 
 In `no_raw_colors`, `transparent`, `current` and `inherit` are always accepted.
 `white` and `black` are accepted too, since Tailwind declares them in every
@@ -229,3 +230,66 @@ A scale your `@theme` declares joins the grammar: `--radius-card` makes
 unclassified until the theme declares it again.
 
 The complete mapping is `HeexLint.Grammar.Categories`.
+
+## Dynamic style identifiers
+
+`no_inline_styles` reports a `style` value it cannot read. Some are computed by a
+library, such as the position a floating element needs. Name them to allow them:
+
+```elixir
+no_inline_styles: {:error, allow_dynamic_identifiers: ["@floating_styles", "styles.popper"]}
+```
+
+```heex
+<%!-- Allowed. --%>
+<div style={@floating_styles} />
+
+<%!-- Allowed, and color is still checked. --%>
+<div style={[@floating_styles, "color: red"]} />
+
+<%!-- Reported: another value. --%>
+<div style={@other_styles} />
+```
+
+A name matches the read spelled the same way and nothing else, on any element or
+component, in a `style` attribute or a map or keyword list spread onto a tag
+(`{%{style: @floating_styles}}`):
+
+| Name                      | Matches                                                                                                  |
+| ------------------------- | -------------------------------------------------------------------------------------------------------- |
+| `@floating_styles`        | `@floating_styles`: an assign in a template, a module attribute in a function body.                      |
+| `assigns.floating_styles` | `assigns.floating_styles`, `assigns[:floating_styles]`, and `Map.get` or `Map.fetch!` on `assigns`.      |
+| `floating_styles`         | That variable, however it is bound: in the function, in the function's head, by `:for` or `:let`.        |
+| `styles.popper`           | That exact path, also as `styles[:popper]` or with `Map.get`, `Map.fetch!`, `Keyword.get`, `Keyword.fetch!`. `@styles.popper` and `assigns.styles.popper` work the same way. |
+| `Floating.styles`         | A call to that function with the module as written, with any arguments or piped into.                    |
+
+The spellings do not cover each other: `@floating_styles` is not
+`assigns.floating_styles`, `styles` is not `styles.popper`, and `Floating.styles` is
+not `MyApp.Floating.styles`. These have no name, so they stay reported: a local or
+imported call such as `floating_styles()`, a string key such as `styles["popper"]`, a
+computed key, and what a call returns, such as `Floating.styles(@anchor).popper`.
+
+What the name holds decides the rest:
+
+- A value written out where the name is bound is still checked, since it can be read:
+  a string, `<>`, a sigil, a list, or a map, which stays reported as dynamic.
+  `floating_styles = "color: red"` is reported.
+- Any other value is exempt along with everything it goes on to read, literals
+  included: `floating_styles = if assigns.open, do: "color: red", else: Floating.compute()`
+  and an alias of another name both report nothing under `floating_styles`. So does a
+  name bound more than once.
+- Anything on the way counts. With `styles = Floating.compute()`, a `style={styles}`
+  is allowed by `styles` or by `Floating.compute`.
+- A value reached another way is still reported: with `allow_dynamic_identifiers:
+  ["a"]`, `a = x`, `b = x` and `style={if @on, do: a, else: b}`, `x` is reported through
+  `b`.
+
+The option does not reach holes or forwarded styles. A hole, as in
+`"--tone: #{tone}"`, is never reported for being unreadable, and a raw color in one is
+reported whatever `tone` is called. A function component's received `style` is
+already allowed, and its `attr` default is checked even if `@style` is listed, so an
+unreadable default goes by its own name.
+
+Entries must be strings shaped like these names. Anything else, such as
+`assigns[:floating_styles]` or `Floating.styles()`, is a configuration error, since it
+would match nothing. The option applies to the whole rule; a contract cannot set it.

@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- New `allow_dynamic_identifiers` option on `no_inline_styles`, as in @shadcn/lint: style
+  values a library computes, by the name the code reads them under, such as
+  `@floating_styles`, `floating_styles`, `assigns.floating_styles`, `styles.popper` or
+  `Floating.styles`. A name matches the read spelled the same way, in a `style`
+  attribute or a map spread onto a tag. A value written out where the name is bound is
+  still checked; any other value is exempt with whatever it goes on to read. Anything
+  but a list of such names is a configuration error. **This adds no findings:** it only
+  removes the ones you name, and nothing changes without the option.
 - The theme read resolves a package `@import` as @shadcn/lint's does. `exports` reads
   the conditions `import`, `default`, `require`, `node`, `types` and then the others as
   written, where it read `style` and then `default`. It also reads array targets, the

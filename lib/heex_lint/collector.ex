@@ -25,13 +25,19 @@ defmodule HeexLint.Collector do
   route, since it could read more from another one. A style has no such limit: its
   value is read however far away it is, and what a hole in it can hold is looked
   at for raw colors the same way.
+
+  A style also keeps what its reads were called (`reads`), since which names count
+  as a library's computed styles is a rule option, and sites are collected for
+  every rule. `outside_names/2` is how the rule asks.
   """
 
   alias HeexLint.Code
   alias HeexLint.Project
   alias HeexLint.Project.{Component, ModuleInfo}
 
-  defstruct strings: [], unresolved: []
+  @no_reads %{within: %{}, names: %{}, at: %{}}
+
+  defstruct strings: [], unresolved: [], reads: @no_reads
 
   @type item ::
           {:char, String.t(), {pos_integer(), pos_integer()}}
@@ -40,17 +46,35 @@ defmodule HeexLint.Collector do
   @typedoc """
   A string the value can produce. `literal` locates its text in the file,
   for suggestions that rewrite it: nil when its source text differs from
-  its value (escapes, heredocs, interpolation).
+  its value (escapes, heredocs, interpolation). A string of a style also
+  says which read reached it (`read`).
   """
   @type string_value :: %{
-          value: String.t(),
-          items: [item()],
-          holes: %{{pos_integer(), pos_integer()} => [String.t()]},
-          literal:
-            %{file: String.t(), from: {pos_integer(), pos_integer()}, raw: String.t()} | nil
+          required(:value) => String.t(),
+          required(:items) => [item()],
+          required(:holes) => %{{pos_integer(), pos_integer()} => [String.t()]},
+          required(:literal) =>
+            %{file: String.t(), from: {pos_integer(), pos_integer()}, raw: String.t()} | nil,
+          optional(:read) => term()
         }
 
-  @type t :: %__MODULE__{strings: [string_value()], unresolved: [{pos_integer(), pos_integer()}]}
+  @typedoc """
+  How a style value's reads hang together, as `outside_names/2` needs them: what
+  each read went on to read (`within`, from the value itself, `:value`), what a read
+  is called (`names`, on the reads a name can exempt), and which read reached each
+  unresolved position under what name (`at`). Empty for a class.
+  """
+  @type reads :: %{
+          within: %{term() => MapSet.t(term())},
+          names: %{term() => String.t()},
+          at: %{{pos_integer(), pos_integer()} => MapSet.t({term(), String.t() | nil})}
+        }
+
+  @type t :: %__MODULE__{
+          strings: [string_value()],
+          unresolved: [{pos_integer(), pos_integer()}],
+          reads: reads()
+        }
 
   # How many bindings a route to a class follows before the next one is
   # unreadable, the way a dynamic value is. No written chain of aliases is this
@@ -93,6 +117,58 @@ defmodule HeexLint.Collector do
 
       {:error, _} ->
         %__MODULE__{unresolved: [position]}
+    end
+  end
+
+  @doc """
+  What a style value is left with when the reads called one of `names` are exempt,
+  for `allow_dynamic_identifiers`. As in @shadcn/lint, such a read says nothing,
+  and neither does what it went on to read, unless another route reaches that too.
+  A read whose value is written out where it is bound has no name to be exempted by,
+  so what it says still counts.
+  """
+  @spec outside_names(
+          %{
+            :strings => [string_value()],
+            :unresolved => [{pos_integer(), pos_integer()}],
+            :reads => reads(),
+            optional(atom()) => term()
+          },
+          MapSet.t(String.t())
+        ) :: {[string_value()], [{pos_integer(), pos_integer()}]}
+  def outside_names(%{strings: strings, unresolved: unresolved, reads: reads}, names) do
+    if MapSet.size(names) == 0 do
+      {strings, unresolved}
+    else
+      live = live_reads([:value], MapSet.new([:value]), reads, names)
+
+      {Enum.filter(strings, &MapSet.member?(live, Map.get(&1, :read, :value))),
+       Enum.filter(unresolved, &position_live?(&1, reads, live, names))}
+    end
+  end
+
+  defp live_reads([], live, _reads, _names), do: live
+
+  defp live_reads([read | rest], live, reads, names) do
+    next =
+      for inner <- Map.get(reads.within, read, []),
+          not MapSet.member?(live, inner),
+          not MapSet.member?(names, Map.get(reads.names, inner)),
+          do: inner
+
+    live_reads(next ++ rest, Enum.into(next, live), reads, names)
+  end
+
+  # A position with no read behind it could not be parsed, so nothing names it.
+  defp position_live?(position, reads, live, names) do
+    case Map.get(reads.at, position) do
+      nil ->
+        true
+
+      reached ->
+        Enum.any?(reached, fn {read, name} ->
+          MapSet.member?(live, read) and not MapSet.member?(names, name)
+        end)
     end
   end
 
@@ -231,14 +307,18 @@ defmodule HeexLint.Collector do
       rereads: 0,
       strings: [],
       unresolved: [],
-      map_keys: nil
+      map_keys: nil,
+      read: :value,
+      reads: @no_reads,
+      naming: nil
     }
   end
 
   defp result(state) do
     %__MODULE__{
       strings: Enum.reverse(state.strings),
-      unresolved: Enum.uniq(Enum.reverse(state.unresolved))
+      unresolved: Enum.uniq(Enum.reverse(state.unresolved)),
+      reads: state.reads
     }
   end
 
@@ -333,11 +413,11 @@ defmodule HeexLint.Collector do
   # assigns.name, assigns[:name]
   defp visit(state, {{:., _, [{:assigns, _, ctx}, name]}, meta, []})
        when is_atom(ctx) and is_atom(name),
-       do: received(state, Atom.to_string(name), meta)
+       do: received(state, Atom.to_string(name), meta, "assigns.#{name}")
 
   defp visit(state, {{:., _, [Access, :get]}, meta, [{:assigns, _, ctx}, name]})
        when is_atom(ctx) and is_atom(name),
-       do: received(state, Atom.to_string(name), meta)
+       do: received(state, Atom.to_string(name), meta, "assigns.#{name}")
 
   # A variable.
   defp visit(state, {name, meta, ctx}) when is_atom(name) and is_atom(ctx),
@@ -358,7 +438,7 @@ defmodule HeexLint.Collector do
          {{:., _, [{:__aliases__, _, [:Map]}, fun]}, meta, [{:assigns, _, ctx}, key | rest]}
        )
        when fun in [:get, :fetch!] and is_atom(ctx) and is_atom(key) do
-    state = received(state, Atom.to_string(key), meta)
+    state = received(state, Atom.to_string(key), meta, "assigns.#{key}")
     if rest != [], do: visit(state, hd(rest)), else: state
   end
 
@@ -484,13 +564,78 @@ defmodule HeexLint.Collector do
 
   defp push(state, value, items, literal, holes \\ %{}) do
     string = %{value: value, items: items, literal: literal, holes: holes}
+    string = if state.kind == :style, do: Map.put(string, :read, state.read), else: string
     %{state | strings: [string | state.strings]}
   end
 
-  defp unresolved(state, meta) do
+  # `written` is what the code calls the unreadable value, if it names it.
+  defp unresolved(state, meta, written \\ nil) do
     position = if meta, do: locate(state, meta), else: nil
-    if position, do: %{state | unresolved: [position | state.unresolved]}, else: state
+
+    if position,
+      do: reached(%{state | unresolved: [position | state.unresolved]}, position, written),
+      else: state
   end
+
+  ## What reads are called
+
+  defp reached(%{kind: :style, reads: reads} = state, position, written) do
+    entry = {state.read, written}
+    at = Map.update(reads.at, position, MapSet.new([entry]), &MapSet.put(&1, entry))
+    %{state | reads: %{reads | at: at}}
+  end
+
+  defp reached(state, _position, _written), do: state
+
+  # What the next read is called, as `allow_dynamic_identifiers` spells it. A value
+  # written out where it is bound can still be read, so no name exempts it, as
+  # @shadcn/lint still checks an object literal.
+  defp named(%{kind: :style} = state, written, values) do
+    %{state | naming: if(not written_out?(values), do: written)}
+  end
+
+  defp named(state, _written, _values), do: state
+
+  defp written_out?([{:__block__, _, [text]}]) when is_binary(text), do: true
+  defp written_out?([{:<<>>, _, parts}]) when is_list(parts), do: true
+  defp written_out?([{:<>, _, [_, _]}]), do: true
+  defp written_out?([{:%{}, _, entries}]) when is_list(entries), do: true
+  defp written_out?([{sigil, _, _}]) when sigil in [:sigil_s, :sigil_S, :sigil_w], do: true
+  defp written_out?([list]) when is_list(list), do: true
+  defp written_out?(_values), do: false
+
+  defp link(%{kind: :style, reads: reads} = state, read) do
+    within = Map.update(reads.within, state.read, MapSet.new([read]), &MapSet.put(&1, read))
+    names = if state.naming, do: Map.put(reads.names, read, state.naming), else: reads.names
+    %{state | reads: %{reads | within: within, names: names}, naming: nil}
+  end
+
+  defp link(state, _read), do: state
+
+  # `styles.popper`, which `styles[:popper]` and `Map.get(styles, :popper)` also
+  # read. A path starts at a variable or `@name`, not at what a call returns.
+  defp path_name(map, key) when is_atom(key) and key not in [nil, true, false] do
+    if root = root_name(map), do: root <> "." <> Atom.to_string(key)
+  end
+
+  defp path_name(_map, _key), do: nil
+
+  defp root_name({:@, _, [{name, _, ctx}]}) when is_atom(name) and is_atom(ctx),
+    do: "@" <> Atom.to_string(name)
+
+  defp root_name({name, _, ctx}) when is_atom(name) and is_atom(ctx), do: Atom.to_string(name)
+  defp root_name({{:., _, [map, key]}, _, []}), do: path_name(map, key)
+  defp root_name({{:., _, [Access, :get]}, _, [map, key]}), do: path_name(map, key)
+
+  defp root_name({{:., _, [{:__aliases__, _, [mod]}, fun]}, _, [map, key | _]})
+       when {mod, fun} in [{:Map, :get}, {:Map, :fetch!}, {:Keyword, :get}, {:Keyword, :fetch!}],
+       do: path_name(map, key)
+
+  defp root_name(_other), do: nil
+
+  # A function by its module as written. A local or imported call has no such name.
+  defp function_name(callee) when is_atom(callee), do: nil
+  defp function_name(callee), do: callee_name(callee)
 
   ## Names
 
@@ -502,13 +647,15 @@ defmodule HeexLint.Collector do
 
     with false <- MapSet.member?(state.seen, key),
          [_ | _] = values <- assigned_values(state.clause, name) do
-      hop(state, key, meta, fn state ->
+      state
+      |> named("@" <> name, values)
+      |> hop(key, meta, fn state ->
         state = %{state | mode: :body, text: body_text(state, meta)}
         Enum.reduce(values, state, &visit(&2, &1))
       end)
     else
       true -> stop(state)
-      _ -> received(state, name, meta)
+      _ -> received(state, name, meta, "@" <> name)
     end
   end
 
@@ -545,15 +692,15 @@ defmodule HeexLint.Collector do
   end
 
   # A prop the component received from its caller.
-  defp received(%{map_keys: keys} = state, name, meta) when is_list(keys),
+  defp received(%{map_keys: keys} = state, name, meta, _written) when is_list(keys),
     do: assign_in_module(state, name, meta)
 
-  defp received(state, name, meta) do
+  defp received(state, name, meta, written) do
     template = state.context[:template]
 
     cond do
       template && template.kind == :render ->
-        unresolved(state, meta)
+        unresolved(state, meta, written)
 
       forwarded?(state, name) ->
         # The incoming prop stays opaque; its default is authored here.
@@ -563,7 +710,7 @@ defmodule HeexLint.Collector do
         end
 
       true ->
-        unresolved(state, meta)
+        unresolved(state, meta, written)
     end
   end
 
@@ -598,21 +745,24 @@ defmodule HeexLint.Collector do
 
   defp variable(state, name, meta) do
     key = variable_key(state, name)
+    written = Atom.to_string(name)
 
     cond do
       MapSet.member?(state.seen, key) ->
-        state |> stop() |> unresolved(meta)
+        state |> stop() |> unresolved(meta, written)
 
       prop = head_binding(state.clause, name) ->
-        received(state, prop, meta)
+        received(state, prop, meta, written)
 
       values = bound_values(state.clause, name) ->
-        hop(state, key, meta, fn state ->
+        state
+        |> named(written, values)
+        |> hop(key, meta, fn state ->
           Enum.reduce(values, leave_template(state, meta), &visit(&2, &1))
         end)
 
       true ->
-        unresolved(state, meta)
+        unresolved(state, meta, written)
     end
   end
 
@@ -635,10 +785,12 @@ defmodule HeexLint.Collector do
     with false <- MapSet.member?(state.seen, key),
          %ModuleInfo{attributes: attributes} <- current_module(state),
          [_ | _] = values <- Map.get(attributes, name) do
-      hop(state, key, meta, fn state -> Enum.reduce(values, state, &visit(&2, &1)) end)
+      state
+      |> named("@" <> name, values)
+      |> hop(key, meta, fn state -> Enum.reduce(values, state, &visit(&2, &1)) end)
     else
-      true -> state |> stop() |> unresolved(meta)
-      _ -> unresolved(state, meta)
+      true -> state |> stop() |> unresolved(meta, "@" <> name)
+      _ -> unresolved(state, meta, "@" <> name)
     end
   end
 
@@ -659,21 +811,30 @@ defmodule HeexLint.Collector do
     this = {keys, how, clause_id(state.clause), state.kind}
     ended = Map.get(state.visited, this, MapSet.new())
     again? = MapSet.size(ended) > 0
+    name = state.naming
+    state = link(state, this)
 
     cond do
       past_limit?(state, 0) -> cut(state, meta)
       MapSet.member?(ended, :whole) -> state
       MapSet.member?(ended, state.depth) -> %{state | cuts: state.cuts + 1}
       MapSet.member?(ended, state.seen) -> stop(state)
-      again? and state.rereads >= @max_rereads -> cut(state, meta)
+      again? and state.rereads >= @max_rereads -> cut(state, meta, name)
       again? -> read(%{state | rereads: state.rereads + 1}, this, keys, fun)
       true -> read(state, this, keys, fun)
     end
   end
 
   defp read(state, this, keys, fun) do
-    saved = Map.take(state, [:mode, :text, :clause, :seen, :depth])
-    inner = fun.(%{state | seen: Enum.into(keys, state.seen), depth: state.depth + length(keys)})
+    saved = Map.take(state, [:mode, :text, :clause, :seen, :depth, :read])
+
+    inner =
+      fun.(%{
+        state
+        | seen: Enum.into(keys, state.seen),
+          depth: state.depth + length(keys),
+          read: this
+      })
 
     ended =
       cond do
@@ -691,7 +852,8 @@ defmodule HeexLint.Collector do
 
   defp stop(state), do: %{state | stops: state.stops + 1}
 
-  defp cut(state, meta), do: unresolved(%{state | cuts: state.cuts + 1}, meta)
+  defp cut(state, meta, written \\ nil),
+    do: unresolved(%{state | cuts: state.cuts + 1}, meta, written)
 
   defp current_module(state) do
     module = state.context[:module] || (state.context[:template] && state.context.template.module)
@@ -736,7 +898,7 @@ defmodule HeexLint.Collector do
           else: local_call(state, Atom.to_string(callee), arity, meta)
 
       true ->
-        unresolved(state, meta_of(node))
+        unresolved(state, meta_of(node), function_name(callee))
     end
   end
 
@@ -790,26 +952,31 @@ defmodule HeexLint.Collector do
   # A lookup reads the entry named by a literal key, or every entry when the
   # key is only known at runtime: the table is the set of classes it can pick.
   defp lookup(state, map, key, default, meta) do
+    written = path_name(map, key)
+
     case table(state, map, []) do
       nil ->
-        unresolved(state, meta)
+        unresolved(state, meta, written)
 
       :stopped ->
-        state |> stop() |> unresolved(meta)
+        state |> stop() |> unresolved(meta, written)
 
       :cut ->
-        cut(state, meta)
+        cut(state, meta, written)
 
       {pairs, route} ->
         key = literal_key(key)
+        entry = key && List.keyfind(pairs, key, 0)
 
         values =
-          case key && List.keyfind(pairs, key, 0) do
+          case entry do
             {_, value} -> [value]
             _ -> Enum.map(pairs, &elem(&1, 1))
           end
 
-        state = entries(state, values, route, key, meta)
+        # A key the table does not have reads every entry, none of them its value.
+        whole = if entry, do: values, else: []
+        state = state |> named(written, whole) |> entries(values, route, key, meta)
         if default, do: visit(state, default), else: state
     end
   end

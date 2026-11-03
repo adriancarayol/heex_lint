@@ -21,12 +21,35 @@ defmodule HeexLint.Rules.NoInlineStyles do
     * `:contracts` - property policies for components, matched on the name
       as written (`button` for `<.button>`, `Layouts.app`). HTML elements
       take the top-level policy.
+    * `:allow_dynamic_identifiers` - style values a library computes, which no
+      static read can follow, by the name the code reads them under:
+
+          no_inline_styles: {:error, allow_dynamic_identifiers: ["@floating_styles", "Floating.styles"]}
+
+          <div style={@floating_styles}>                  allowed
+          <div style={[@floating_styles, "color: red"]}>  Inline style sets color...
+
+      A name matches the read spelled the same way and nothing else:
+
+        * `"@floating_styles"`: `@floating_styles`.
+        * `"assigns.floating_styles"`: `assigns.floating_styles`,
+          `assigns[:floating_styles]`, and `Map.get/2,3` or `Map.fetch!/2` on `assigns`.
+        * `"floating_styles"`: that variable.
+        * `"styles.popper"`, `"@styles.popper"`: that exact path, also written
+          `styles[:popper]`, or with `Map.get`, `Map.fetch!`, `Keyword.get` or
+          `Keyword.fetch!`. `"styles"` does not cover it.
+        * `"Floating.styles"`: a call to that function with the module as written,
+          with any arguments or piped into.
+
+      A value written out where the name is bound (a string, `<>`, a sigil, a list
+      or a map) is still checked. Any other value is exempt along with whatever it
+      goes on to read. See `docs/rules.md`.
     * `:message` - replaces the text. `{{property}}` is the property.
   """
 
   @behaviour HeexLint.Rule
 
-  alias HeexLint.{Grammar.Colors, Policy, Rule}
+  alias HeexLint.{Collector, Grammar.Colors, Policy, Rule}
   alias HeexLint.Policy.ConfigError
 
   @messages %{
@@ -41,6 +64,9 @@ defmodule HeexLint.Rules.NoInlineStyles do
   }
 
   @color_function ~r/#[0-9a-f]{3,8}\b|\b(?:rgb|rgba|hsl|hsla|hwb|oklch|oklab|lab|lch|color|color-mix|light-dark)\(/i
+
+  # @name, name, a dotted path from either, or Module.function.
+  @dynamic_name ~r/\A(?:@?[\p{Ll}_][\p{L}\p{N}_]*[?!]?(?:\.[\p{Ll}_][\p{L}\p{N}_]*[?!]?)*|\p{Lu}[\p{L}\p{N}_]*(?:\.\p{Lu}[\p{L}\p{N}_]*)*\.[\p{Ll}_][\p{L}\p{N}_]*[?!]?)\z/u
 
   @impl true
   def name, do: :no_inline_styles
@@ -78,9 +104,10 @@ defmodule HeexLint.Rules.NoInlineStyles do
 
   defp site_findings(site, policy, options, file) do
     component = site.written || ""
+    {strings, unresolved} = Collector.outside_names(site, policy.dynamic_names)
 
     dynamic =
-      for position <- site.unresolved do
+      for position <- unresolved do
         data = %{"component" => Rule.display(component)}
 
         %{
@@ -97,7 +124,7 @@ defmodule HeexLint.Rules.NoInlineStyles do
       end
 
     declarations =
-      for string <- site.strings,
+      for string <- strings,
           {property, value, filled, position} <- declarations(string),
           finding = judge(property, value, filled, position, component, policy, options, file),
           finding != nil,
@@ -328,7 +355,33 @@ defmodule HeexLint.Rules.NoInlineStyles do
         }
       end)
 
-    %{baseline: baseline, contracts: contracts}
+    %{baseline: baseline, contracts: contracts, dynamic_names: dynamic_names(options)}
+  end
+
+  # The mistake this option invites is writing the expression instead of its name,
+  # caught by shape: `assigns[:x]` and `Floating.styles()` would match nothing.
+  defp dynamic_names(options) do
+    case Keyword.get(options, :allow_dynamic_identifiers, []) do
+      names when is_list(names) ->
+        Enum.each(names, &check_dynamic_name/1)
+        MapSet.new(names)
+
+      other ->
+        raise ConfigError,
+              "no_inline_styles: allow_dynamic_identifiers must be a list of strings, got: #{inspect(other)}"
+    end
+  end
+
+  defp check_dynamic_name(name) do
+    if not is_binary(name) do
+      raise ConfigError,
+            "no_inline_styles: allow_dynamic_identifiers must be a list of strings, got entry: #{inspect(name)}"
+    end
+
+    if not Regex.match?(@dynamic_name, name) do
+      raise ConfigError,
+            ~s|no_inline_styles: entry "#{name}" in allow_dynamic_identifiers is not a name as written (@floating_styles, floating_styles, assigns.floating_styles, styles.popper, Floating.styles), so it would match nothing.|
+    end
   end
 
   defp fetch(options, key) do

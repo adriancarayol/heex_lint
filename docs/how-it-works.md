@@ -185,9 +185,10 @@ branches of `if on, do: a, else: a` is one class. What cannot be read — a sock
 in a LiveView, an unknown call, a variable that reads itself, a chain longer
 than 64 bindings — is reported by `require_static_classes` when used on a
 design-system component. A `style` has no such limit: `no_inline_styles` reads its
-value however many bindings away, and reports what it cannot read as dynamic. A
-hole in one, as in `"--tone: #{v}"`, is not reported for being unreadable either:
-it is only looked through for raw colors.
+value however many bindings away, and reports what it cannot read as dynamic, unless
+[`allow_dynamic_identifiers`](rules.md#dynamic-style-identifiers) names it or a value
+it was read through. A hole in one, as in `"--tone: #{v}"`, is not reported for being
+unreadable either: it is only looked through for raw colors.
 
 ## Where it looks
 

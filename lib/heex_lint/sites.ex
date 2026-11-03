@@ -6,7 +6,8 @@ defmodule HeexLint.Sites do
   A site is one attribute value (or one piece of Elixir code, such as a
   merge-function call or an `attr :class` default) with the strings it can
   produce, the parts that cannot be read, and the design-system component
-  wearing the classes, directly or through a wrapper.
+  wearing the classes, directly or through a wrapper. A style's `reads` say what
+  those were called, for `HeexLint.Collector.outside_names/2`.
   """
 
   alias HeexLint.{Code, Collector, Element, Project, Template}
@@ -24,6 +25,7 @@ defmodule HeexLint.Sites do
     :written,
     :wrapper,
     :prop,
+    :reads,
     strings: [],
     unresolved: [],
     parents: []
@@ -119,6 +121,7 @@ defmodule HeexLint.Sites do
         prop: resolved && resolved.prop,
         strings: collected.strings,
         unresolved: collected.unresolved,
+        reads: collected.reads,
         parents: Enum.map(parents, &{&1, resolution(project, template, &1, by_index)})
       }
     end)
