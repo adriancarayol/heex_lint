@@ -46,6 +46,8 @@ defmodule HeexLint.Project do
     * `:ui` - module name prefixes of the design system, such as `"MyAppWeb.CoreComponents"`
     * `:component_imports` - regexes on module names that are also the design system
     * `:ignore_imports` - regexes on module names that never are
+    * `:theme_imports` - regexes on `@import` specifiers whose stylesheets count
+      as the project's own, though they resolve under `node_modules`
   """
   @spec load(String.t(), [String.t()], map() | keyword()) :: t()
   def load(root, files, settings \\ %{}) do
@@ -196,6 +198,13 @@ defmodule HeexLint.Project do
   # way each package of a JavaScript monorepo does. A configured theme
   # applies everywhere.
   defp load_theme(project) do
+    {patterns, invalid} = Theme.compile_imports(project.settings[:theme_imports])
+
+    pattern_warnings =
+      for pattern <- Enum.uniq(invalid) do
+        "settings.theme_imports has an invalid pattern, #{pattern}; it is ignored."
+      end
+
     roots =
       project.sources
       |> Map.keys()
@@ -206,24 +215,24 @@ defmodule HeexLint.Project do
     {themes, warnings} =
       case project.settings[:theme] do
         nil ->
-          {Map.new(roots, &{&1, discovered_theme(&1)}), []}
+          {Map.new(roots, &{&1, discovered_theme(&1, patterns)}), []}
 
         configured ->
-          {info, warnings} = configured_theme(project.root, configured)
+          {info, warnings} = configured_theme(project.root, configured, patterns)
           {Map.new(roots, &{&1, info}), warnings}
       end
 
-    %{project | themes: themes, warnings: project.warnings ++ warnings}
+    %{project | themes: themes, warnings: project.warnings ++ pattern_warnings ++ warnings}
     |> with_theme_info(Map.fetch!(themes, project.root))
   end
 
-  defp configured_theme(root, configured) do
+  defp configured_theme(root, configured, patterns) do
     path = Path.expand(configured, root)
 
     if File.regular?(path) do
-      {theme_info(path, root), []}
+      {theme_info(path, root, patterns), []}
     else
-      discovered = Theme.discover(root)
+      discovered = Theme.discover(root, patterns)
 
       message =
         "The theme is set to #{configured}, which does not exist. " <>
@@ -233,14 +242,15 @@ defmodule HeexLint.Project do
               "No stylesheet importing Tailwind was found, so declared tokens cannot be checked until the path is fixed."
           )
 
-      {theme_info(discovered, root), [message]}
+      {theme_info(discovered, root, patterns), [message]}
     end
   end
 
-  defp discovered_theme(root), do: theme_info(Theme.discover(root), root)
+  defp discovered_theme(root, patterns),
+    do: theme_info(Theme.discover(root, patterns), root, patterns)
 
-  defp theme_info(file, root) do
-    theme = Theme.load(file)
+  defp theme_info(file, root, patterns) do
+    theme = Theme.load(file, patterns)
 
     # The stylesheet Tailwind builds: a theme partial that does not import
     # Tailwind knows no base utilities.
@@ -248,14 +258,15 @@ defmodule HeexLint.Project do
       cond do
         file == nil -> nil
         theme.tailwind -> file
-        true -> Theme.discover(root)
+        true -> Theme.discover(root, patterns)
       end
 
-    # And the prefix that build gives, which a partial cannot declare.
+    # And the prefix that build gives, which a partial cannot declare. A package
+    # theme_imports names does not declare it either, as in @shadcn/lint.
     prefix =
       cond do
         entry == nil -> nil
-        entry == file -> theme.prefix
+        entry == file and patterns == [] -> theme.prefix
         true -> Theme.prefix_of(entry)
       end
 

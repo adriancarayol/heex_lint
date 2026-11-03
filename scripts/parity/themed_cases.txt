@@ -76,3 +76,15 @@ text-smal
 flex
 hovr:flex
 hover:hovr:flex
+bg-kit-primary
+ring-kit-primary/60
+text-kit-muted
+border-kit-brand
+bg-spotlight
+rounded-kit
+text-kicker
+shadow-lift
+kit-stack
+rounded-[7px]
+text-[11px]
+bg-zinc-100

@@ -193,13 +193,15 @@ options set before it.
 | `ui`                | Module prefixes added to the design system: `"MyAppWeb.UI"` matches it and `MyAppWeb.UI.*`. |
 | `component_imports` | Regexes on module names that are also the design system.                   |
 | `ignore_imports`    | Regexes on module names that never are. Takes precedence.                  |
+| `theme_imports`     | Regexes on `@import` specifiers whose stylesheets count as your theme, for a [design system installed as a package](docs/design-systems.md#a-design-system-installed-as-a-package). |
 | `merge_functions`   | Functions whose arguments contain classes, such as `"classes"`.            |
 | `variant_functions` | Functions whose map values contain classes.                                |
 | `note`              | Appended to every rule's message.                                          |
 | `tailwind_bin`      | The standalone Tailwind binary, when it is not in `_build/`.               |
 
 A rule's own `ui`, `component_imports`, `ignore_imports`, `merge_functions`
-or `variant_functions` option wins over the shared setting.
+or `variant_functions` option wins over the shared setting. `theme_imports` is a
+setting only.
 
 ### Your own words
 

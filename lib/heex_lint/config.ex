@@ -47,6 +47,12 @@ defmodule HeexLint.Config do
     * `:ui` - module name prefixes of the design system
     * `:component_imports` / `:ignore_imports` - regexes on module names
       that are (or never are) the design system
+    * `:theme_imports` - regexes on `@import` specifiers whose stylesheets count
+      as the project's own though they resolve under `node_modules`, for a design
+      system installed as a package; a setting only, not a rule option. Other
+      files imported from within that package count too, and the package's own
+      `@import "tailwindcss"` stays out. An invalid pattern warns and is ignored.
+      Stylesheets under `deps/` imported by relative path already count
     * `:merge_functions` - functions whose arguments contain classes
     * `:variant_functions` - functions whose map values contain classes
     * `:note` - text appended to every message
@@ -88,6 +94,7 @@ defmodule HeexLint.Config do
     :ui,
     :component_imports,
     :ignore_imports,
+    :theme_imports,
     :merge_functions,
     :variant_functions,
     :note,
@@ -168,13 +175,23 @@ defmodule HeexLint.Config do
     }
   end
 
-  @list_settings [:ui, :component_imports, :ignore_imports, :merge_functions, :variant_functions]
+  @list_settings [
+    :ui,
+    :component_imports,
+    :ignore_imports,
+    :theme_imports,
+    :merge_functions,
+    :variant_functions
+  ]
 
   # A setting of the wrong type is ignored with one warning, the way a
   # shared ESLint setting is, rather than failing the whole run.
   defp validate_settings(settings) do
     Enum.reduce(settings, {%{}, []}, fn {key, value}, {valid, warnings} ->
       cond do
+        key == :theme_imports and is_struct(value, Regex) ->
+          {Map.put(valid, key, [value]), warnings}
+
         key in @list_settings and strings?(value) ->
           {Map.put(valid, key, List.wrap(value)), warnings}
 

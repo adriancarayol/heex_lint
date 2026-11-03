@@ -117,4 +117,27 @@ defmodule Mix.Tasks.HeexLintTest do
     assert output =~ "Applied 1 fix."
     assert File.read!(Path.join(dir, "lib/app_web/live/page_live.ex")) =~ ~s(class="tw:hover:p-3")
   end
+
+  test "--fix writes a step from a package theme_imports names", %{tmp_dir: dir} do
+    setup_project(dir, ~s(<div class="rounded-[7px]" />), no_arbitrary_values: :error)
+
+    kit = Path.join(dir, "node_modules/acme-ui")
+    File.mkdir_p!(kit)
+    File.write!(Path.join(kit, "package.json"), ~s({"name":"acme-ui"}))
+    File.write!(Path.join(kit, "theme.css"), "@theme { --radius-kit: 7px; }\n")
+
+    File.write!(
+      Path.join(dir, "assets/css/app.css"),
+      ~s|@import "tailwindcss";\n@import "acme-ui/theme.css";\n|
+    )
+
+    File.write!(
+      Path.join(dir, ".heex_lint.exs"),
+      inspect(settings: [theme_imports: ["^acme-ui/"]], rules: [no_arbitrary_values: :error])
+    )
+
+    assert {:ok, output, _} = task(dir, ["--fix"])
+    assert output =~ "Applied 1 fix."
+    assert File.read!(Path.join(dir, "lib/app_web/live/page_live.ex")) =~ ~s(class="rounded-kit")
+  end
 end

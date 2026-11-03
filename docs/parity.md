@@ -39,7 +39,7 @@ reference the same way.
 | Tailwind oracle (`candidatesToCss`, suggestions, variant typos) | `priv/tailwind_oracle.mjs`, the same logic; loads through `@tailwindcss/node` so CommonJS plugins (Phoenix's heroicons) load too. |
 | Suggestions that rewrite one class inside its literal | The same, plus `mix heex_lint --fix` for single suggestions. |
 | `--max-warnings`, file overrides, `eslint-disable` comments | `--max-warnings`, `overrides`, `heex-lint-disable` comments. |
-| `settings.shadcn` (`ui`, `componentImports`, `ignoreImports`, `mergeFunctions`, `variantFunctions`, `note`) | `settings` (`ui`, `component_imports`, `ignore_imports`, `merge_functions`, `variant_functions`, `note`). |
+| `settings.shadcn` (`ui`, `componentImports`, `ignoreImports`, `themeImports`, `mergeFunctions`, `variantFunctions`, `note`) | `settings` (`ui`, `component_imports`, `ignore_imports`, `theme_imports`, `merge_functions`, `variant_functions`, `note`). `theme_imports` also takes a `Regex`. |
 
 ## Adapted for Phoenix
 
@@ -57,6 +57,7 @@ reference the same way.
 | Received `className` prop | A function component's received `class`; socket assigns in a LiveView `render/1` are not received props. |
 | `{{component}}` as `Button` | `.button`, the way the tag is written. Contract patterns match the function name: `^button$`. |
 | Monorepos: a theme per package | Umbrellas: a theme (and Tailwind) per app. |
+| The theme read of a bare `@import "kit"` follows `exports` or an `index.css`, though Tailwind also reads the package's `style` | The theme read follows `style` too, so that kit's `@utility` rules count and `theme_imports` can name it. It follows `main` as well, which `@tailwindcss/node` does not: `no_unknown_classes` then warns and uses the grammar. |
 | Tailwind through Node only | Node, the standalone Tailwind binary Phoenix installs in `_build/`, then the grammar. |
 | No shared config; enable each rule | A recommended set when `rules` is not given. |
 

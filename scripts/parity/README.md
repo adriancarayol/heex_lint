@@ -33,6 +33,12 @@ Each configuration also runs `themed_cases.txt` under each theme in `themes/`:
 - `prefixed`: `@import "tailwindcss" prefix(tw)`, where only `tw:` classes are
   Tailwind's. `themed_cases.txt` has `tw:` classes for it, which every other theme
   reads as an unknown variant.
+- `installed_package`: a package in `installed_kit/`, copied into `node_modules`
+  the way npm installs one, with both drivers' `theme_imports` naming its import.
+  Its tokens and scales count, and so does the file it imports from within. Its
+  own `@import "tailwindcss"` stays out.
+- `installed_unnamed`: the same package by a specifier `theme_imports` does not
+  name, so its tokens do not count.
 
 The wrappers are `Panel`, which hands `className` to Card, `titleClassName` to
 CardTitle and `footerClassName` to a plain element, and `PassedPanel`, which hands

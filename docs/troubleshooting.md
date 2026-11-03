@@ -34,6 +34,14 @@ Tailwind colors. To make them tokens, map them:
 Without tokens, `no_raw_colors` still reports palette colors, but cannot
 suggest replacements or check undeclared names.
 
+## A design system's colors read as undeclared
+
+Stylesheets under `node_modules` contribute no tokens. If your design system is
+installed as a package, name its import with
+[`theme_imports`](./design-systems.md#a-design-system-installed-as-a-package):
+`settings: [theme_imports: ["^@acme/ui/"]]`. The pattern reads the `@import` as
+your stylesheet writes it, not the path it resolves to.
+
 ## The wrong stylesheet is used as the theme
 
 The linter picks the stylesheet that imports Tailwind with the most color

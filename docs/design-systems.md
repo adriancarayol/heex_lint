@@ -109,6 +109,49 @@ container."* Placeholders use the component's actual names and values; see
 [Your own words](./rules.md#your-own-words). Every rule also accepts a
 `message`, and the `note` setting is appended to every finding.
 
+## A design system installed as a package
+
+A stylesheet under `node_modules` contributes `@utility` names and classes but
+no tokens, so Tailwind's palette is not your vocabulary. A design system
+published to npm falls under the same rule: once your theme declares one color
+of its own, every color of the package reads as undeclared. Name its import with
+`theme_imports`:
+
+```elixir
+# .heex_lint.exs
+[
+  settings: [theme_imports: ["^@acme/ui/"]]
+]
+```
+
+```css
+/* assets/css/app.css */
+@import "tailwindcss";
+@import "@acme/ui/theme.css";
+```
+
+Each pattern is a regex, as a string or a `Regex`, on the `@import` as written.
+`@acme/ui/theme.css` then counts as your own: its tokens, scales, values and
+resets. So do the stylesheets it imports from within the same package. Another
+package it imports does not until a pattern names it, and its own
+`@import "tailwindcss"` stays out, so Tailwind's palette is still reported. A
+pattern that is not a valid regex warns once and is ignored.
+
+`theme_imports` is a setting only; rules do not accept it as an option. In an
+umbrella it applies to every app's theme.
+
+### A stylesheet from a Hex package
+
+This needs no setting. `deps/` is not `node_modules`, so a stylesheet there,
+and whatever it imports by path, already counts as your own:
+
+```css
+@import "../../deps/my_kit/priv/static/theme.css";
+```
+
+The same goes for a dependency linked from `assets/package.json` with
+`"my_kit": "file:../deps/my_kit"`, which resolves to `deps/my_kit`.
+
 ## Share a policy
 
 `.heex_lint.exs` is Elixir, so a policy can live in its own file and be

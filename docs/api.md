@@ -27,7 +27,7 @@ The information the rules use. Its shapes may change before 1.0:
 | `HeexLint.Project.wrapped(project, component, attribute \\ "class")` | The design-system component a wrapper hands that class prop to, or nil. |
 | `HeexLint.Project.Component.variants(component)` | Its variant names, or nil. |
 | `HeexLint.Project.Component.sizes(component)` | Its size names, or nil. |
-| `HeexLint.Theme.load(file)` / `HeexLint.Theme.discover(root)` | A theme, or the stylesheet that imports Tailwind. |
+| `HeexLint.Theme.load(file, theme_imports \\ [])` / `HeexLint.Theme.discover(root, theme_imports \\ [])` | A theme, or the stylesheet that imports Tailwind. `theme_imports` is as in the setting. |
 | `HeexLint.Theme.color_tokens(theme)` | The declared color tokens, or nil. |
 | `HeexLint.Grammar.Classifier.group_of(class)` | The class group, such as `"bg-color"`. |
 | `HeexLint.Grammar.Categories.category_of(group)` | Its category, or nil for layout. |

@@ -72,6 +72,11 @@ Under `@import "tailwindcss" prefix(tw)`, `no_raw_colors` judges `tw:bg-pink-500
 and leaves `bg-pink-500` alone: it is no Tailwind class, and `no_unknown_classes`
 reports it.
 
+Tokens come from your theme and its imports. A design system installed as a
+package contributes its tokens once the
+[`theme_imports`](./design-systems.md#a-design-system-installed-as-a-package)
+setting names its import.
+
 ### Contracts
 
 A contract's `pattern` is a regex on the component's function name:

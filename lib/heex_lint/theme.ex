@@ -8,9 +8,11 @@ defmodule HeexLint.Theme do
   names, class selectors and `--animate-*` theme names but not tokens, since
   Tailwind's own palette is not the project's vocabulary. A workspace package
   linked into `node_modules` really lives outside it, so it counts as the
-  project's own. Dark-mode blocks are skipped, so values are the light theme's.
+  project's own, and so does a design system installed as a package once the
+  `theme_imports` setting names its import. Dark-mode blocks are skipped, so
+  values are the light theme's.
 
-  `load/1` also applies the scales the stylesheets declare to cn's grammar,
+  `load/2` also applies the scales the stylesheets declare to cn's grammar,
   once per read, and `signature` tells two reads of an edited file apart.
 
   `prefix` is the `tw` of `@import "tailwindcss" prefix(tw)`, read like the
@@ -105,28 +107,62 @@ defmodule HeexLint.Theme do
   @doc """
   Reads the theme at `file`, following its imports. An empty theme when
   `file` is `nil`.
-  """
-  @spec load(String.t() | nil) :: t()
-  def load(nil), do: %__MODULE__{}
 
-  def load(file) do
-    theme = read_stylesheets(file)
+  `theme_imports` are regexes, as strings or `Regex`es, on `@import` specifiers
+  as written: the stylesheets they reach count as the project's own though they
+  resolve under `node_modules`, and so do the files those import from within
+  the same package. A string that is not a regex is skipped; `compile_imports/1`
+  says which.
+  """
+  @spec load(String.t() | nil, [String.t() | Regex.t()]) :: t()
+  def load(file, theme_imports \\ [])
+  def load(nil, _theme_imports), do: %__MODULE__{}
+
+  def load(file, theme_imports) do
+    theme = read_stylesheets(file, theme_imports)
 
     %{theme | grammar: theme.declarations |> ThemeScales.of() |> Classifier.grammar()}
   end
 
-  # Without the grammar, which only a theme the rules read needs.
-  defp read_stylesheets(file) do
-    file = Path.expand(file)
+  @doc """
+  The `theme_imports` setting as regexes, and the strings that are not regexes.
+  """
+  @spec compile_imports(String.t() | Regex.t() | [String.t() | Regex.t()] | nil) ::
+          {[Regex.t()], [String.t()]}
+  def compile_imports(patterns) do
+    {valid, invalid} =
+      patterns
+      |> List.wrap()
+      |> Enum.map(&compile_import/1)
+      |> Enum.split_with(&match?({:ok, _}, &1))
 
-    {read, _seen} = read(file, MapSet.new(), %__MODULE__{file: file}, false)
+    {Enum.map(valid, &elem(&1, 1)), Enum.map(invalid, &elem(&1, 1))}
+  end
+
+  defp compile_import(%Regex{} = regex), do: {:ok, regex}
+
+  defp compile_import(pattern) do
+    case Regex.compile(pattern) do
+      {:ok, regex} -> {:ok, regex}
+      {:error, _} -> {:error, pattern}
+    end
+  end
+
+  # Without the grammar, which only a theme the rules read needs.
+  defp read_stylesheets(file, theme_imports \\ []) do
+    file = Path.expand(file)
+    {patterns, _invalid} = compile_imports(theme_imports)
+    walk = %{patterns: patterns, from_package: false, own_package: nil}
+
+    {read, _seen} = read(file, MapSet.new(), %__MODULE__{file: file}, walk)
 
     finalize(read)
   end
 
   @doc """
   The prefix the stylesheet at `file` gives Tailwind, for a theme file that is
-  not the stylesheet Tailwind builds.
+  not the stylesheet Tailwind builds. `theme_imports` plays no part, as in
+  @shadcn/lint: a prefix a design system's package declares is not read.
   """
   @spec prefix_of(String.t()) :: String.t() | nil
   def prefix_of(file), do: read_stylesheets(file).prefix
@@ -134,17 +170,18 @@ defmodule HeexLint.Theme do
   @doc """
   Finds the stylesheet that imports Tailwind under `root`, the way the
   shadcn CLI does: when several do, the one declaring the most color tokens
-  wins, then the one nearest the root.
+  wins, then the one nearest the root. `theme_imports` is as in `load/2`, so
+  the tokens of a package it names count.
   """
-  @spec discover(String.t()) :: String.t() | nil
-  def discover(root) do
+  @spec discover(String.t(), [String.t() | Regex.t()]) :: String.t() | nil
+  def discover(root, theme_imports \\ []) do
     root = Path.expand(root)
 
     root
     |> css_files(0, [])
     |> Enum.sort()
     |> Enum.reduce(nil, fn file, best ->
-      theme = read_stylesheets(file)
+      theme = read_stylesheets(file, theme_imports)
 
       if theme.tailwind do
         tokens = MapSet.size(theme.tokens)
@@ -305,7 +342,7 @@ defmodule HeexLint.Theme do
   # `seen` comes back out because it spans the whole walk: a stylesheet two
   # imports reach is read at the first, and reading it again at the second
   # would put its declarations over the ones read between them.
-  defp read(file, seen, acc, from_package) do
+  defp read(file, seen, acc, walk) do
     if MapSet.member?(seen, file) or MapSet.size(seen) > 64 do
       {acc, seen}
     else
@@ -313,13 +350,13 @@ defmodule HeexLint.Theme do
       acc = %{acc | files: acc.files ++ [file]}
 
       case File.read(file) do
-        {:ok, css} -> read_css(css, file, seen, acc, from_package)
+        {:ok, css} -> read_css(css, file, seen, acc, walk)
         {:error, _} -> {acc, seen}
       end
     end
   end
 
-  defp read_css(css, file, seen, acc, from_package) do
+  defp read_css(css, file, seen, acc, walk) do
     utilities = parse_utilities(css)
 
     acc = %{
@@ -327,7 +364,8 @@ defmodule HeexLint.Theme do
       | utilities: MapSet.union(acc.utilities, MapSet.new(utilities, &elem(&1, 0))),
         utility_properties: merge_utilities(acc.utility_properties, utilities),
         classes: MapSet.union(acc.classes, parse_class_selectors(css)),
-        prefix: if(from_package, do: acc.prefix, else: acc.prefix || parse_tailwind_prefix(css))
+        prefix:
+          if(walk.from_package, do: acc.prefix, else: acc.prefix || parse_tailwind_prefix(css))
     }
 
     dir = Path.dirname(file)
@@ -345,14 +383,14 @@ defmodule HeexLint.Theme do
             {read_tailwind_entry(target, seen, acc), seen}
 
           target ->
-            read(target, seen, acc, from_package or package_file?(target))
+            read(target, seen, acc, import_walk(walk, spec, target))
         end
       end)
 
     # Every declaration anywhere, dark mode included, for variable checks.
     acc = %{acc | variables: MapSet.union(acc.variables, all_variable_names(css))}
 
-    if from_package do
+    if walk.from_package do
       {%{acc | theme_names: MapSet.union(acc.theme_names, package_animations(css))}, seen}
     else
       {values, scoped_names, theme_names, declarations} = parse_declarations(css)
@@ -379,9 +417,12 @@ defmodule HeexLint.Theme do
   # the package reads a stylesheet like any package's. So this walk keeps no
   # animations and marks nothing seen: a later `tailwindcss/theme.css` still
   # counts. It adds no declarations, being all inside node_modules, so that
-  # later read cannot put any over the ones read in between.
+  # later read cannot put any over the ones read in between. No `theme_imports`
+  # reaches this walk, so that stays true of an index.css that imports its parts:
+  # the JavaScript entry imports none for a pattern to match.
   defp read_tailwind_entry(target, seen, acc) do
-    {walked, _seen} = read(target, seen, acc, true)
+    walk = %{patterns: [], from_package: true, own_package: nil}
+    {walked, _seen} = read(target, seen, acc, walk)
     %{walked | theme_names: acc.theme_names}
   end
 
@@ -426,6 +467,56 @@ defmodule HeexLint.Theme do
   end
 
   defp package_file?(file), do: String.contains?(file, "/node_modules/")
+
+  # How an import is read: as the project's own if it reaches an owned package,
+  # and otherwise as a package's once it is under node_modules or its importer
+  # was. Walking through another package forgets the owned one.
+  defp import_walk(walk, spec, target) do
+    own = own_package_of(spec, target, walk)
+
+    %{
+      walk
+      | own_package: own,
+        from_package: if(own, do: false, else: walk.from_package or package_file?(target))
+    }
+  end
+
+  # The package whose tokens an import contributes: one `theme_imports` names,
+  # or the same package a counted file imports from within. A kit's own
+  # `@import "tailwindcss"` is another package, so Tailwind's palette stays out.
+  defp own_package_of(spec, target, %{patterns: patterns, own_package: current}) do
+    dir = package_dir_of(target)
+
+    cond do
+      dir == nil -> nil
+      Enum.any?(patterns, &Regex.match?(&1, spec)) -> dir
+      dir == current -> dir
+      true -> nil
+    end
+  end
+
+  # The installed package a file belongs to: the directory after the last
+  # node_modules, two segments for a scope. Nil outside node_modules.
+  defp package_dir_of(file) do
+    segments = String.split(file, "/")
+
+    last_marker =
+      segments
+      |> Enum.drop(-1)
+      |> Enum.with_index()
+      |> Enum.filter(fn {segment, _at} -> segment == "node_modules" end)
+      |> List.last()
+
+    case last_marker do
+      nil ->
+        nil
+
+      {_segment, at} ->
+        {head, [first | _] = rest} = Enum.split(segments, at + 1)
+        depth = if String.starts_with?(first, "@"), do: 2, else: 1
+        Enum.join(head ++ Enum.take(rest, depth), "/")
+    end
+  end
 
   @doc false
   # Removes /* */ comments the way a CSS tokenizer would: a "/*" inside a

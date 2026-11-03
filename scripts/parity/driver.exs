@@ -119,7 +119,11 @@ rules =
       ]
   end
 
-diagnostics = HeexLint.TestProject.lint(dir, files, rules: rules)
+diagnostics =
+  HeexLint.TestProject.lint(dir, files,
+    rules: rules,
+    settings: [theme_imports: ["^parity-installed-kit/theme"]]
+  )
 
 # The template starts on line 6 of the generated module.
 out =

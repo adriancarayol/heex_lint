@@ -84,7 +84,10 @@ app's tokens, and `no_unknown_classes` asks that app's Tailwind. Set `theme`
 to use one stylesheet everywhere. Its `@import`s are followed past symlinks;
 files under `node_modules` contribute `@utility` names, class selectors and
 `--animate-*` names from `@theme`, not tokens. A workspace package linked into
-`node_modules` really lives outside it, so it counts as your own.
+`node_modules` really lives outside it, so it counts as your own, and so does a
+stylesheet under `deps/`. A design system installed as a package counts once the
+[`theme_imports`](./design-systems.md#a-design-system-installed-as-a-package)
+setting names its import, with the stylesheets it imports from within the package.
 
 Color tokens are the `--color-*` declarations in `@theme`, with resets
 (`--color-*: initial`) applied in cascade order:
@@ -125,7 +128,8 @@ with the declared ones, so `rounded-lg` is unclassified until the theme declares
 it again, and `--*: initial` resets every scale but colors and fonts. Setting
 `--spacing` after a reset brings the numeric spacing scale back. Only `@theme`
 blocks count, from the same stylesheets as your tokens: installed packages
-contribute no scales, and a linked workspace package does.
+contribute no scales, and a linked workspace package or a package `theme_imports`
+names does.
 
 Suggestions use token values: variables resolve from `:root`, dark-mode
 blocks are skipped, and colors compare in OKLab. The radius and text scales
@@ -155,6 +159,7 @@ Under `@import "tailwindcss" prefix(tw)`, only `tw:flex` is a Tailwind class.
 alone, and `no_unknown_classes` reports the unprefixed one, a color like `text-muted`
 as much as `flex`. The prefix is read from the project's own stylesheets, the first
 one read winning, and from the stylesheet Tailwind builds when `theme` names a partial.
+An installed package does not declare it, even one `theme_imports` names.
 The grammar knows no prefix, so without a Tailwind to ask an unprefixed class passes
 `no_unknown_classes`.
 

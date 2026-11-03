@@ -1,0 +1,8 @@
+{
+  "name": "parity-installed-kit",
+  "version": "1.0.0",
+  "exports": {
+    "./theme.css": "./styles/theme.css",
+    "./unnamed.css": "./styles/unnamed.css"
+  }
+}

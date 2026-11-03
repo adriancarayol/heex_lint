@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- New `theme_imports` setting, as in @shadcn/lint: regexes on `@import` specifiers
+  whose stylesheets count as your own though they resolve under `node_modules`, for
+  a design system installed as a package. Stylesheets the package imports from within
+  itself count too, and its own `@import "tailwindcss"` stays out, so the palette is
+  still reported. An invalid pattern warns once and is ignored. Nothing changes
+  without the setting. **With it, findings change:** the package's colors stop being
+  reported as undeclared, and its scales, values and resets now apply, which **adds
+  findings** too: a `--radius-*: initial` in the package makes `rounded-lg`
+  unrecognized. Its tokens also count when choosing which stylesheet is the theme.
+  A stylesheet under `deps/` already counted as your own, and still does.
 - With the standalone Tailwind binary, a class is known only when its whole selector
   is in the build. **This adds findings, with or without a prefix:** `fle` beside
   `flex`, or `hover` beside `hover:flex`, read as known because a longer selector
