@@ -32,7 +32,7 @@ defmodule HeexLint.Rules.NoRestyle do
 
   @behaviour HeexLint.Rule
 
-  alias HeexLint.{Policy, Project, Rule, Theme}
+  alias HeexLint.{Policy, Project, Rule, Tailwind, Theme}
   alias HeexLint.Policy.ConfigError
   alias HeexLint.Project.Component
 
@@ -75,7 +75,9 @@ defmodule HeexLint.Rules.NoRestyle do
 
   @impl true
   def prepare(options, project) do
-    {policy, warnings} = Policy.compile(options, project.theme, "no_restyle")
+    {policy, warnings} =
+      Policy.compile(options, project.theme, "no_restyle", &Tailwind.known(project, &1))
+
     {:ok, policy, warnings}
   rescue
     error in ConfigError -> {:error, error.message}

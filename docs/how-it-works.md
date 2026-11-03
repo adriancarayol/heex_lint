@@ -157,6 +157,14 @@ plugins:
 - **Grammar.** Without either, the class grammar, `@utility` names and class
   selectors answer; that checks less.
 
+The other rules ask too, in three cases. `no_raw_colors` asks about a class it would
+report as an undeclared color, in case that is a typo of another utility. Every rule
+that checks contract entries asks about one nothing else knows, since a plugin's class
+is in no stylesheet, and a theme that loads an `@config` or `@plugin` has its own Tailwind
+answer for the `text-*` classes the grammar reads as colors, since one may be a font
+size. With no such question, Node does not start. The standalone binary answers the
+last from the rule its output has for the class.
+
 Tailwind cannot outlive the linter or stall it. The linter waits up to 60 seconds for
 a stylesheet's first answer and 30 seconds for later ones; set
 `HEEX_LINT_TAILWIND_TIMEOUT` to a number of milliseconds to change both, and anything

@@ -94,3 +94,15 @@ kit-stack
 rounded-[7px]
 text-[11px]
 bg-zinc-100
+text-body
+md:text-body/6
+hover:text-body
+text-bodyy
+text-brand
+text-brandy
+hover:text-brand/50
+plug-card
+plug-crad
+boom-red
+boom-bad
+hovr:boom-bad

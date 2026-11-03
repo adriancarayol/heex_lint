@@ -17,6 +17,10 @@ defmodule HeexLint.Theme do
 
   `prefix` is the `tw` of `@import "tailwindcss" prefix(tw)`, read like the
   tokens from the project's own files.
+
+  `modules` says the stylesheets load an `@config` or `@plugin`, in any file: then
+  JavaScript adds to the theme and only Tailwind can say what. `oracle` is how to
+  ask, `{oracle, entry}`, for a theme in a run that has one and needs it.
   """
 
   @derive {Inspect, except: [:grammar]}
@@ -26,6 +30,8 @@ defmodule HeexLint.Theme do
   defstruct file: nil,
             tailwind: false,
             prefix: nil,
+            modules: false,
+            oracle: nil,
             tokens: MapSet.new(),
             scoped: %{},
             utilities: MapSet.new(),
@@ -59,6 +65,8 @@ defmodule HeexLint.Theme do
           file: String.t() | nil,
           tailwind: boolean(),
           prefix: String.t() | nil,
+          modules: boolean(),
+          oracle: {pid(), String.t()} | nil,
           tokens: MapSet.t(String.t()),
           scoped: %{String.t() => MapSet.t(String.t())},
           utilities: MapSet.t(String.t()),
@@ -92,6 +100,8 @@ defmodule HeexLint.Theme do
   @import_head ~r/@import\s+(?:url\(\s*)?["']([^"']+)["']/
 
   @prefix_function ~r/\bprefix\(\s*([\w-]+)\s*\)/
+
+  @module_rule ~r/@(?:config|plugin)\s/
 
   # `:root, :host` is how Tailwind writes its own theme.
   @root_selector ~r/^(?::root|html|:host)$/
@@ -166,6 +176,13 @@ defmodule HeexLint.Theme do
   """
   @spec prefix_of(String.t()) :: String.t() | nil
   def prefix_of(file), do: read_stylesheets(file).prefix
+
+  @doc """
+  Whether the stylesheet at `file` loads an `@config` or `@plugin`, for a theme file
+  that is not the stylesheet Tailwind builds.
+  """
+  @spec modules_of(String.t()) :: boolean()
+  def modules_of(file), do: read_stylesheets(file).modules
 
   @doc """
   Finds the stylesheet that imports Tailwind under `root`, the way the
@@ -365,7 +382,8 @@ defmodule HeexLint.Theme do
         utility_properties: merge_utilities(acc.utility_properties, utilities),
         classes: MapSet.union(acc.classes, parse_class_selectors(css)),
         prefix:
-          if(walk.from_package, do: acc.prefix, else: acc.prefix || parse_tailwind_prefix(css))
+          if(walk.from_package, do: acc.prefix, else: acc.prefix || parse_tailwind_prefix(css)),
+        modules: acc.modules or Regex.match?(@module_rule, strip_comments(css))
     }
 
     dir = Path.dirname(file)
@@ -462,7 +480,7 @@ defmodule HeexLint.Theme do
   defp read_signature(%__MODULE__{} = theme) do
     :erlang.phash2(
       {theme.file, theme.declarations, theme.utility_properties, theme.classes, theme.theme_names,
-       theme.values, theme.variables, theme.tailwind, theme.prefix}
+       theme.values, theme.variables, theme.tailwind, theme.prefix, theme.modules}
     )
   end
 

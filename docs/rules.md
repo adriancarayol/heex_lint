@@ -123,10 +123,12 @@ does not cover `inline-full` or `[width:100%]`. Allowing `p-*` also allows
 
 Invalid regexes and misspellings of a category or class group such as
 `spacig` are configuration errors: reported on line 1 of each file, pausing
-the rule there. Other unknown names, such as a plugin's `prose` or a custom
-`btn`, may be real classes, so they only warn and match a class named exactly
-that. `no_unknown_classes` accepts unknown entries, since they may name
-external classes.
+the rule there. A class the theme's Tailwind build generates, such as `prose`
+from a plugin, is known like any other class. Other unknown names, such as a
+custom `btn`, may be real classes, so they only warn and match a class named
+exactly that, and so does `prose` when the build fails or there is no Tailwind to
+ask. `no_unknown_classes` accepts unknown entries, since they may name external
+classes.
 
 ### Recognition
 
@@ -228,6 +230,12 @@ A scale your `@theme` declares joins the grammar: `--radius-card` makes
 `rounded-card` shape and `--text-display` makes `text-display` typography. A
 `--radius-*: initial` reset replaces the default names, so `rounded-lg` is
 unclassified until the theme declares it again.
+
+A theme that loads an `@config` or `@plugin` can add a font size the CSS never
+names, so its own Tailwind answers for the `text-*` classes the grammar reads as
+colors: a `fontSize` of `body` makes `text-body` typography, and `no_raw_colors`
+leaves it alone. A `text-brand` from `colors` in that config stays a color. Without
+a Tailwind to ask, `text-body` reads as a color.
 
 The complete mapping is `HeexLint.Grammar.Categories`.
 

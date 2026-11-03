@@ -33,7 +33,19 @@ defmodule HeexLint.Rules.NoRawColors do
 
   @behaviour HeexLint.Rule
 
-  alias HeexLint.{Code, Collector, Element, Messages, Policy, Project, Rule, Suggest, Theme}
+  alias HeexLint.{
+    Code,
+    Collector,
+    Element,
+    Messages,
+    Policy,
+    Project,
+    Rule,
+    Suggest,
+    Tailwind,
+    Theme
+  }
+
   alias HeexLint.Grammar.{Categories, Classes, Colors, ProjectClassifier, Similar}
   alias HeexLint.Policy.ConfigError
 
@@ -102,7 +114,9 @@ defmodule HeexLint.Rules.NoRawColors do
 
   @impl true
   def prepare(options, project) do
-    {policy, warnings} = Policy.compile(options, project.theme, "no_raw_colors")
+    {policy, warnings} =
+      Policy.compile(options, project.theme, "no_raw_colors", &Tailwind.known(project, &1))
+
     {:ok, policy, warnings}
   rescue
     error in ConfigError -> {:error, error.message}
@@ -415,7 +429,7 @@ defmodule HeexLint.Rules.NoRawColors do
   # When Tailwind's nearest real class is not a color, the typo belongs to
   # no_unknown_classes and this rule stays quiet.
   defp typo_of_another_utility?(context, token) do
-    case HeexLint.Tailwind.unknown(context.project, [token]) do
+    case Tailwind.unknown(context.project, [token]) do
       [%{suggestion: suggestion} | _] when is_binary(suggestion) ->
         ProjectClassifier.category_of(context.theme, suggestion) != "color"
 

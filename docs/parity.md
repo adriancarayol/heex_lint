@@ -33,7 +33,8 @@ reference the same way.
 | `no-restyle`, `no-raw-colors`, `no-arbitrary-values`, `no-inline-styles`, `no-unknown-classes`, `require-static-classes` | The same rules, snake_cased, with the same semantics and message text. |
 | Class grammar from `cn` 0.4.0, with the theme's scales applied as `mergeConfigs` does | Vendored config and a port of its trie and validators; checked to classify Tailwind 4.3's full class list (46k variants) identically. `HeexLint.Grammar.ThemeScales` ports `themeScalesOf`, and a theme that declares scales gets its own trie. |
 | Categories and `GROUP_CATEGORY` | `HeexLint.Grammar.Categories`, the same table and arbitrary-property rules. |
-| `allow`, `deny`, `contracts`, entry validation, config errors on line 1 | `HeexLint.Policy`, a port of `contracts.ts`. |
+| `allow`, `deny`, `contracts`, entry validation, a class the theme's build generates being known, config errors on line 1 | `HeexLint.Policy`, a port of `contracts.ts`. |
+| A font size from an `@config` or `@plugin`, read from the theme's own Tailwind | The same, through Node and from the standalone binary's output, with no Node started until such a class needs it. |
 | Messages, `{{placeholder\|fallback}}`, `note`, typo warnings, 500-char limit | `HeexLint.Messages`. |
 | Theme reading: `@theme` tokens, resets, scoped namespaces, dark blocks, `--spacing`, radius/text scales, `@utility`, class selectors, `prefix(tw)`, discovery | `HeexLint.Theme`; checked against the reference on sample themes. |
 | OKLab colors, CSS named colors, `calc()` lengths, edit distance | `HeexLint.Grammar.Colors`, `Lengths`, `Similar`; checked against the reference. |

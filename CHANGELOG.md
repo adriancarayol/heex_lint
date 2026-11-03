@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- A contract entry the theme's Tailwind build generates, such as a plugin's `prose`, is
+  known like any other class, as in @shadcn/lint, and no longer warns. A build that
+  fails, or no Tailwind to ask, still warns. Node starts for this only when an entry is
+  unknown to the grammar and the theme.
+- A theme that loads an `@config` or `@plugin` has its own Tailwind say which `text-*`
+  classes are font sizes, as in @shadcn/lint, through Node and through the standalone
+  binary. Node starts for this only on such a theme and for a `text-*` class the grammar
+  reads as a color, and so also for `no_restyle` and `no_arbitrary_values`, which never
+  started it. **This removes findings:** `no_raw_colors` no longer calls `text-body`
+  from a `fontSize` an undeclared color. **It also adds findings:** `deny` naming
+  typography now reaches it, and `allow: ["color"]` no longer covers it.
+
 - The Tailwind process cannot outlive the linter or stall it. The Node process runs
   Tailwind on a worker thread and ends within moments of its stdin closing, whatever a
   plugin is doing. Each question has a deadline, 60 seconds for a stylesheet's first

@@ -43,6 +43,10 @@ Each configuration also runs `themed_cases.txt` under each theme in `themes/`:
   `style` condition beside a `default`, where Tailwind builds one file and both
   linters read the other, an array target, the package's `imports` map (`#tokens`),
   and `installed_bare/`, a package with no `package.json`.
+- `plugin_modules`: a plugin and a config from `plugin_kit/`, copied into `node_modules`.
+  Nothing in the CSS names their classes, so only Tailwind can say what they are:
+  `text-body` is a font size, `text-brand` a color, and the plugin throws on `boom-bad`,
+  which costs that class its answer and nothing else.
 
 The wrappers are `Panel`, which hands `className` to Card, `titleClassName` to
 CardTitle and `footerClassName` to a plain element, and `PassedPanel`, which hands

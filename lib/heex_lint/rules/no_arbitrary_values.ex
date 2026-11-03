@@ -22,7 +22,7 @@ defmodule HeexLint.Rules.NoArbitraryValues do
 
   @behaviour HeexLint.Rule
 
-  alias HeexLint.{Messages, Policy, Rule, Suggest, Theme}
+  alias HeexLint.{Messages, Policy, Rule, Suggest, Tailwind, Theme}
   alias HeexLint.Grammar.{Classes, Lengths, ProjectClassifier, Categories}
   alias HeexLint.Policy.ConfigError
   alias HeexLint.Rules.NoRawColors
@@ -56,7 +56,9 @@ defmodule HeexLint.Rules.NoArbitraryValues do
 
   @impl true
   def prepare(options, project) do
-    {policy, warnings} = Policy.compile(options, project.theme, "no_arbitrary_values")
+    {policy, warnings} =
+      Policy.compile(options, project.theme, "no_arbitrary_values", &Tailwind.known(project, &1))
+
     {:ok, policy, warnings}
   rescue
     error in ConfigError -> {:error, error.message}

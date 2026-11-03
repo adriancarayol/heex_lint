@@ -47,6 +47,8 @@ defmodule HeexLint.Tailwind do
   @max_candidate_length 10_000
   @max_variants 64
 
+  @font_size ~r/(?:^|[;{\s])font-size\s*:/
+
   # The standalone binary reads no stdin, so nothing tells it the linter died: a
   # build started like this is killed when stdin closes, whatever ended the VM. The
   # wrapper leads its process group, which takes along whatever the build started.
@@ -101,6 +103,25 @@ defmodule HeexLint.Tailwind do
         ask(project.oracle, {:unknown, project.entry, Enum.uniq(tokens)})
     end
   end
+
+  @doc """
+  Those of `tokens` the project's Tailwind generates. None when it cannot be
+  asked, so that a caller keeps treating them as unknown.
+  """
+  @spec known(HeexLint.Project.t(), [String.t()]) :: MapSet.t(String.t())
+  def known(project, tokens) do
+    case unknown(project, tokens) do
+      nil -> MapSet.new()
+      unknown -> MapSet.difference(MapSet.new(tokens), MapSet.new(unknown, & &1.token))
+    end
+  end
+
+  @doc """
+  Whether the Tailwind that builds `entry` generates a font size for `token`, or
+  nil when it cannot be asked.
+  """
+  @spec font_size?(pid(), String.t(), String.t()) :: boolean() | nil
+  def font_size?(pid, entry, token), do: ask(pid, {:font_size, entry, [token]})
 
   @doc "The strategy the oracle uses for `entry`, and why, for diagnostics."
   def status(nil, _entry), do: {:none, "not started"}
@@ -198,8 +219,8 @@ defmodule HeexLint.Tailwind do
 
   def handle_call(:warnings, _from, state), do: {:reply, Enum.reverse(state.warnings), state}
 
-  def handle_call({:unknown, entry, tokens}, from, state) do
-    request = %{from: from, entry: entry, tokens: tokens}
+  def handle_call({kind, entry, tokens}, from, state) when kind in [:unknown, :font_size] do
+    request = %{from: from, kind: kind, entry: entry, tokens: tokens}
     {:noreply, pump(%{state | waiting: state.waiting ++ [request]})}
   end
 
@@ -280,14 +301,19 @@ defmodule HeexLint.Tailwind do
     %{state | job: nil}
   end
 
-  defp answer(state, %{entry: entry, tokens: tokens}) do
-    if state.strategies[entry] == :none do
-      nil
-    else
-      for token <- tokens,
-          result = Map.get(state.cache, {entry, token}),
-          is_map(result),
-          do: result
+  defp answer(state, %{kind: kind, entry: entry, tokens: tokens}) do
+    cond do
+      state.strategies[entry] == :none ->
+        nil
+
+      kind == :font_size ->
+        Map.get(state.cache, {entry, hd(tokens)}) == :font_size
+
+      true ->
+        for token <- tokens,
+            result = Map.get(state.cache, {entry, token}),
+            is_map(result),
+            do: result
     end
   end
 
@@ -304,22 +330,30 @@ defmodule HeexLint.Tailwind do
 
   defp disarm(job), do: Process.cancel_timer(job.timer)
 
-  defp answered(state, job, results) do
+  defp answered(state, job, results, font_sizes) do
     disarm(job)
 
     state
-    |> cache(job.entry, job.missing, results)
+    |> cache(job.entry, job.missing, results, font_sizes)
     |> Map.merge(%{failures: 0, warm: MapSet.put(state.warm, job.entry)})
     |> reply_all(job)
     |> pump()
   end
 
-  defp cache(state, entry, missing, results) do
+  defp cache(state, entry, missing, results, font_sizes) do
     by_token = Map.new(results, &{&1.token, &1})
+    font_sizes = MapSet.new(font_sizes)
 
     cache =
       Enum.reduce(missing, state.cache, fn token, cache ->
-        Map.put(cache, {entry, token}, Map.get(by_token, token, :known))
+        verdict =
+          cond do
+            Map.has_key?(by_token, token) -> Map.fetch!(by_token, token)
+            MapSet.member?(font_sizes, token) -> :font_size
+            true -> :known
+          end
+
+        Map.put(cache, {entry, token}, verdict)
       end)
 
     %{state | cache: cache}
@@ -527,7 +561,7 @@ defmodule HeexLint.Tailwind do
             }
           end)
 
-        answered(state, job, results)
+        answered(state, job, results, answer["fontSizes"])
 
       {:ok, %{"id" => ^id} = answer} ->
         disarm(job)
@@ -590,6 +624,7 @@ defmodule HeexLint.Tailwind do
       bin: standalone_binary(state.project),
       chunks: if(checked == [], do: [], else: [{checked, true}]),
       unknown: [],
+      font_sizes: [],
       theme_builds: false
     })
     |> arm(timeout_for(true))
@@ -601,7 +636,8 @@ defmodule HeexLint.Tailwind do
     String.length(token) <= @max_candidate_length and length(variants) <= @max_variants
   end
 
-  defp next_build(state, %{chunks: []} = job), do: answered(state, job, job.unknown)
+  defp next_build(state, %{chunks: []} = job),
+    do: answered(state, job, job.unknown, job.font_sizes)
 
   defp next_build(state, %{chunks: [{[], _bases} | chunks], theme_builds: true} = job),
     do: next_build(state, %{job | chunks: chunks})
@@ -666,8 +702,15 @@ defmodule HeexLint.Tailwind do
 
     case output do
       {:ok, css} ->
-        job = %{job | chunks: chunks, unknown: job.unknown ++ read_build(css, tokens)}
-        next_build(state, %{job | theme_builds: true})
+        {unknown, font_sizes} = read_build(css, tokens)
+
+        next_build(state, %{
+          job
+          | chunks: chunks,
+            unknown: job.unknown ++ unknown,
+            font_sizes: job.font_sizes ++ font_sizes,
+            theme_builds: true
+        })
 
       {:error, reason} ->
         build_error(state, job, "it wrote no output (#{reason})")
@@ -709,11 +752,14 @@ defmodule HeexLint.Tailwind do
   defp read_build(css, tokens) do
     known? = &selector?(css, &1)
 
-    for token <- tokens, not known?.(token) do
-      {variants, base} = Classes.split_variants(token)
-      bare = bare_candidates(variants, base)
-      %{token: token, suggestion: nil, base_known: Enum.any?(bare, known?)}
-    end
+    unknown =
+      for token <- tokens, not known?.(token) do
+        {variants, base} = Classes.split_variants(token)
+        bare = bare_candidates(variants, base)
+        %{token: token, suggestion: nil, base_known: Enum.any?(bare, known?)}
+      end
+
+    {unknown, Enum.filter(tokens, &sets_font_size?(css, &1))}
   end
 
   defp build_error(state, job, message) do
@@ -732,13 +778,48 @@ defmodule HeexLint.Tailwind do
   @doc false
   # Whether the output has `class` as a whole selector: .flex-col does not make
   # flex known, nor .tw\:flex make tw:fle known.
-  def selector?(css, class) do
-    selector = "." <> css_escape(class)
+  def selector?(css, class), do: selector_ends(css, class) != []
 
+  @doc false
+  # Whether the output's rule for `class` sets a font size, directly or inside an
+  # @media a variant wraps it in, as Tailwind's own answer for a candidate would.
+  def sets_font_size?(css, class) do
     css
-    |> :binary.matches(selector)
-    |> Enum.any?(fn {at, length} -> selector_end?(css, at + length) end)
+    |> selector_ends(class)
+    |> Enum.any?(&Regex.match?(@font_size, rule_body(css, &1)))
   end
+
+  defp selector_ends(css, class) do
+    css
+    |> :binary.matches("." <> css_escape(class))
+    |> Enum.map(fn {at, length} -> at + length end)
+    |> Enum.filter(&selector_end?(css, &1))
+  end
+
+  # The block that follows a selector, with the blocks nested in it.
+  defp rule_body(css, at) do
+    rest = binary_part(css, at, byte_size(css) - at)
+
+    case :binary.match(rest, "{") do
+      {open, 1} ->
+        block = binary_part(rest, open, byte_size(rest) - open)
+        binary_part(block, 0, block_length(block, 0, 0))
+
+      :nomatch ->
+        ""
+    end
+  end
+
+  defp block_length(<<>>, _depth, length), do: length
+  defp block_length(<<"}", _::binary>>, 1, length), do: length + 1
+
+  defp block_length(<<"{", rest::binary>>, depth, length),
+    do: block_length(rest, depth + 1, length + 1)
+
+  defp block_length(<<"}", rest::binary>>, depth, length),
+    do: block_length(rest, depth - 1, length + 1)
+
+  defp block_length(<<_, rest::binary>>, depth, length), do: block_length(rest, depth, length + 1)
 
   defp selector_end?(css, at) when at == byte_size(css), do: true
 

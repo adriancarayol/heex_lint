@@ -8,12 +8,13 @@ defmodule HeexLint.Grammar.ProjectClassifier do
   `@utility` answers from its body in both cases: the properties it sets are
   categorized the way an arbitrary property is, so `@utility heading-2xs {
   font-size: 0.75rem }` is typography for the same reason `[font-size:1rem]`
-  is.
+  is. A theme that loads an `@config` or `@plugin` can add a font size its CSS
+  never names, and there the theme's own Tailwind answers for `text-*`.
   Ported from @shadcn/lint's `src/project/namespaces.ts` (MIT).
   """
 
   alias HeexLint.Grammar.{Categories, Classes, Classifier}
-  alias HeexLint.Theme
+  alias HeexLint.{Tailwind, Theme}
 
   # {class prefix, the @theme namespace it reads, the group it gives}. A
   # --color-* of the same name wins over the namespace, the way Tailwind reads
@@ -23,7 +24,9 @@ defmodule HeexLint.Grammar.ProjectClassifier do
   @doc "The class group of `token` in a project with `theme`."
   @spec group_of(Theme.t() | nil, String.t()) :: String.t() | nil
   def group_of(theme, token) do
-    key = {__MODULE__, Theme.signature(theme), token}
+    # JavaScript can change without the stylesheets changing, and each run has its
+    # own oracle, so such a theme's answers last no longer than the run.
+    key = {__MODULE__, Theme.signature(theme), theme && theme.oracle, token}
 
     case Process.get(key, :miss) do
       :miss ->
@@ -44,11 +47,26 @@ defmodule HeexLint.Grammar.ProjectClassifier do
     group = Classifier.group_of(token, Theme.grammar(theme))
 
     cond do
-      group == nil -> animation_group(theme, token) || utility_group(theme, token)
-      Categories.category_of(group) != "color" -> group
-      true -> theme_group(theme, token) || utility_group(theme, token) || group
+      group == nil ->
+        animation_group(theme, token) || utility_group(theme, token)
+
+      Categories.category_of(group) != "color" ->
+        group
+
+      true ->
+        theme_group(theme, token) || utility_group(theme, token) || module_group(theme, token) ||
+          group
     end
   end
+
+  # The grammar reads text-body as a color, knowing only the name.
+  defp module_group(%Theme{oracle: {oracle, entry}}, token) do
+    if String.starts_with?(Classes.normalize(token), "text-") and
+         Tailwind.font_size?(oracle, entry, token) == true,
+       do: "font-size"
+  end
+
+  defp module_group(_theme, _token), do: nil
 
   defp theme_group(nil, _token), do: nil
   defp theme_group(%Theme{file: nil}, _token), do: nil

@@ -5,7 +5,7 @@
 // Protocol: one JSON request per stdin line,
 //   {"id": 1, "css": "/abs/app.css", "candidates": ["flex", "hovr:flex"]}
 // answered by one JSON line on stdout,
-//   {"id": 1, "ok": true, "unknown": [{"token", "suggestion", "baseKnown"}]}
+//   {"id": 1, "ok": true, "unknown": [{"token", "suggestion", "baseKnown"}], "fontSizes": ["text-sm"]}
 // or {"id": 1, "ok": false, "reason": "..."}.
 //
 // Two threads. Tailwind and the project's plugins run in a worker thread, where
@@ -19,6 +19,8 @@ import * as path from "node:path"
 import * as readline from "node:readline"
 import { pathToFileURL } from "node:url"
 import { isMainThread, parentPort, Worker } from "node:worker_threads"
+
+const FONT_SIZE = /(?:^|[;{\s])font-size\s*:/
 
 // Far past any real class. Tailwind parses a candidate recursively, once per
 // variant, and slows quadratically on a long value, so one hostile token could
@@ -677,15 +679,22 @@ async function query(cssFile, candidates) {
   const checked = candidates.filter(checkable)
   const css = cssOfAll(system, checked)
   const unknown = []
+  // Known candidates that set a font size: text-body from an @config fontSize reads
+  // as a color to a grammar that only knows the name.
+  const fontSizes = []
   for (let i = 0; i < checked.length; i++) {
-    if (css[i] === undefined || css[i] !== null) continue
+    if (css[i] === undefined) continue
+    if (css[i] !== null) {
+      if (FONT_SIZE.test(css[i])) fontSizes.push(checked[i])
+      continue
+    }
     unknown.push({
       token: checked[i],
       suggestion: suggestionFor(system, checked[i]),
       baseKnown: baseKnownOf(system, checked[i]),
     })
   }
-  return { ok: true, unknown }
+  return { ok: true, unknown, fontSizes }
 }
 
 function answerRequests() {

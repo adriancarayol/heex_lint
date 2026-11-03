@@ -262,15 +262,16 @@ defmodule HeexLint.Project do
       end
 
     # And the prefix that build gives, which a partial cannot declare. A package
-    # theme_imports names does not declare it either, as in @shadcn/lint.
-    prefix =
+    # theme_imports names does not declare it either, as in @shadcn/lint. Whether
+    # that build loads JavaScript is about the same stylesheet.
+    {prefix, modules} =
       cond do
-        entry == nil -> nil
-        entry == file and patterns == [] -> theme.prefix
-        true -> Theme.prefix_of(entry)
+        entry == nil -> {nil, false}
+        entry == file and patterns == [] -> {theme.prefix, theme.modules}
+        true -> {Theme.prefix_of(entry), Theme.modules_of(entry)}
       end
 
-    %{file: file, theme: theme, entry: entry, prefix: prefix}
+    %{file: file, theme: theme, entry: entry, prefix: prefix, modules: modules}
   end
 
   @doc false
@@ -278,11 +279,30 @@ defmodule HeexLint.Project do
   def with_theme_info(project, info) do
     %{
       project
-      | theme: info.theme,
+      | theme: theme_with_oracle(info, project.oracle),
         theme_file: info.file,
         entry: info.entry,
         tailwind_prefix: info.prefix
     }
+  end
+
+  # Classifying a class can take this theme's own Tailwind only when it loads
+  # JavaScript. No other theme gets the handle, and so no other can ask.
+  defp theme_with_oracle(%{modules: true, entry: entry, theme: theme}, oracle)
+       when oracle != nil,
+       do: %{theme | oracle: {oracle, entry}}
+
+  defp theme_with_oracle(%{theme: theme}, _oracle), do: theme
+
+  @doc false
+  # The project with the run's oracle, which each theme it hands out can reach.
+  def with_oracle(project, oracle) do
+    project = %{project | oracle: oracle}
+
+    case Map.get(project.themes, project.root) do
+      nil -> project
+      info -> with_theme_info(project, info)
+    end
   end
 
   @doc """

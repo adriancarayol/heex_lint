@@ -57,7 +57,7 @@ defmodule HeexLint do
         pid
       end
 
-    project = %{project | oracle: oracle}
+    project = Project.with_oracle(project, oracle)
 
     # The project is large; tasks read it from persistent_term, which never
     # copies it onto their heaps.

@@ -1081,6 +1081,173 @@ defmodule HeexLint.TailwindOracleTest do
     end
   end
 
+  describe "Node starts only when a question needs it" do
+    @describetag :tailwind
+
+    @plain_theme """
+    @import "tailwindcss";
+    @theme inline { --color-primary: #123456; }
+    """
+
+    @module_theme """
+    @import "tailwindcss";
+    @plugin "./plugin.js";
+    @theme inline { --color-primary: #123456; }
+    """
+
+    @plugin "module.exports = function () {}\n"
+
+    # A `node` on the PATH that notes each start and hands over to the real one.
+    defp counting_node(dir) do
+      starts = Path.join(dir, "node.starts")
+
+      script(dir, "fake/bin/node", """
+      #!/bin/sh
+      echo $$ >> "#{starts}"
+      exec "#{System.find_executable("node")}" "$@"
+      """)
+
+      System.put_env("PATH", Path.join(dir, "fake/bin") <> ":" <> System.get_env("PATH"))
+      starts
+    end
+
+    defp node_starts(dir, theme, template, rules) do
+      with_tailwind(dir)
+      starts = counting_node(dir)
+
+      files =
+        Map.merge(page(template), %{
+          "assets/css/app.css" => theme,
+          "assets/css/plugin.js" => @plugin
+        })
+
+      result = run(dir, files, rules: rules)
+      {length(pids(starts)), result}
+    end
+
+    test "not for no_restyle on a theme that loads no JavaScript", %{tmp_dir: dir} do
+      {starts, _result} =
+        node_starts(dir, @plain_theme, ~s|<.button class="text-body bg-brand">x</.button>|,
+          no_restyle: {:error, allow: ["layout", "typography"]}
+        )
+
+      assert starts == 0
+    end
+
+    test "not for no_arbitrary_values on one either", %{tmp_dir: dir} do
+      {starts, _result} =
+        node_starts(dir, @plain_theme, ~s|<div class="text-body p-[13px]" />|,
+          no_arbitrary_values: {:error, allow: ["layout"]}
+        )
+
+      assert starts == 0
+    end
+
+    test "not for a theme that names a plugin only in a comment", %{tmp_dir: dir} do
+      theme = ~s(@import "tailwindcss";\n/* @plugin "./plugin.js"; */\n)
+
+      {starts, _result} =
+        node_starts(dir, theme, ~s|<.button class="text-body">x</.button>|,
+          no_restyle: {:error, allow: ["layout"]}
+        )
+
+      assert starts == 0
+    end
+
+    test "not for a theme that loads JavaScript while nothing can be a font size", %{
+      tmp_dir: dir
+    } do
+      {starts, _result} =
+        node_starts(dir, @module_theme, ~s|<.button class="flex p-4">x</.button>|,
+          no_restyle: {:error, allow: ["layout"]}
+        )
+
+      assert starts == 0
+    end
+
+    test "for an entry nothing else knows, once", %{tmp_dir: dir} do
+      {starts, result} =
+        node_starts(dir, @plain_theme, ~s|<.button class="flex">x</.button>|,
+          no_restyle: {:error, allow: ["layout", "prose"]}
+        )
+
+      assert starts == 1
+      assert Enum.any?(result.warnings, &(&1 =~ ~s(Contract entry "prose")))
+    end
+
+    test "not for an entry no_unknown_classes takes as it is", %{tmp_dir: dir} do
+      with_tailwind(dir)
+      starts = counting_node(dir)
+
+      # Every class is allowed, so nothing is left to ask about.
+      run(dir, page(~s|<div class="flex" />|),
+        rules: [no_unknown_classes: {:error, allow: ["*"]}]
+      )
+
+      assert pids(starts) == []
+    end
+
+    test "for a text class the grammar reads as a color, on a theme that loads JavaScript",
+         %{tmp_dir: dir} do
+      {starts, _result} =
+        node_starts(dir, @module_theme, ~s|<.button class="text-body">x</.button>|,
+          no_restyle: {:error, allow: ["layout"]}
+        )
+
+      assert starts == 1
+    end
+  end
+
+  describe "the standalone binary and contract entries" do
+    @tag :standalone
+    test "takes one build for all of them", %{tmp_dir: dir} do
+      counter = Path.join(dir, "builds")
+
+      bin =
+        script(dir, "fake/tailwind", """
+        #!/bin/sh
+        echo x >> "#{counter}"
+        exec "#{standalone_bin()}" "$@"
+        """)
+
+      result =
+        run(dir, page(~s|<.button class="flex">x</.button>|),
+          rules: [no_restyle: {:error, allow: ["layout", "aaa-x", "bbb-x", "ccc-x", "ddd-x"]}],
+          settings: [tailwind_bin: bin]
+        )
+
+      assert length(String.split(File.read!(counter), "\n", trim: true)) == 1
+      assert length(Enum.filter(result.warnings, &(&1 =~ "Contract entry"))) == 4
+    end
+
+    @tag :standalone
+    test "files waiting on the same stylesheet share a build", %{tmp_dir: dir} do
+      counter = Path.join(dir, "builds")
+
+      bin =
+        script(dir, "fake/tailwind", """
+        #!/bin/sh
+        echo x >> "#{counter}"
+        sleep 0.2
+        exec "#{standalone_bin()}" "$@"
+        """)
+
+      pages =
+        for n <- 1..12, into: %{} do
+          {"lib/app_web/live/page_#{n}_live.ex",
+           live(~s|<div class="zorblax-#{n}" />|)
+           |> String.replace("PageLive", "Page#{n}Live")}
+        end
+
+      deadline(30_000)
+      result = run(dir, pages, rules: [no_unknown_classes: :error], settings: [tailwind_bin: bin])
+
+      assert length(result.diagnostics) == 12
+      # The first by itself, and what waited behind it, which depends on the machine.
+      assert length(String.split(File.read!(counter), "\n", trim: true)) < 12
+    end
+  end
+
   describe "HEEX_LINT_TAILWIND_TIMEOUT" do
     test "without it, a first answer gets longer than the ones after" do
       System.delete_env("HEEX_LINT_TAILWIND_TIMEOUT")
