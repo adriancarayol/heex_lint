@@ -73,9 +73,11 @@ in the repository:
 | Edit distance | 30,000 pairs | 0 |
 
 `run.sh` puts classes on elements and compares messages, so it does not reach variable chains,
-map lookups, `assign/3`, positions, `--fix`, the standalone binary or a component from `deps/`.
-Tests here pin those. One-off differentials also compared generated variable graphs, wrapper graphs,
-`style` values and stylesheet shapes with @shadcn/lint when each was ported. Positions and `--fix`
+map lookups, `assign/3`, merge-function calls, positions, `--fix`, the standalone binary or a
+component from `deps/`. Tests here pin those. One-off differentials also compared generated variable
+graphs, wrapper graphs, `style` values and stylesheet shapes with @shadcn/lint when each was ported,
+and 26 shapes of merge-function call in a template, on 9 classes under two sets of rules, whose 193
+distinct messages were the same once `<.button>` reads `<Button>`. Positions and `--fix`
 were not compared, and @shadcn/lint has no standalone binary. No CI job runs `run.sh`; it runs by
 hand.
 
@@ -155,6 +157,7 @@ above.
 | Class object keys, `cn({ "bg-pink-500": on })`, are read as classes | A map's or keyword list's keys are read only under `scan_all_strings`, when a map reaches a merge function from Elixir code. By default, `cn(%{"bg-pink-500" => on})` has no finding here and one there. Under the option, a map written in a template, `<div class={cn(%{"bg-pink-500" => @on})} />`, still has none here and one there. A Phoenix class list has no such form: it is written `@on && "bg-pink-500"`, which is read. |
 | `scanAllStrings` reads every `Literal` with a hyphen, in code and markup, but for plain object keys and what a class site on a tag has read. A template literal is not a `Literal` | `scan_all_strings` reads the same in Elixir code, quoted attribute values and a template's `{...}` and `<%= ... %>`. An interpolated string is not a literal, and neither is a sigil such as `~w(...)`. A class site reads `<>`, so `"bg-pink-500 " <> @a` on a component's `class` is left to its contract here, where @shadcn/lint at `9231259` reports `"bg-pink-500 " + a`. |
 | A tag inside an expression, `{on ? <b className="bg-pink-500" /> : null}`, is read | A `~H` inside a template's `{...}` is not read by any rule. |
+| Every call to a merge function in a file is checked, on no component, unless a class site or another such call has read it | The same, in Elixir code and in a template's `{...}`, `<%= ... %>`, `:if` and `:for`. A class site reads more here, so a call inside `Enum.join`, `String.trim`, `<>` or a lookup on a map is that site's: `<.button class={Enum.join([cn("bg-pink-500")], " ")}>` under a contract allowing the class has no finding here, and `[cn("bg-pink-500")].join(" ")` has one there. An EEx tag a block splits does not parse alone, so `<%= Enum.map(cn("bg-pink-500"), fn x -> %>` and `<% end, cn("bg-pink-500")) %>` have no finding here, and the `.map` has one there. |
 | Received `className` prop | A function component's received `class`; socket assigns in a LiveView `render/1` are not received props. |
 | `allowDynamicIdentifiers`: `floatingStyles`, `styles.popper`. A name is exempt, with whatever it reads, unless its value is an object literal | `allow_dynamic_identifiers`: `@floating_styles`, `floating_styles`, `assigns.floating_styles`, `styles.popper`, with the same rule. A style is text here, so what still gets checked is a string, `<>`, a sigil or a list, as well as a map, which stays dynamic. In Vue and Svelte, @shadcn/lint at `9231259` exempts a string bound to an allowed name, as only an object literal counts there. `styles[:popper]` and `Map.get(styles, :popper)` are that path too, where a computed member is no name in @shadcn/lint. `Map.get(styles, :popper, other)` is `styles.popper ?? other`: `other` is a value of its own. `Floating.styles` names a call, which has no name in @shadcn/lint, since Elixir reaches a library through one. So `styles.popper()` under `styles.popper` is exempt here and dynamic there. A value assigned in `mount/3` or a helper has no equivalent in @shadcn/lint: it cannot be read here, so a name exempts it. A variable spread in, as in `{...{ style: s }}`, is uncertain in @shadcn/lint at `9231259`, since an object put in another can change. A value cannot here, so `{%{style: s}}` is read like `style={s}`. An entry that cannot match is a configuration error here, and is ignored there. |
 | `{{component}}` as `Button` | `.button`, the way the tag is written. Contract patterns match the function name: `^button$`. |

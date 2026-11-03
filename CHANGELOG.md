@@ -39,6 +39,16 @@ Each of these reports something that passed before.
 
 **Whatever your configuration.**
 
+- **Merge-function calls outside a class value.** Every call to `cn`, `Tails.classes`,
+  `TwMerge.merge`, `Twix.tw` or a function in `merge_functions` or `variant_functions` is now
+  checked, wherever the file has it. In a template that is `title={cn("bg-pink-500")}`,
+  `<div>{cn("bg-pink-500")}</div>`, `{render_slot(@a, cn("bg-pink-500"))}`, `<%= %>`, `<% %>`,
+  `:if`, `:for`, the condition of `class={if cn("bg-pink-500"), do: "p-1"}`, and a call nothing
+  follows, as in `class={foo(cn("bg-pink-500"))}`. In Elixir code it is a module attribute, a
+  default argument, a module's body and a script. A piped value is read as well, as in
+  `"bg-pink-500" |> cn()`. Such a class is on no component, so a contract does not exempt it,
+  and `no_restyle` and `require_static_classes` say nothing about it. A call a class attribute
+  reads stays that attribute's.
 - **Classes further away.** A class is followed through 64 bindings instead of 4: variables,
   attributes, functions and lookups. A class more than four links away now reaches every
   rule. Past 64, or at an unknown call more than four links away, `require_static_classes`

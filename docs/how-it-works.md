@@ -243,7 +243,14 @@ unreadable either: it is only looked through for raw colors.
   tags, components and slots.
 - `style` attributes and `<style>` elements; SVG color attributes `fill`,
   `stroke`, `color`, `stop-color`, `flood-color` and `lighting-color`.
-- Merge-function calls anywhere in a module, and `attr :class` defaults.
+- `attr :class` defaults.
+- Merge-function calls anywhere in a file. In Elixir code, that is in a function or out of
+  one, such as a module attribute or a default argument. In a template, it is in a `{...}`,
+  `<%= ... %>`, `:if` or `:for`, whatever surrounds the call. A call a class attribute reads
+  is that attribute's, so a component's contract decides it. Any other call, as in
+  `title={cn("bg-pink-500")}` or `class={foo(cn("bg-pink-500"))}`, is checked on no
+  component: no contract reaches it, and `no_restyle` and `require_static_classes` say
+  nothing about it.
 - With `scan_all_strings` on `no_raw_colors` or `no_arbitrary_values`, every string literal
   with a hyphen: in Elixir code, in quoted attribute values, and in a template's `{...}` and
   `<%= ... %>`, `:if` and `:for` included. Plain map keys are skipped. Text between tags, an
@@ -267,6 +274,8 @@ Files come from `inputs`, without any path that has a directory named `deps` in 
   `scan_all_strings`, and there not when the map is written in a template.
 - **Templates inside expressions.** A `~H` in a template's `{...}`, as in
   `{if @on, do: ~H|<b class="bg-pink-500" />|}`, is not read by any rule.
+- **EEx tags a block splits.** `<%= Enum.map(cn("bg-pink-500"), fn x -> %>` and
+  `<% end, cn("bg-pink-500")) %>` do not parse alone, so no rule reads what is in them.
 - **Patterns.** `%{a: s} = %{a: "color: red"}` does not read `s`, which is dynamic.
 - **Plain CSS.** Stylesheets and `@apply` are outside these rules.
 - **Locally rebuilt components** are not the design system; token rules still

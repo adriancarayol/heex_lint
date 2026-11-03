@@ -72,7 +72,8 @@ defmodule HeexLint.Project.Source do
 
       name ->
         name = if parent, do: "#{parent}.#{name}", else: name
-        module = read_module(%ModuleInfo{name: name, file: path, line: meta[:line]}, body)
+        info = %ModuleInfo{name: name, file: path, line: meta[:line], body: body}
+        module = read_module(info, body)
 
         body
         |> Code.statements()

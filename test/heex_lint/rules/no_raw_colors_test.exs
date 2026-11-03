@@ -256,6 +256,295 @@ defmodule HeexLint.Rules.NoRawColorsTest do
     assert finding.message =~ ~s("bg-pink-500")
   end
 
+  describe "merge-function calls no class site reads" do
+    @calls [no_raw_colors: :error]
+    @contract [no_raw_colors: {:error, contracts: [[pattern: "^button$", allow: ["*-pink-*"]]]}]
+
+    defp in_code(dir, code, options \\ []) do
+      module = """
+      defmodule AppWeb.Styles do
+        import AppWeb.Cn
+
+        #{code}
+      end
+      """
+
+      helper = "defmodule AppWeb.Cn do\n  def cn(value), do: value\nend\n"
+
+      lint(dir, %{"lib/app_web/styles.ex" => module, "lib/app_web/cn.ex" => helper},
+        rules: [no_raw_colors: {:error, options}]
+      )
+    end
+
+    test "are checked wherever a template has them", %{tmp_dir: dir} do
+      for template <- [
+            ~S|<div title={cn("bg-pink-500")} />|,
+            ~S|<div>{cn("bg-pink-500")}</div>|,
+            ~S|<div>{render_slot(@a, cn("bg-pink-500"))}</div>|,
+            ~S|<.button {Map.put(@rest, :class, cn("bg-pink-500"))}>x</.button>|,
+            ~S|<div {%{title: cn("bg-pink-500")}} />|,
+            ~S|<div class={foo(cn("bg-pink-500"))} />|,
+            ~S|<div class={if cn("bg-pink-500"), do: "p-1", else: "p-2"} />|,
+            ~S|<div class={cn("p-1", foo(cn("bg-pink-500")))} />|,
+            ~S|<% c = cn("bg-pink-500") %><b class={c} />|,
+            ~S|<%= cn("bg-pink-500") %>|,
+            ~S|<%= if cn("bg-pink-500") do %>x<% end %>|,
+            ~S|<div :if={cn("bg-pink-500")} />|,
+            ~S|<div :for={x <- cn("bg-pink-500")} />|,
+            ~S|<div style={cn("bg-pink-500")} />|,
+            ~S|<div style={"--x: #{cn("bg-pink-500")}"} />|,
+            ~S|<div data-class={cn("bg-pink-500")} />|,
+            ~S|<.card><:foo title={cn("bg-pink-500")}>x</:foo></.card>|,
+            ~S|<div title={Tails.classes("bg-pink-500")} />|,
+            ~S[<div title={"bg-pink-500" |> cn()} />],
+            ~S[<div title={"bg-pink-500" |> cn() |> foo()} />]
+          ] do
+        assert [finding] = colors(dir, template), template
+        assert finding.message =~ ~s("bg-pink-500"), template
+      end
+    end
+
+    test "but only those", %{tmp_dir: dir} do
+      assert colors(dir, ~S|<div title={other("bg-pink-500")} />|) == []
+      assert colors(dir, ~S|<div title={@cn} />|) == []
+      assert colors(dir, ~S|<div title={cn} />|) == []
+      assert colors(dir, ~S|<div title="cn('bg-pink-500')" />|) == []
+      assert colors(dir, ~S|<div title={@v.cn("bg-pink-500")} />|) == []
+      assert colors(dir, ~S|<%!-- cn("bg-pink-500") --%><!-- {cn("bg-pink-500")} -->|) == []
+      assert colors(dir, ~S|<%% cn("bg-pink-500") %>|) == []
+    end
+
+    test "are one finding when one reads another", %{tmp_dir: dir} do
+      assert [_] = colors(dir, ~S|<div title={cn("p-1", cn("bg-pink-500"))} />|)
+      assert [_] = colors(dir, ~S|<div title={cn(cn(cn("bg-pink-500")))} />|)
+      assert [_] = colors(dir, ~S|<div class={cn("p-1", cn("bg-pink-500"))} />|)
+    end
+
+    test "a call a class site reads stays that site's", %{tmp_dir: dir} do
+      for template <- [
+            ~S|<.button class={cn("bg-pink-500")}>x</.button>|,
+            ~S|<.button class={cn("p-1", cn("bg-pink-500"))}>x</.button>|,
+            ~S|<.button class={@a && cn("bg-pink-500")}>x</.button>|,
+            ~S|<.button class={if @a, do: cn("bg-pink-500")}>x</.button>|,
+            ~S|<.button class={[cn("bg-pink-500")]}>x</.button>|,
+            ~S|<.button {%{class: cn("bg-pink-500")}}>x</.button>|,
+            ~S[<.button class={"bg-pink-500" |> cn()}>x</.button>]
+          ] do
+        files = %{"lib/app_web/live/page_live.ex" => live(template)}
+        assert lint(dir, files, rules: @contract) == [], template
+      end
+    end
+
+    test "any other call is on no component, so a contract does not reach it", %{tmp_dir: dir} do
+      for template <- [
+            ~S|<.button title={cn("bg-pink-500")}>x</.button>|,
+            ~S|<.button class={foo(cn("bg-pink-500"))}>x</.button>|,
+            ~S|<.button class={cn("p-1", foo(cn("bg-pink-500")))}>x</.button>|,
+            ~S|<.button class={if cn("bg-pink-500"), do: "p-1", else: "p-2"}>x</.button>|,
+            ~S|<.button class={cn("bg-pink-500") && "p-1"}>x</.button>|,
+            ~S|<.button {Map.put(@rest, :class, cn("bg-pink-500"))}>x</.button>|
+          ] do
+        files = %{"lib/app_web/live/page_live.ex" => live(template)}
+        assert [finding] = lint(dir, files, rules: @contract), template
+        refute finding.message =~ ".button", template
+      end
+    end
+
+    test "a class site does not claim another attribute's call", %{tmp_dir: dir} do
+      template = ~S|<.button class={cn("bg-pink-500")} title={cn("bg-pink-500")}>x</.button>|
+      files = %{"lib/app_web/live/page_live.ex" => live(template)}
+      assert [%{column: column}] = lint(dir, files, rules: @contract)
+      assert column > String.length(~S|<.button class={cn("bg-pink-500")} title|)
+    end
+
+    test "are reported at the literal", %{tmp_dir: dir} do
+      assert [{1, 15, "bg-pink-500"}] =
+               in_template(dir, ~S|<b title={cn("bg-pink-500")} />|, @calls)
+
+      assert [{1, 9, "bg-pink-500"}] = in_template(dir, ~S|<b>{cn("bg-pink-500")}</b>|, @calls)
+      assert [{1, 9, "bg-pink-500"}] = in_template(dir, ~S|<%= cn("bg-pink-500") %>|, @calls)
+
+      assert [{4, 2, "bg-pink-500"}] =
+               in_template(dir, ~s|<b\n  title={cn(\n"p-1",\n"bg-pink-500")} />|, @calls)
+    end
+
+    test "are reported at the literal in a sigil", %{tmp_dir: dir} do
+      module = """
+      defmodule AppWeb.Page do
+        use Phoenix.Component
+
+        def page(assigns) do
+          ~H\"\"\"
+          <b
+            title={cn("bg-pink-500")}
+          />
+          \"\"\"
+        end
+      end
+      """
+
+      assert [%{line: 7, column: 18}] =
+               lint(dir, %{"lib/app_web/page.ex" => module}, rules: @calls)
+    end
+
+    test "read assigns, props and the module's functions as a class site does", %{tmp_dir: dir} do
+      helpers = ~S|def tone, do: "bg-pink-500"|
+
+      module =
+        component_module(
+          "Rows",
+          "row",
+          ~S|attr :class, :string, default: "bg-pink-600"|,
+          ~S|<b title={cn(@class, tone())} />|,
+          "assigns = assign(assigns, :a, 1)\n"
+        )
+        |> String.replace("end\nend\n", "end\n#{helpers}\nend\n")
+
+      files = %{"lib/app_web/rows.ex" => module}
+      found = lint(dir, files, rules: @calls)
+      assert found |> Enum.map(& &1.message) |> Enum.count(&(&1 =~ ~s("bg-pink-500"))) == 1
+      assert found |> Enum.map(& &1.message) |> Enum.count(&(&1 =~ ~s("bg-pink-600"))) == 1
+    end
+
+    test "are read from a function by an embedded template, at the call", %{tmp_dir: dir} do
+      files = %{
+        "lib/app_web/page.ex" => """
+        defmodule AppWeb.Page do
+          use Phoenix.Component
+          embed_templates "page/*"
+          def tone, do: "bg-pink-500"
+        end
+        """,
+        "lib/app_web/page/show.html.heex" => ~S|<b title={cn(tone())} />| <> "\n"
+      }
+
+      assert [%{line: 1, column: 14} = finding] = lint(dir, files, rules: @calls)
+      assert Path.basename(finding.file) == "show.html.heex"
+    end
+
+    test "answer to the configured names", %{tmp_dir: dir} do
+      assert colors(dir, ~S|<div title={classes("bg-pink-500")} />|) == []
+
+      assert [_] =
+               colors(dir, ~S|<div title={classes("bg-pink-500")} />|,
+                 merge_functions: ["classes"]
+               )
+
+      assert [_] =
+               colors(dir, ~S|<div title={Helpers.classes("bg-pink-500")} />|,
+                 merge_functions: ["Helpers.classes"]
+               )
+
+      assert colors(dir, ~S|<div title={tv(%{base: "bg-pink-500"})} />|) == []
+
+      assert [_] =
+               colors(dir, ~S|<div title={tv(%{base: "bg-pink-500"})} />|,
+                 variant_functions: ["tv"]
+               )
+    end
+
+    test "reach the other class rules, and none about a component", %{tmp_dir: dir} do
+      template = ~S|<.button title={cn("bg-(--nope) p-[13px] foo()")}>x</.button>|
+      files = %{"lib/app_web/live/page_live.ex" => live(template)}
+
+      rules = [no_arbitrary_values: :error, no_unknown_variables: :error]
+
+      assert [%{rule: :no_arbitrary_values}, %{rule: :no_unknown_variables}] =
+               lint(dir, files, rules: rules) |> Enum.sort_by(& &1.rule)
+
+      assert lint(dir, files, rules: [no_restyle: :error, require_static_classes: :error]) == []
+    end
+
+    test "--fix rewrites them in place", %{tmp_dir: dir} do
+      for {template, fixed} <- [
+            {~S|<b title={cn("p-[16px]")} />|, ~S|<b title={cn("p-4")} />|},
+            {~S|<b>{cn("p-1", "p-[16px]")}</b>|, ~S|<b>{cn("p-1", "p-4")}</b>|},
+            {~S|<%= cn("p-[16px]") %>|, ~S|<%= cn("p-4") %>|},
+            {~S|<b class={foo(cn("p-[16px]"))} />|, ~S|<b class={foo(cn("p-4"))} />|}
+          ] do
+        files = %{
+          "lib/app_web/page.ex" =>
+            "defmodule AppWeb.Page do\n  use Phoenix.Component\n  embed_templates \"page/*\"\nend\n",
+          "lib/app_web/page/show.html.heex" => template <> "\n",
+          "lib/app_web/live/page_live.ex" => live(template)
+        }
+
+        result = run(dir, files, rules: [no_arbitrary_values: :error])
+        assert HeexLint.Fixer.apply(result.diagnostics) == 2, template
+        assert File.read!(Path.join(dir, "lib/app_web/page/show.html.heex")) == fixed <> "\n"
+        assert File.read!(Path.join(dir, "lib/app_web/live/page_live.ex")) == live(fixed)
+      end
+    end
+
+    test "do not add to a template that does not parse, or code that does not", %{tmp_dir: dir} do
+      assert colors(dir, ~S|<div title={cn("bg-pink-500"} />|) == []
+      assert colors(dir, ~S|<div title={cn(} />|) == []
+    end
+
+    test "a tag a block leaves open does not parse alone, so it is unread", %{tmp_dir: dir} do
+      assert colors(dir, ~S|<%= Enum.map(cn("bg-pink-500"), fn x -> %><b /><% end) %>|) == []
+      assert colors(dir, ~S|<%= Enum.map(@a, fn x -> %><b /><% end, cn("bg-pink-500")) %>|) == []
+    end
+
+    test "are checked anywhere in Elixir code", %{tmp_dir: dir} do
+      for code <- [
+            ~S|@x cn("bg-pink-500")|,
+            ~S|@x Tails.classes("bg-pink-500")|,
+            ~S|def a(x \\ cn("bg-pink-500")), do: x|,
+            ~S|def a(x \\ cn("bg-pink-500")) when is_binary(x), do: x|,
+            ~S|defp a(x \\ cn("bg-pink-500")), do: x|,
+            ~S|attr :foo, :string, default: cn("bg-pink-500")|,
+            ~S|cn("bg-pink-500")|,
+            ~S[def a, do: "bg-pink-500" |> cn()],
+            ~S[def a, do: "bg-pink-500" |> cn() |> String.trim()],
+            ~S|if true do def a, do: cn("bg-pink-500") end|,
+            ~S|for x <- [1] do def a(unquote(x)), do: cn("bg-pink-500") end|,
+            ~S|def unquote(:a)(), do: cn("bg-pink-500")|,
+            ~S|if true do defmodule In do def a, do: cn("bg-pink-500") end end|
+          ] do
+        assert [finding] = in_code(dir, code), code
+        assert finding.message =~ ~s("bg-pink-500"), code
+      end
+    end
+
+    test "outside a function they read the module's attributes", %{tmp_dir: dir} do
+      assert [_] = in_code(dir, ~s|@a "bg-pink-500"\n@b cn(@a)|)
+      assert [_] = in_code(dir, ~s|@a "bg-pink-500"\ndef b(c \\\\ cn(@a)), do: c|)
+    end
+
+    test "a nested module reads its own attributes, once", %{tmp_dir: dir} do
+      code = """
+      @a "p-1"
+
+      defmodule In do
+        @a "bg-pink-500"
+        @b cn(@a)
+      end
+      """
+
+      assert [finding] = in_code(dir, code)
+      assert finding.message =~ ~s("bg-pink-500")
+    end
+
+    test "and in a file with no module", %{tmp_dir: dir} do
+      files = %{"lib/app_web/script.exs" => ~S|Tails.classes("bg-pink-500")| <> "\n"}
+      assert [_] = lint(dir, files, rules: @calls)
+    end
+
+    test "a function's own head is a pattern and no call", %{tmp_dir: dir} do
+      for code <- [
+            ~S|def cn(%{"bg-pink-500" => value}), do: value|,
+            ~S|def cn("bg-pink-500"), do: 1|,
+            ~S|def cn(value) when value == "bg-pink-500", do: value|,
+            ~S|def cn(x \\ "bg-pink-500"), do: x|,
+            ~S|if true do def cn("bg-pink-500"), do: 1 end|,
+            ~S|defmacro cn("bg-pink-500"), do: 1|
+          ] do
+        assert in_code(dir, code) == [], code
+      end
+    end
+  end
+
   test "scan_all_strings checks every string literal", %{tmp_dir: dir} do
     module = """
     defmodule AppWeb.Tones do

@@ -30,6 +30,9 @@ defmodule HeexLint.Collector do
   A style also keeps what its reads were called (`reads`), since which names count
   as a library's computed styles is a rule option, and sites are collected for
   every rule. `outside_names/2` is how the rule asks.
+
+  `calls` says where the merge and variant functions it read with no hop are:
+  those are this read's, and a call nothing read is a site of its own.
   """
 
   alias HeexLint.Code
@@ -38,7 +41,7 @@ defmodule HeexLint.Collector do
 
   @no_reads %{within: %{}, at: %{}}
 
-  defstruct strings: [], unresolved: [], reads: @no_reads
+  defstruct strings: [], unresolved: [], reads: @no_reads, calls: []
 
   @type item ::
           {:char, String.t(), {pos_integer(), pos_integer()}}
@@ -74,7 +77,8 @@ defmodule HeexLint.Collector do
   @type t :: %__MODULE__{
           strings: [string_value()],
           unresolved: [{pos_integer(), pos_integer()}],
-          reads: reads()
+          reads: reads(),
+          calls: [{pos_integer(), pos_integer()}]
         }
 
   # How many bindings a route to a class follows before the next one is
@@ -263,6 +267,29 @@ defmodule HeexLint.Collector do
     |> result()
   end
 
+  @doc """
+  Collects from the merge-function calls of a template expression, in source order,
+  at their place in the template. A call in `read`, the places of those a site has
+  read already, is skipped, and so is one a call before it read.
+  """
+  @spec template_calls([Macro.t()], HeexLint.Element.value(), MapSet.t(), map(), keyword()) ::
+          [t()]
+  def template_calls(calls, {:expr, code, position}, read, context, opts \\ []) do
+    text = expression_text(code, position, context)
+
+    {collected, _read} =
+      Enum.flat_map_reduce(calls, read, fn {_callee, meta, _args} = call, read ->
+        if MapSet.member?(read, text.locate.(meta[:line], meta[:column])) do
+          {[], read}
+        else
+          collected = context |> state(opts, text, :template) |> visit(call) |> result()
+          {[collected], Enum.into(collected.calls, read)}
+        end
+      end)
+
+    collected
+  end
+
   # Positions inside a `{...}` expression, as they are in the template's file.
   defp expression_text(code, position, context) do
     %{
@@ -323,6 +350,7 @@ defmodule HeexLint.Collector do
       map_keys: nil,
       read: :value,
       reads: @no_reads,
+      calls: [],
       naming: nil
     }
   end
@@ -331,7 +359,8 @@ defmodule HeexLint.Collector do
     %__MODULE__{
       strings: Enum.reverse(state.strings),
       unresolved: Enum.uniq(Enum.reverse(state.unresolved)),
-      reads: state.reads
+      reads: state.reads,
+      calls: state.calls
     }
   end
 
@@ -908,10 +937,10 @@ defmodule HeexLint.Collector do
         end
 
       is_binary(name) and MapSet.member?(state.variant, name) ->
-        Enum.reduce(args, state, &visit_values(&2, &1))
+        Enum.reduce(args, read_call(state, meta), &visit_values(&2, &1))
 
       is_binary(name) and MapSet.member?(state.merge, name) ->
-        Enum.reduce(args, state, &visit(&2, &1))
+        Enum.reduce(args, read_call(state, meta), &visit(&2, &1))
 
       is_atom(callee) and local_function?(state, Atom.to_string(callee), arity) ->
         if state.mode == :template and is_list(state.map_keys),
@@ -922,6 +951,12 @@ defmodule HeexLint.Collector do
         unresolved(state, meta_of(node), function_name(callee))
     end
   end
+
+  # A call reached by a hop stays a site of its own, as in @shadcn/lint.
+  defp read_call(%{depth: 0} = state, meta),
+    do: %{state | calls: [locate(state, meta) | state.calls]}
+
+  defp read_call(state, _meta), do: state
 
   defp callee_name(callee) when is_atom(callee), do: Atom.to_string(callee)
 

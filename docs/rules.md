@@ -144,9 +144,10 @@ the shared settings of the same name:
 | `variant_functions` | Adds functions whose map or keyword values contain classes.    |
 
 The built-in merge functions are `cn`, `Tails.classes`, `TwMerge.merge` and
-`Twix.tw`. Inside class values, `Enum.join`, `Enum.filter`, `Enum.reject`,
-`Enum.uniq`, `Enum.concat`, `List.flatten`, `List.wrap` and `String.trim`
-are read through as well.
+`Twix.tw`. A call to one is checked wherever the file has it, inside a class value
+or not: see [where it looks](how-it-works.md#where-it-looks). Inside class values,
+`Enum.join`, `Enum.filter`, `Enum.reject`, `Enum.uniq`, `Enum.concat`,
+`List.flatten`, `List.wrap` and `String.trim` are read through as well.
 
 ### Your own words
 
