@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- The theme read resolves a package `@import` as @shadcn/lint's does. `exports` reads
+  the conditions `import`, `default`, `require`, `node`, `types` and then the others as
+  written, where it read `style` and then `default`. It also reads array targets, the
+  package's `imports` map (`#tokens`), `src/`, and a package with no `package.json`, and
+  it refuses a target that leaves the package. A package's `style` and `main` fields
+  now count only when a bare import finds no other file. **This changes findings, with
+  or without `theme_imports`:** a package's tokens, `@utility` names and classes can
+  come from another file than before. That file can differ from the one Tailwind builds,
+  since Tailwind prefers `style`. A `{"style": "./theme.css", "import": "./index.js"}`
+  entry now reads the script and contributes nothing, which **adds findings**: name the
+  stylesheet by its own path instead. A named package of a shape it could not read
+  before **loses findings**: its colors were reported as undeclared.
 - New `theme_imports` setting, as in @shadcn/lint: regexes on `@import` specifiers
   whose stylesheets count as your own though they resolve under `node_modules`, for
   a design system installed as a package. Stylesheets the package imports from within

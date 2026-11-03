@@ -140,6 +140,29 @@ pattern that is not a valid regex warns once and is ignored.
 `theme_imports` is a setting only; rules do not accept it as an option. In an
 umbrella it applies to every app's theme.
 
+### Which file a package import reads
+
+Tokens come from the file the import resolves to, as in @shadcn/lint: the package's
+`exports`, by the conditions `import`, `default`, `require`, `node`, `types` and then
+the others as written, and otherwise its own files, under `src/` too. Tailwind's build
+prefers a `style` condition, so the two can read different files. With this package:
+
+```json
+{ "exports": { ".": { "style": "./theme.css", "import": "./index.js" } } }
+```
+
+`@import "@acme/ui"` builds `theme.css` but reads `index.js`, which declares nothing,
+so the package's colors stay undeclared. Import the stylesheet itself instead: a
+subpath the package exports with one target, or a path with a pattern that matches it.
+
+```css
+@import "../node_modules/@acme/ui/theme.css";
+```
+
+```elixir
+settings: [theme_imports: ["node_modules/@acme/ui/"]]
+```
+
 ### A stylesheet from a Hex package
 
 This needs no setting. `deps/` is not `node_modules`, so a stylesheet there,

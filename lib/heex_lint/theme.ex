@@ -923,139 +923,316 @@ defmodule HeexLint.Theme do
 
   ## Stylesheet resolution
 
+  # A port of the `resolveFile` @shadcn/lint's theme read calls with `[".css"]`.
+  # Tailwind's build resolves differently, with a `style` condition first, so a
+  # kit's tokens can come from another file than the one it builds. Both linters
+  # share that, and it is what keeps their findings the same.
+
+  @preferred_conditions ["import", "default", "require", "node", "types"]
+
+  # Real exports nest conditions a few levels deep. Past this a manifest has no
+  # target.
+  @max_condition_depth 32
+
+  # nodenext and bundler resolution import "./button.js" for button.ts.
+  @source_for_js %{
+    ".js" => [".ts", ".tsx"],
+    ".jsx" => [".tsx"],
+    ".mjs" => [".mts", ".ts"],
+    ".cjs" => [".cts", ".ts"]
+  }
+
   @doc """
-  Resolves an `@import` the way Tailwind's bundler does: relative paths,
-  then a package naming itself, then packages under `node_modules` through
-  their `style` export. The answer is the file's real path, symlinks resolved.
+  Resolves an `@import` the way @shadcn/lint's theme read does: a path, an
+  `imports` map entry (`#tokens`), or a package under `node_modules` through its
+  `exports` and then its own files. The package's `style` and `main` fields count
+  only when that finds nothing, which @shadcn/lint does not do. The answer is the
+  file's real path, symlinks resolved.
   """
   @spec resolve_stylesheet(String.t(), String.t()) :: String.t() | nil
   def resolve_stylesheet(base, "tailwindcss"),
     do: resolve_stylesheet(base, "tailwindcss/index.css")
 
   def resolve_stylesheet(base, id) do
+    base = Path.expand(base)
+    root = package_root(base) || base
+
     target =
       cond do
         Regex.match?(~r/^(?:https?:|data:)/, id) ->
           nil
 
-        String.starts_with?(id, ".") or Path.type(id) == :absolute ->
-          full = Path.expand(id, base)
-          stylesheet_at(Path.dirname(full), Path.basename(full))
+        path_import?(id) ->
+          stylesheet_for(Path.expand(id, base))
+
+        String.starts_with?(id, "#") ->
+          Enum.find_value(imports_candidates(id, root), &stylesheet_for/1)
 
         true ->
-          resolve_package(base, id)
+          Enum.find_value(package_candidates(id, root, base), &stylesheet_for/1) ||
+            package_field_stylesheet(id, root, base)
       end
 
     target && real_path(target)
   end
 
-  defp resolve_package(base, id) do
-    with [_, name | subpath] <- Regex.run(~r/^(@[^\/]+\/[^\/]+|[^\/]+)(?:\/(.*))?$/, id),
-         dir when dir != nil <- package_directory(base, name) do
-      pkg = read_package_json(dir)
-      exports = Map.get(pkg, "exports")
-      subpath = List.first(subpath)
+  defp path_import?(id) do
+    id in [".", ".."] or String.starts_with?(id, ["./", "../"]) or Path.type(id) == :absolute
+  end
 
-      if subpath not in [nil, ""] do
-        case is_map(exports) && exported_style(exports, subpath) do
-          target when is_binary(target) ->
-            existing_file(Path.join(dir, target))
+  defp imports_candidates(id, root) do
+    case read_package_json(root)["imports"] do
+      {:object, _} = imports ->
+        mapped =
+          Enum.flat_map(map_subpath(imports, id, root, true), fn
+            {:file, file} -> [file]
+            # A package target resolves as a package, never as a path.
+            {:spec, spec} -> package_candidates(spec, root, root)
+          end)
+
+        mapped ++ directory_aliases(imports, id, root)
+
+      _ ->
+        []
+    end
+  end
+
+  defp package_candidates(id, root, from) do
+    with {name, subpath} <- split_package_specifier(id),
+         dir when dir != nil <- find_package(name, root, from) do
+      key = if subpath == "", do: ".", else: "./" <> subpath
+
+      mapped =
+        case read_package_json(dir)["exports"] do
+          {:object, _} = exports ->
+            files = for {:file, file} <- map_subpath(exports, key, dir), do: file
+            files ++ directory_aliases(exports, key, dir)
 
           _ ->
-            full = Path.join(dir, subpath)
-            stylesheet_at(Path.dirname(full), Path.basename(full))
+            []
         end
-      else
-        root =
-          cond do
-            is_binary(exports) -> exports
-            is_map(exports) -> style_target(Map.get(exports, ".", exports))
-            true -> nil
-          end
 
-        Enum.find_value([root, pkg["style"], pkg["main"]], fn
-          target when is_binary(target) -> existing_file(Path.join(dir, target))
+      # The package's own files, never a path that walks out of it.
+      own = [Path.join(dir, subpath), Path.join([dir, "src", subpath])]
+      mapped ++ (own |> Enum.map(&Path.expand/1) |> Enum.filter(&inside?(dir, &1)))
+    else
+      _ -> []
+    end
+  end
+
+  # A directory alias against a wildcard key ("./components/*").
+  defp directory_aliases(map, key, dir) do
+    for {:file, file} <- map_subpath(map, key <> "/*", dir), do: Path.dirname(file)
+  end
+
+  # Not in @shadcn/lint: Tailwind reads a package's `style` field, so a kit that
+  # only names its stylesheet there still contributes what it declares.
+  defp package_field_stylesheet(id, root, from) do
+    with {name, ""} <- split_package_specifier(id),
+         dir when dir != nil <- find_package(name, root, from) do
+      manifest = read_package_json(dir)
+
+      Enum.find_value(["style", "main"], fn field ->
+        with target when is_binary(target) <- manifest[field],
+             file = Path.expand(Path.join(dir, target)),
+             true <- inside?(dir, file) do
+          existing_file(file)
+        else
           _ -> nil
-        end) || stylesheet_at(dir, "index")
-      end
+        end
+      end)
     else
       _ -> nil
     end
   end
 
-  defp package_directory(base, name) do
-    ancestors = base |> Path.expand() |> Stream.iterate(&Path.dirname/1) |> Enum.take(32)
-    ancestors = Enum.uniq(ancestors)
+  defp split_package_specifier(id) do
+    parts = String.split(id, "/")
+    name_length = if String.starts_with?(id, "@"), do: 2, else: 1
 
-    self_package_directory(ancestors, name) ||
-      Enum.find_value(ancestors, fn dir ->
-        candidate = Path.join([dir, "node_modules", name])
-        if File.regular?(Path.join(candidate, "package.json")), do: candidate
-      end)
+    if length(parts) >= name_length do
+      {name, rest} = Enum.split(parts, name_length)
+      {Enum.join(name, "/"), Enum.join(rest, "/")}
+    end
   end
 
-  # A package importing itself by name: from its real path, a workspace
-  # package may have no node_modules above it that links it back.
-  defp self_package_directory(ancestors, name) do
-    dir = Enum.find(ancestors, &File.regular?(Path.join(&1, "package.json")))
-    if dir && read_package_json(dir)["name"] == name, do: dir
+  # A package naming itself comes first: from its real path, a workspace package
+  # may have no node_modules above it that links it back. `root` is the nearest
+  # package.json above the import, so `from` has the same one.
+  defp find_package(name, root, from) do
+    self_package_directory(name, root) || package_directory(name, root) ||
+      package_directory(name, from)
   end
 
+  defp self_package_directory(name, root) do
+    if read_package_json(root)["name"] == name, do: real_path(root)
+  end
+
+  # By the directory alone: a package with no package.json still has files.
+  defp package_directory(name, from) do
+    found = find_up(from, Path.join("node_modules", name))
+    found && real_path(found)
+  end
+
+  defp package_root(from) do
+    manifest = find_up(from, "package.json")
+    manifest && Path.dirname(manifest)
+  end
+
+  defp find_up(from, name), do: find_up(from, name, 32)
+
+  defp find_up(_dir, _name, 0), do: nil
+
+  defp find_up(dir, name, depth) do
+    candidate = Path.join(dir, name)
+    parent = Path.dirname(dir)
+
+    cond do
+      File.exists?(candidate) -> candidate
+      parent == dir -> nil
+      true -> find_up(parent, name, depth - 1)
+    end
+  end
+
+  # Objects keep their order, since the first matching condition or key wins:
+  # `{:object, pairs}`, with a repeated key where it first appeared and with its
+  # last value, as `JSON.parse` has it. The top level is a plain map.
   defp read_package_json(dir) do
     with {:ok, text} <- File.read(Path.join(dir, "package.json")),
-         {:ok, json} when is_map(json) <- JSON.decode(text) do
-      json
+         {{:object, pairs}, :ok, ""} <- decode_ordered(text) do
+      Map.new(pairs)
     else
       _ -> %{}
     end
   end
 
-  defp style_target(entry) when is_binary(entry), do: entry
+  defp decode_ordered(text) do
+    JSON.decode(text, :ok,
+      object_start: fn _acc -> [] end,
+      object_push: fn key, value, pairs -> [{key, value} | pairs] end,
+      object_finish: fn pairs, acc -> {{:object, in_written_order(pairs)}, acc} end
+    )
+  end
 
-  defp style_target(entry) when is_map(entry),
-    do: Enum.find_value(["style", "default"], &style_target(Map.get(entry, &1)))
+  defp in_written_order(newest_first) do
+    pairs = Enum.reverse(newest_first)
+    last = Map.new(pairs)
+    pairs |> Enum.uniq_by(&elem(&1, 0)) |> Enum.map(fn {key, _} -> {key, last[key]} end)
+  end
 
-  defp style_target(_), do: nil
+  # Through an exports or imports map, longest key first, as files inside `dir`
+  # or, with `bare`, as package specifiers an imports map points at.
+  defp map_subpath({:object, pairs}, subpath, dir, bare \\ false) do
+    pairs
+    |> Enum.filter(fn {key, _} -> String.starts_with?(key, [".", "#"]) end)
+    |> Enum.sort_by(fn {key, _} -> -String.length(key) end)
+    |> Enum.flat_map(fn {key, value} ->
+      captured = match_pattern(key, subpath)
 
-  defp exported_style(exports, subpath) do
-    case style_target(Map.get(exports, "./" <> subpath)) do
-      nil ->
-        exports
-        |> Map.keys()
-        |> Enum.filter(&(String.starts_with?(&1, "./") and String.contains?(&1, "*")))
-        |> Enum.sort_by(&(-String.length(&1)))
-        |> Enum.find_value(fn key ->
-          [prefix, suffix] = key |> String.slice(2..-1//1) |> String.split("*", parts: 2)
+      with true <- captured != nil and safe_segments?(captured),
+           target when target != nil <- pick_target(value, &valid_target?(&1, bare), 0) do
+        map_target(target, captured, dir)
+      else
+        _ -> []
+      end
+    end)
+  end
 
-          if String.length(subpath) >= String.length(prefix) + String.length(suffix) and
-               String.starts_with?(subpath, prefix) and String.ends_with?(subpath, suffix) do
-            case style_target(Map.get(exports, key)) do
-              nil ->
-                nil
-
-              target ->
-                captured =
-                  String.slice(
-                    subpath,
-                    String.length(prefix),
-                    String.length(subpath) - String.length(prefix) - String.length(suffix)
-                  )
-
-                String.replace(target, "*", captured, global: false)
-            end
-          end
-        end)
-
-      target ->
-        target
+  defp map_target("./" <> _ = target, captured, dir) do
+    case package_target(dir, target, captured) do
+      nil -> []
+      file -> [{:file, file}]
     end
   end
 
-  defp stylesheet_at(dir, name) do
-    base = Path.join(dir, name)
+  defp map_target(target, captured, _dir), do: [{:spec, expand_target(target, captured)}]
 
-    existing_file(base) || existing_file(base <> ".css") ||
-      existing_file(Path.join(base, "index.css"))
+  defp valid_target?(target, bare), do: package_target?(target) or (bare and bare_target?(target))
+
+  # The first target `valid?` accepts, so an invalid one falls through to the next
+  # fallback. Each condition is tried once.
+  defp pick_target(value, valid?, _depth) when is_binary(value),
+    do: if(valid?.(value), do: value)
+
+  defp pick_target(_value, _valid?, depth) when depth >= @max_condition_depth, do: nil
+
+  defp pick_target(value, valid?, depth) when is_list(value),
+    do: Enum.find_value(value, &pick_target(&1, valid?, depth + 1))
+
+  defp pick_target({:object, pairs}, valid?, depth) do
+    preferred =
+      for key <- @preferred_conditions, pair = List.keyfind(pairs, key, 0), do: pair
+
+    rest =
+      Enum.reject(pairs, fn {key, _} ->
+        String.starts_with?(key, ".") or key in @preferred_conditions
+      end)
+
+    Enum.find_value(preferred ++ rest, fn {_key, value} ->
+      pick_target(value, valid?, depth + 1)
+    end)
+  end
+
+  defp pick_target(_value, _valid?, _depth), do: nil
+
+  # The text `*` captured, "" for an exact match, or nil.
+  defp match_pattern(pattern, value) do
+    case String.split(pattern, "*", parts: 2) do
+      [^value] ->
+        ""
+
+      [prefix, suffix] ->
+        taken = byte_size(prefix) + byte_size(suffix)
+
+        if byte_size(value) >= taken and String.starts_with?(value, prefix) and
+             String.ends_with?(value, suffix) do
+          binary_part(value, byte_size(prefix), byte_size(value) - taken)
+        end
+
+      _ ->
+        nil
+    end
+  end
+
+  defp expand_target(target, captured), do: String.replace(target, "*", captured, global: false)
+
+  # What Node refuses in a target or a `*` capture: walking up, reaching into
+  # node_modules, and percent-encoded separators.
+  defp safe_segments?(text) do
+    not Regex.match?(~r/%2f|%5c/i, text) and
+      not (text
+           |> String.split(["/", "\\"])
+           |> Enum.any?(&Regex.match?(~r/^(?:\.|%2e){1,2}\z|^node_modules\z/i, &1)))
+  end
+
+  defp package_target?("./" <> rest), do: safe_segments?(rest)
+  defp package_target?(_target), do: false
+
+  # An imports target may also name a package, never a path or a URL.
+  defp bare_target?(target), do: Regex.match?(~r/^[^.\/\\#][^:\\]*\z/, target)
+
+  # The file a target names, or nil when it would leave the package.
+  defp package_target(dir, target, captured) do
+    if package_target?(target) and safe_segments?(captured) do
+      file = Path.expand(expand_target(target, captured), dir)
+      if inside?(dir, file), do: file
+    end
+  end
+
+  defp inside?(dir, file),
+    do: file == dir or String.starts_with?(file, String.trim_trailing(dir, "/") <> "/")
+
+  defp stylesheet_for(candidate) do
+    existing_file(candidate) || source_for_js(candidate) ||
+      existing_file(candidate <> ".css") || existing_file(Path.join(candidate, "index.css"))
+  end
+
+  defp source_for_js(candidate) do
+    extension = Path.extname(candidate)
+
+    @source_for_js
+    |> Map.get(extension, [])
+    |> Enum.find_value(&existing_file(String.replace_suffix(candidate, extension, &1)))
   end
 
   defp existing_file(path), do: if(File.regular?(path), do: path)

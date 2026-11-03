@@ -40,7 +40,9 @@ Stylesheets under `node_modules` contribute no tokens. If your design system is
 installed as a package, name its import with
 [`theme_imports`](./design-systems.md#a-design-system-installed-as-a-package):
 `settings: [theme_imports: ["^@acme/ui/"]]`. The pattern reads the `@import` as
-your stylesheet writes it, not the path it resolves to.
+your stylesheet writes it, not the path it resolves to. If it is named and its colors
+are still undeclared, the import may reach another file than Tailwind builds: see
+[which file a package import reads](./design-systems.md#which-file-a-package-import-reads).
 
 ## The wrong stylesheet is used as the theme
 
