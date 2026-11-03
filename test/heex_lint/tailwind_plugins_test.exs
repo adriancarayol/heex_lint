@@ -231,6 +231,39 @@ defmodule HeexLint.TailwindPluginsTest do
         assert found_on(result, "text-huge") == []
       end
 
+      test "gives way to an @utility of that name, which says what it sets", %{tmp_dir: dir} do
+        files =
+          Map.put(
+            page(button("text-body")),
+            "assets/css/app.css",
+            @theme <> "\n@utility text-body { color: red; }\n"
+          )
+
+        result =
+          lint_with(@way, dir, files, no_restyle: {:error, allow: ["layout", "typography"]})
+
+        assert [message] = found_on(result, "text-body")
+        assert message =~ "owns its color"
+      end
+
+      test "is not read from a custom property of that name", %{tmp_dir: dir} do
+        files =
+          Map.merge(page(~s|<p class="text-fake" />|), %{
+            "assets/css/app.css" =>
+              ~s(@import "tailwindcss";\n@plugin "./sizes.js";\n@theme { --color-primary: #123; }\n),
+            "assets/css/sizes.js" => """
+            module.exports = function ({ addUtilities }) {
+              addUtilities({ ".text-fake": { "--font-size": "9rem", "--my-font-size": "1px" } })
+            }
+            """
+          })
+
+        result = lint_with(@way, dir, files, no_raw_colors: :error)
+
+        assert [message] = found_on(result, "text-fake")
+        assert message =~ "not a declared theme color"
+      end
+
       test "is read from a plugin loaded by an imported stylesheet", %{tmp_dir: dir} do
         files =
           Map.merge(page(~s|<p class="text-body" />|), %{
@@ -333,6 +366,23 @@ defmodule HeexLint.TailwindPluginsTest do
             ~w(text-body-more text-brand text-custom text-empty hover:text-brand text-nowhere) do
         refute Tailwind.sets_font_size?(@css, class), class
       end
+    end
+
+    test "is not read from a longer selector that starts the same" do
+      refute Tailwind.sets_font_size?(@css, "text-bod")
+      refute Tailwind.sets_font_size?(@css, "text-minifie")
+    end
+
+    test "is read past a block nested in the rule" do
+      assert Tailwind.sets_font_size?(
+               ".text-late { &:hover { color: red; } font-size: 1px; }",
+               "text-late"
+             )
+
+      refute Tailwind.sets_font_size?(
+               ".text-a { &:hover { color: red; } } .text-b { font-size: 1px; }",
+               "text-a"
+             )
     end
 
     test "an unterminated rule ends with the output" do

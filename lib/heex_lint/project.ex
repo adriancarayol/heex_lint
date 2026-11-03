@@ -294,17 +294,6 @@ defmodule HeexLint.Project do
 
   defp theme_with_oracle(%{theme: theme}, _oracle), do: theme
 
-  @doc false
-  # The project with the run's oracle, which each theme it hands out can reach.
-  def with_oracle(project, oracle) do
-    project = %{project | oracle: oracle}
-
-    case Map.get(project.themes, project.root) do
-      nil -> project
-      info -> with_theme_info(project, info)
-    end
-  end
-
   @doc """
   Whether Tailwind can read `token` at all: under `prefix(tw)`, only `tw:flex`
   is a Tailwind class, and `flex` and `text-muted` are not.

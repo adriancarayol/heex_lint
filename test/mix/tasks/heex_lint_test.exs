@@ -34,6 +34,40 @@ defmodule Mix.Tasks.HeexLintTest do
     :exit, reason -> reason
   end
 
+  @tag :node
+  test "a Tailwind that hangs ends in a warning and the grammar's findings", %{tmp_dir: dir} do
+    setup_project(dir, ~s(<div class="zorblax" />), no_unknown_classes: :error)
+
+    File.mkdir_p!(Path.join(dir, "node_modules/tailwindcss"))
+
+    File.write!(
+      Path.join(dir, "node_modules/tailwindcss/package.json"),
+      ~s({"name": "tailwindcss", "main": "index.js"})
+    )
+
+    File.write!(Path.join(dir, "node_modules/tailwindcss/index.js"), """
+    const end = Date.now() + 30000
+    exports.__unstable__loadDesignSystem = async () => {
+      while (Date.now() < end) {}
+    }
+    """)
+
+    previous = System.get_env("HEEX_LINT_TAILWIND_TIMEOUT")
+    System.put_env("HEEX_LINT_TAILWIND_TIMEOUT", "1000")
+
+    on_exit(fn ->
+      if previous,
+        do: System.put_env("HEEX_LINT_TAILWIND_TIMEOUT", previous),
+        else: System.delete_env("HEEX_LINT_TAILWIND_TIMEOUT")
+    end)
+
+    assert {{:shutdown, 1}, output, errors} = task(dir, [])
+    assert output =~ ~s("zorblax")
+    assert errors =~ "warning: The Tailwind process did not answer"
+    assert errors =~ "within 1 s"
+    assert errors =~ "rules use the class grammar"
+  end
+
   test "passes on clean projects", %{tmp_dir: dir} do
     setup_project(dir, ~s(<div class="bg-primary" />), no_raw_colors: :error)
     assert {:ok, output, _} = task(dir, [])

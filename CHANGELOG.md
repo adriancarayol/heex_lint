@@ -3,9 +3,12 @@
 ## Unreleased
 
 - A contract entry the theme's Tailwind build generates, such as a plugin's `prose`, is
-  known like any other class, as in @shadcn/lint, and no longer warns. A build that
-  fails, or no Tailwind to ask, still warns. Node starts for this only when an entry is
-  unknown to the grammar and the theme.
+  known like any other class, as in @shadcn/lint, and no longer warns. One a slip away
+  from a category, such as `spacin`, is no configuration error either when the build
+  generates it. A build that fails, or no Tailwind to ask, still warns. Node starts for
+  this only when an entry is unknown to the grammar and the theme, and with that a
+  theme that cannot be built can warn in a run of `no_restyle` or `no_arbitrary_values`
+  alone.
 - A theme that loads an `@config` or `@plugin` has its own Tailwind say which `text-*`
   classes are font sizes, as in @shadcn/lint, through Node and through the standalone
   binary. Node starts for this only on such a theme and for a `text-*` class the grammar

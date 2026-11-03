@@ -184,6 +184,7 @@ defmodule HeexLint.Tailwind do
     end
   end
 
+  defp seconds(milliseconds) when rem(milliseconds, 1000) == 0, do: div(milliseconds, 1000)
   defp seconds(milliseconds), do: milliseconds / 1000
 
   ## Server
@@ -492,8 +493,8 @@ defmodule HeexLint.Tailwind do
         id = state.next
         request = JSON.encode!(%{id: id, css: job.entry, candidates: job.missing})
         timeout = timeout_for(not MapSet.member?(state.warm, job.entry))
-        # A send, not Port.command, which suspends this process for as long as a
-        # worker reading nothing keeps its stdin full: no deadline could fire.
+        # A send, as nothing a worker does with its stdin can suspend this process
+        # and with it the deadline.
         send(port, {self(), {:command, request <> "\n"}})
 
         job = job |> Map.put(:id, id) |> arm(timeout)
@@ -638,9 +639,6 @@ defmodule HeexLint.Tailwind do
 
   defp next_build(state, %{chunks: []} = job),
     do: answered(state, job, job.unknown, job.font_sizes)
-
-  defp next_build(state, %{chunks: [{[], _bases} | chunks], theme_builds: true} = job),
-    do: next_build(state, %{job | chunks: chunks})
 
   defp next_build(state, %{chunks: [chunk | _]} = job) do
     run_build(state, job, chunk)

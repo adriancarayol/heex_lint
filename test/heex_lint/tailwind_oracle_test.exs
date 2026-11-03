@@ -182,6 +182,34 @@ defmodule HeexLint.TailwindOracleTest do
       end
     end
 
+    # Stuck in a read that only returns when a byte arrives, where nothing can stop
+    # the thread: exiting the normal way would wait for it forever.
+    test "ends when stdin closes while the theme is stuck in native code", %{tmp_dir: dir} do
+      fifo = Path.join(dir, "fifo")
+      {_, 0} = System.cmd("mkfifo", [fifo])
+
+      # Should this ever fail, a byte lets the process go. Opened for reading too, as
+      # opening a FIFO only to write waits for a reader that may be gone.
+      on_exit(fn -> System.cmd("sh", ["-c", ~s(printf x 1<>"#{fifo}")]) end)
+
+      pid_file =
+        fake_tailwind(dir, """
+        const fd = fs.openSync("#{fifo}", "r+")
+        fs.readSync(fd, Buffer.alloc(1))
+        """)
+
+      css = write(dir, "app.css", ~s(@import "tailwindcss";\n))
+      {port, os_pid} = start_worker(dir)
+      request(port, css)
+
+      assert eventually(fn -> pids(pid_file) == [os_pid] end)
+      Process.sleep(200)
+      assert alive?(os_pid)
+
+      Port.close(port)
+      assert gone?(os_pid)
+    end
+
     test "ends when stdin closes with nothing to do", %{tmp_dir: dir} do
       {port, os_pid} = start_worker(dir)
       Process.sleep(100)
@@ -264,13 +292,37 @@ defmodule HeexLint.TailwindOracleTest do
         refute finding.message =~ "Did you mean"
 
         assert [warning] = result.warnings
-        assert warning =~ "within 1.0 s"
+        assert warning =~ "within 1 s"
         assert warning =~ "rules use the class grammar"
         refute warning =~ "no_unknown_classes"
 
         assert [os_pid] = pids(pid_file)
         assert gone?(os_pid)
       end
+    end
+
+    test "takes what it started with it", %{tmp_dir: dir} do
+      with_tailwind_stub(dir)
+      pid_file = Path.join(dir, "node.pids")
+
+      script(dir, "fake/bin/node", """
+      #!/bin/sh
+      trap '' TERM INT HUP
+      echo $$ >> "#{pid_file}"
+      sleep #{div(@give_up_ms, 1000)} &
+      echo $! >> "#{pid_file}"
+      wait
+      wait
+      """)
+
+      System.put_env("PATH", Path.join(dir, "fake/bin") <> ":" <> System.get_env("PATH"))
+      deadline(1_000)
+
+      result = run(dir, page(), rules: [no_unknown_classes: :error])
+
+      assert [_warning] = result.warnings
+      assert [_shell, _sleep] = started = pids(pid_file)
+      assert Enum.all?(started, &gone?/1)
     end
 
     test "fires though the question fills a stdin nobody reads", %{tmp_dir: dir} do
@@ -288,7 +340,7 @@ defmodule HeexLint.TailwindOracleTest do
 
       assert elapsed < 10_000
       assert [warning] = result.warnings
-      assert warning =~ "within 1.0 s"
+      assert warning =~ "within 1 s"
       assert [os_pid] = pids(pid_file)
       assert gone?(os_pid)
     end
@@ -378,6 +430,14 @@ defmodule HeexLint.TailwindOracleTest do
       assert gone?(os_pid)
     end
 
+    test "a theme that throws something other than an error says what", %{tmp_dir: dir} do
+      fake_tailwind(dir, ~s|throw "plain words"|)
+      result = run(dir, page(), rules: [no_unknown_classes: :error])
+
+      assert [warning] = result.warnings
+      assert warning =~ "could not be built (plain words)"
+    end
+
     test "a theme that cannot load is not a failure of the process", %{tmp_dir: dir} do
       pid_file = fake_tailwind(dir, ~s|throw new Error("broken theme")|)
       result = run(dir, page(), rules: [no_unknown_classes: :error])
@@ -428,6 +488,36 @@ defmodule HeexLint.TailwindOracleTest do
       assert gone?(fine_pid)
     end
 
+    test "a good answer between two failures keeps the oracle on", %{tmp_dir: dir} do
+      entries =
+        for {name, body} <- [
+              {"one", "while (Date.now() < end) {}"},
+              {"two", ""},
+              {"three", "while (Date.now() < end) {}"},
+              {"four", ""}
+            ] do
+          app = Path.join(dir, name)
+          fake_tailwind(app, name, body)
+          write(app, "app.css", ~s(@import "tailwindcss";\n))
+        end
+
+      project = Project.load(dir, [], %{})
+      {:ok, oracle} = Tailwind.start(project)
+      deadline(2_000)
+
+      [one, two, three, four] =
+        for entry <- entries do
+          Tailwind.unknown(%{project | oracle: oracle, entry: entry}, ["zorblax"])
+        end
+
+      assert one == nil
+      assert [%{token: "zorblax"}] = two
+      assert three == nil
+      assert [%{token: "zorblax"}] = four
+      refute Enum.any?(Tailwind.warnings(oracle), &(&1 =~ "failed twice"))
+      Tailwind.stop(oracle)
+    end
+
     test "two hung ones turn the oracle off", %{tmp_dir: dir} do
       apps =
         for name <- ~w(aaa bbb ccc), do: umbrella_app(dir, name, "while (Date.now() < end) {}")
@@ -459,6 +549,7 @@ defmodule HeexLint.TailwindOracleTest do
         script(dir, "fake/tailwind", """
         #!/bin/sh
         trap '' TERM INT HUP
+        echo "$2" > "#{dir}/input.path"
         echo $$ >> "#{pid_file}"
         sleep #{div(@give_up_ms, 1000)} &
         echo $! >> "#{pid_file}"
@@ -482,11 +573,33 @@ defmodule HeexLint.TailwindOracleTest do
       assert [finding] = result.diagnostics
       assert finding.message =~ ~s("zorblax")
       assert [warning] = result.warnings
-      assert warning =~ "within 1.0 s"
+      assert warning =~ "within 1 s"
       assert warning =~ "rules use the class grammar"
 
       assert [_shell, _sleep] = started = pids(pid_file)
       assert Enum.all?(started, &gone?/1)
+
+      # Its input went with it.
+      refute dir |> Path.join("input.path") |> File.read!() |> String.trim() |> File.exists?()
+    end
+
+    test "leaves no input behind when it succeeds", %{tmp_dir: dir} do
+      inputs = Path.join(dir, "inputs")
+
+      bin =
+        script(dir, "fake/tailwind", """
+        #!/bin/sh
+        echo "$2" >> "#{inputs}"
+        : > "$4"
+        """)
+
+      result =
+        run(dir, page(), rules: [no_unknown_classes: :error], settings: [tailwind_bin: bin])
+
+      assert result.warnings == []
+      paths = inputs |> File.read!() |> String.split("\n", trim: true)
+      assert paths != []
+      refute Enum.any?(paths, &File.exists?/1)
     end
 
     test "is asked once for that stylesheet", %{tmp_dir: dir} do
@@ -706,10 +819,13 @@ defmodule HeexLint.TailwindOracleTest do
       ]
     end
 
+    # Each of these would be reported, were it judged.
     defp limits_template do
       long = past_the_limits() |> Enum.join(" ")
+      too_many_variants = String.duplicate("hover:", 65) <> "flx"
+      too_long = "zorblax-" <> String.duplicate("a", 10_000)
       at_limit = String.duplicate("hover:", 64) <> "flx"
-      ~s|<div class="#{long} #{at_limit} flex flx" />|
+      ~s|<div class="#{long} #{too_many_variants} #{too_long} #{at_limit} flex flx" />|
     end
 
     defp unknown_tokens(result) do
@@ -1076,7 +1192,7 @@ defmodule HeexLint.TailwindOracleTest do
       assert [finding] = result.diagnostics
       assert finding.message =~ ~s("zorblax")
       assert [warning] = result.warnings
-      assert warning =~ "within 1.0 s"
+      assert warning =~ "within 1 s"
       assert warning =~ "rules use the class grammar"
     end
   end
