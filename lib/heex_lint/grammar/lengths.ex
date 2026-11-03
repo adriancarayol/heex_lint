@@ -5,6 +5,8 @@ defmodule HeexLint.Grammar.Lengths do
   Ported from @shadcn/lint's `src/grammar/lengths.ts` (MIT).
   """
 
+  alias HeexLint.Grammar.Validators
+
   @rem 16
 
   # JavaScript reads a length past the float range as Infinity, where Elixir raises.
@@ -115,11 +117,11 @@ defmodule HeexLint.Grammar.Lengths do
       text
       |> String.replace(~r/^\./, "0.")
       |> String.replace(~r/\.(e|E|$)/, ".0\\1")
-      |> Float.parse()
+      |> Validators.parse_float()
 
     case parsed do
       {value, _rest} -> value
-      # Float.parse refuses what JavaScript reads as Infinity, such as 1e999.
+      # What JavaScript reads as Infinity, such as 1e999.
       :error -> @farthest
     end
   end

@@ -23,7 +23,7 @@ defmodule HeexLint.Rules.NoArbitraryValues do
   @behaviour HeexLint.Rule
 
   alias HeexLint.{Messages, Policy, Rule, Suggest, Tailwind, Theme}
-  alias HeexLint.Grammar.{Classes, Lengths, ProjectClassifier, Categories}
+  alias HeexLint.Grammar.{Classes, Lengths, ProjectClassifier, Categories, Validators}
   alias HeexLint.Policy.ConfigError
   alias HeexLint.Rules.NoRawColors
 
@@ -272,7 +272,7 @@ defmodule HeexLint.Rules.NoArbitraryValues do
 
     with [_, negative, utility, px] <-
            Regex.run(~r/^(-?)([a-z]+(?:-[a-z]+)*)-\[(\d+(?:\.\d+)?)px\]$/, bare),
-         {px, ""} <- Float.parse(px),
+         {px, ""} <- Validators.parse_float(px),
          steps = px / unit,
          true <- steps * 4 == Float.round(steps * 4) do
       prefix = if variants == [], do: "", else: Enum.join(variants, ":") <> ":"

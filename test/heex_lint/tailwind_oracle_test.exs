@@ -1817,7 +1817,17 @@ defmodule HeexLint.TailwindOracleTest do
     end
 
     test "anything else keeps the defaults" do
-      for value <- ["", "0", "-5", "soon", "Infinity", "NaN", "10s", "1e400"] do
+      for value <- [
+            "",
+            "0",
+            "-5",
+            "soon",
+            "Infinity",
+            "NaN",
+            "10s",
+            "1e400",
+            String.duplicate("1", 400)
+          ] do
         System.put_env("HEEX_LINT_TAILWIND_TIMEOUT", value)
         assert Tailwind.timeout_for(true) == 60_000
         assert Tailwind.timeout_for(false) == 30_000

@@ -3,7 +3,10 @@ defmodule HeexLint.HostileInputTest do
   # tokens and theme files are read in one pass, and nothing in them stops a run.
   # Ported from @shadcn/lint's linear-patterns, suggest, package-map-containment and
   # deep-condition tests, with what the port itself got wrong beside them.
-  use ExUnit.Case, async: true
+  #
+  # Not async: these tests time themselves, and on CI's smaller machine, sharing it with
+  # the other test files, some that take 2 s here passed the limit, a different one each run.
+  use ExUnit.Case, async: false
 
   import HeexLint.TestProject
 
@@ -14,7 +17,7 @@ defmodule HeexLint.HostileInputTest do
   @moduletag :tmp_dir
 
   # Long enough that a read retrying from every bracket takes tens of seconds, where
-  # one pass takes milliseconds, even on a busy machine.
+  # one pass takes milliseconds.
   @n 200_000
   @limit_ms 8_000
 
@@ -439,6 +442,8 @@ defmodule HeexLint.HostileInputTest do
           "-1e999",
           "1E400",
           String.duplicate("1", 400),
+          "-" <> String.duplicate("2", 400),
+          String.duplicate("3", 400) <> ".5",
           "0x" <> String.duplicate("f", 300),
           "0o" <> String.duplicate("7", 400),
           "0b" <> String.duplicate("1", 1100)
@@ -466,12 +471,20 @@ defmodule HeexLint.HostileInputTest do
             "z-1e999",
             "w-1e999/2",
             "p-" <> repeat("1", 400),
+            "z-" <> repeat("1", 400),
+            "opacity-" <> repeat("1", 400),
+            "w-" <> repeat("1", 400) <> "/2",
             "p-0x" <> repeat("f", 300),
             "rounded-[1e999px]",
             "rounded-[" <> repeat("1", 400) <> "px]",
+            "p-[" <> repeat("1", 400) <> "px]",
+            "p-[" <> repeat("1", 400) <> ".5px]",
+            "text-[" <> repeat("1", 400) <> "px]",
             "text-[1e308rem]",
             "bg-[rgb(1e999,0,0)]",
             "bg-[rgb(1e300,0,0)]",
+            "bg-[rgb(" <> repeat("1", 400) <> ",0,0)]",
+            "bg-[oklch(" <> repeat("1", 400) <> "_0_0)]",
             "bg-[oklch(1e308_1e308_0)]",
             "bg-[hsl(1e308,0%,0%)]",
             "w-[" <> repeat("1", 308) <> "px]"
@@ -494,17 +507,22 @@ defmodule HeexLint.HostileInputTest do
         @theme {
           --radius-huge: 1e999px;
           --radius-long: #{repeat("1", 400)}px;
+          --radius-longer: #{repeat("1", 400)}.5rem;
           --radius-neg: -1e999px;
           --radius-rem: 1e308rem;
           --radius-unitless: 1e999;
           --radius-sum: calc(1e308px + 1e308px);
           --radius-ok: 9px;
           --text-huge: 1e308rem;
+          --text-long: #{repeat("1", 400)}px;
           --spacing: 1e999px;
           --color-unreadable: rgb(1e999 0 0);
           --color-far: oklab(1e200 0 0);
           --color-farther: oklch(1e308 1e308 0);
           --color-overflows: rgb(1e300 0 0);
+          --color-long: rgb(#{repeat("1", 400)} 0 0);
+          --color-long-var: var(--long-rgb);
+          --long-rgb: rgb(#{repeat("1", 400)} 0 0);
           --color-near: #111111;
         }
         """)
@@ -512,6 +530,7 @@ defmodule HeexLint.HostileInputTest do
       radius = Map.new(Theme.scale(theme, :radius))
       assert radius["huge"] == 1.0e307
       assert radius["long"] == 1.0e307
+      assert radius["longer"] == 1.0e307
       assert radius["neg"] == -1.0e307
       assert radius["rem"] == 1.0e307
       assert radius["sum"] == 1.0e307
@@ -519,9 +538,23 @@ defmodule HeexLint.HostileInputTest do
       refute Map.has_key?(radius, "unitless")
 
       refute Map.has_key?(theme.colors, "unreadable")
+      refute Map.has_key?(theme.colors, "long")
+      refute Map.has_key?(theme.colors, "long-var")
       assert Colors.distance(theme.colors["far"], theme.colors["near"]) > 1.0e100
       assert Colors.distance(theme.colors["farther"], theme.colors["near"]) > 1.0e100
       assert Colors.distance(theme.colors["overflows"], theme.colors["near"]) > 1.0e100
+    end
+
+    test "a spacing of them loads", %{tmp_dir: dir} do
+      assert %Theme{} = load(dir, "@theme { --spacing: #{repeat("1", 400)}px; }")
+    end
+
+    test "parse_float has one answer past the range" do
+      assert Validators.parse_float("1.5rem") == {1.5, "rem"}
+      assert Validators.parse_float("x") == :error
+      assert Validators.parse_float("1e999") == :error
+      assert Validators.parse_float(repeat("1", 400)) == :error
+      assert Validators.parse_float(repeat("1", 400) <> ".5") == :error
     end
 
     for {name, color} <- [
@@ -548,6 +581,7 @@ defmodule HeexLint.HostileInputTest do
 
     test "a step no scale has is not named for one" do
       long = repeat("9", 308)
+      assert NoArbitraryValues.scale_equivalent("w-[#{repeat("9", 400)}px]", 0.25) == nil
       assert NoArbitraryValues.scale_equivalent("w-[#{long}px]", 0.25) == nil
       assert NoArbitraryValues.scale_equivalent("w-[#{long}px]", 1.0) == nil
       assert NoArbitraryValues.scale_equivalent("w-[12px]", 4.0) == "w-3"

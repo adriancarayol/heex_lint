@@ -109,15 +109,27 @@ defmodule HeexLint.Grammar.Validators do
       # \d+(\.\d*)? for \d+\.?\d*: the same numbers, without trying every split of
       # a run of digits.
       Regex.match?(~r/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/, text) ->
-        case text |> normalize_decimal() |> Float.parse() do
+        case text |> normalize_decimal() |> parse_float() do
           {number, _rest} -> number
-          # Float.parse refuses what JavaScript reads as Infinity, such as 1e999.
+          # What JavaScript reads as Infinity, such as 1e999.
           :error -> :infinity
         end
 
       true ->
         :nan
     end
+  end
+
+  @doc """
+  `Float.parse/1`, with the same answer on every supported Elixir: `:error` past the
+  float range. Up to 1.19 it raises on digits with no exponent, such as 400 of them,
+  and 1.20 returns `:error` as it always did for `1e999`.
+  """
+  @spec parse_float(String.t()) :: {float(), String.t()} | :error
+  def parse_float(text) do
+    Float.parse(text)
+  rescue
+    ArgumentError -> :error
   end
 
   defp radix_number(<<_prefix::binary-size(2), digits::binary>>, radix) do

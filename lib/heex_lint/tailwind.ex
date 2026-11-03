@@ -198,7 +198,7 @@ defmodule HeexLint.Tailwind do
   defp parse_timeout(nil), do: nil
 
   defp parse_timeout(text) do
-    case Float.parse(String.trim(text)) do
+    case text |> String.trim() |> HeexLint.Grammar.Validators.parse_float() do
       {number, ""} when number > 0 -> number |> ceil() |> min(@max_timeout)
       _ -> nil
     end
