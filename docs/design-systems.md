@@ -144,8 +144,11 @@ umbrella it applies to every app's theme.
 
 Tokens come from the file the import resolves to, as in @shadcn/lint: the package's
 `exports`, by the conditions `import`, `default`, `require`, `node`, `types` and then
-the others as written, and otherwise its own files, under `src/` too. Tailwind's build
-prefers a `style` condition, so the two can read different files. With this package:
+the others as written, and otherwise its own files, under `src/` too. A target has to
+be `./` relative and stay inside the package, as in Node: one that walks out, reaches
+into `node_modules` or encodes a separator is passed over for the next condition.
+Tailwind's build prefers a `style` condition, so the two can read different files. With
+this package:
 
 ```json
 { "exports": { ".": { "style": "./theme.css", "import": "./index.js" } } }

@@ -2,6 +2,42 @@
 
 ## Unreleased
 
+- A class no longer ends a run. `p-1e999`, `z-1e999`, a class with a 400-digit number and
+  `rounded-[1e999px]` raised an exception where JavaScript reads Infinity, and so did a
+  class past about 32 KB with a suggestion, which was compiled into a regex. **In runs
+  that used to crash, this adds the findings they never got to.**
+- A stylesheet with a byte that is not UTF-8, such as a comment saved as Latin-1, ended
+  the run, wherever it sat in the project. It is read like any other. An `.ex` or `.heex`
+  file with one ended it too, and now counts as a file that cannot be parsed.
+- A theme value past the float range, such as `--radius-x: 1e999px` or
+  `--color-x: oklab(1e200 0 0)`, no longer ends the run. Such a length is further than
+  any step and such a color is near no other, which is what @shadcn/lint's Infinity comes
+  to.
+- `--fix` and suggestions no longer corrupt a class whose replacement starts with a digit:
+  `flex 2xl:p-[12px]` became `flexxl:p-3`, and is now `flex 2xl:p-3`.
+- A double-quoted string in an expression is read in one pass. It was cubic:
+  `class={"..."}` of 2,000 characters took 14 seconds and of 4,000 took 110. No findings
+  change.
+- Class tokens of thousands of unclosed brackets or digits, such as `bg-red-500/[/[/[`,
+  `[a:a:a:` or `text-[calc(calc(`, are read in one pass, as in @shadcn/lint. So are long
+  style values and `@theme` blocks of thousands of declarations. No findings change,
+  except that as in @shadcn/lint a bracket or paren in an opacity modifier holds no
+  other. **This changes findings on such a class only:** `bg-red-500/[a[b]` is an
+  undeclared color rather than a palette class, and `bg-primary/[a[b]`, which had no
+  finding, is now reported as one.
+- A theme variable stops resolving once its value would grow past 100,000 characters, as
+  in @shadcn/lint, and is unresolved like one with no value. A kilobyte of `var()` naming
+  `var()` 16 times over six levels took 15 seconds to load, and takes milliseconds.
+- A theme value with more than about 4,500 spaces inside it was dropped without a word,
+  by a limit in the regex engine, and is now read, as in @shadcn/lint. **This can add
+  findings** where that value was what a token or step named.
+- An `@import` starting with two slashes or backslashes reads nothing outside the project,
+  as in @shadcn/lint: on Windows, looking at such a path sends the user's credentials to
+  the host it names. **On any system this removes what such an import contributed**, such
+  as `//home/me/theme.css`, which read as `/home/me/theme.css`.
+- `@utility` bodies left open or nested in each other read in at most 16 passes over the
+  file, which @shadcn/lint does not limit. Past that a body sets nothing a category can be
+  read from, as an empty one does.
 - A contract entry the theme's Tailwind build generates, such as a plugin's `prose`, is
   known like any other class, as in @shadcn/lint, and no longer warns. One a slip away
   from a category, such as `spacin`, is no configuration error either when the build

@@ -135,7 +135,8 @@ Suggestions use token values: variables resolve from `:root`, dark-mode
 blocks are skipped, and colors compare in OKLab. The radius and text scales
 (and `calc()`) are read too, so `rounded-[10px]` can suggest `rounded-lg`
 when that token is 10px, and `--spacing` sets the unit for exact spacing
-steps.
+steps. A value that would grow past 100,000 characters, such as one whose variables
+name each other many times over, stays unresolved, like one with no value.
 
 ## Tailwind classes
 

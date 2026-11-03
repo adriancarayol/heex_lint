@@ -494,7 +494,7 @@ defmodule HeexLint.Collector do
         # Escapes move classes between source and value; such a string
         # gets no suggestion rather than a wrong one.
         source_line = text_line(state.text, meta[:line])
-        escaped = String.contains?(String.slice(source_line, meta[:column]..-1//1), "\\")
+        escaped = String.contains?(line_from(source_line, meta[:column] + 1), "\\")
         fixable = raw_text(items) == text and not String.contains?(text, "\n") and not escaped
         literal = if fixable, do: %{file: state.text.file, from: {line, column + 1}, raw: text}
         push(state, text, strip_interp(items), literal)
@@ -1239,19 +1239,34 @@ defmodule HeexLint.Collector do
   # Walks a double-quoted string's source from just after its opening quote,
   # so every character keeps its real position. Returns the items and the
   # position of the closing quote.
-  defp scan(text, line, column) do
-    stream =
-      Stream.unfold({line, column}, fn {l, c} ->
-        source = text_line(text, l)
+  defp scan(text, line, column), do: scan_string(text, cursor(text, line, column), [])
 
-        cond do
-          l > tuple_size(text.lines) -> nil
-          c > String.length(source) -> {{"\n", text.locate.(l, c)}, {l + 1, 1}}
-          true -> {{String.at(source, c - 1), text.locate.(l, c)}, {l, c + 1}}
-        end
-      end)
+  # Where a walk is: what is left of the line, and its position.
+  defp cursor(text, line, column),
+    do: {text |> text_line(line) |> line_from(column), line, column}
 
-    scan_string(stream, [])
+  # A line from a column on. Columns count graphemes, which on an ASCII line are bytes:
+  # a line of a thousand strings is read a thousand times.
+  defp line_from(source, column) do
+    size = byte_size(source)
+
+    if String.length(source) == size do
+      skip = min(column - 1, size)
+      binary_part(source, skip, size - skip)
+    else
+      String.slice(source, (column - 1)..-1//1)
+    end
+  end
+
+  # The character at a cursor, its position and the cursor after it.
+  defp next_char(%{lines: lines}, {_rest, line, _column}) when line > tuple_size(lines), do: nil
+
+  defp next_char(text, {"", line, column}),
+    do: {"\n", text.locate.(line, column), cursor(text, line + 1, 1)}
+
+  defp next_char(text, {rest, line, column}) do
+    {char, rest} = String.next_grapheme(rest)
+    {char, text.locate.(line, column), {rest, line, column + 1}}
   end
 
   defp text_line(%{lines: lines}, n) when n >= 1 and n <= tuple_size(lines),
@@ -1259,44 +1274,62 @@ defmodule HeexLint.Collector do
 
   defp text_line(_text, _n), do: ""
 
-  defp scan_string(stream, acc) do
-    case Enum.take(stream, 2) do
-      [] ->
+  defp scan_string(text, cursor, acc) do
+    case next_char(text, cursor) do
+      nil ->
         {Enum.reverse(acc), nil}
 
-      [{"\"", position} | _] ->
+      {"\"", position, _rest} ->
         {Enum.reverse(acc), position}
 
-      [{"\\", _}, {char, position}] ->
-        scan_string(Stream.drop(stream, 2), [{:char, unescape(char), position} | acc])
+      {"\\", position, rest} ->
+        case next_char(text, rest) do
+          nil ->
+            scan_string(text, rest, [{:char, "\\", position} | acc])
 
-      [{"#", position}, {"{", _}] ->
-        rest = skip_interpolation(Stream.drop(stream, 2), 1)
-        scan_string(rest, [{:interp, position} | acc])
+          {char, position, rest} ->
+            scan_string(text, rest, [{:char, unescape(char), position} | acc])
+        end
 
-      [{char, position} | _] ->
-        scan_string(Stream.drop(stream, 1), [{:char, char, position} | acc])
+      {"#", position, rest} ->
+        case next_char(text, rest) do
+          {"{", _position, rest} ->
+            scan_string(text, skip_interpolation(text, rest, 1), [{:interp, position} | acc])
+
+          _ ->
+            scan_string(text, rest, [{:char, "#", position} | acc])
+        end
+
+      {char, position, rest} ->
+        scan_string(text, rest, [{:char, char, position} | acc])
     end
   end
 
-  defp skip_interpolation(stream, 0), do: stream
+  defp skip_interpolation(_text, cursor, 0), do: cursor
 
-  defp skip_interpolation(stream, depth) do
-    case Enum.take(stream, 1) do
-      [] -> stream
-      [{"{", _}] -> skip_interpolation(Stream.drop(stream, 1), depth + 1)
-      [{"}", _}] -> skip_interpolation(Stream.drop(stream, 1), depth - 1)
-      [{"\"", _}] -> stream |> Stream.drop(1) |> skip_quoted() |> skip_interpolation(depth)
-      _ -> skip_interpolation(Stream.drop(stream, 1), depth)
+  defp skip_interpolation(text, cursor, depth) do
+    case next_char(text, cursor) do
+      nil -> cursor
+      {"{", _position, rest} -> skip_interpolation(text, rest, depth + 1)
+      {"}", _position, rest} -> skip_interpolation(text, rest, depth - 1)
+      {"\"", _position, rest} -> skip_interpolation(text, skip_quoted(text, rest), depth)
+      {_char, _position, rest} -> skip_interpolation(text, rest, depth)
     end
   end
 
-  defp skip_quoted(stream) do
-    case Enum.take(stream, 2) do
-      [] -> stream
-      [{"\\", _}, _] -> skip_quoted(Stream.drop(stream, 2))
-      [{"\"", _} | _] -> Stream.drop(stream, 1)
-      _ -> skip_quoted(Stream.drop(stream, 1))
+  defp skip_quoted(text, cursor) do
+    case next_char(text, cursor) do
+      nil -> cursor
+      {"\"", _position, rest} -> rest
+      {"\\", _position, rest} -> skip_quoted(text, skip_escaped(text, rest))
+      {_char, _position, rest} -> skip_quoted(text, rest)
+    end
+  end
+
+  defp skip_escaped(text, cursor) do
+    case next_char(text, cursor) do
+      nil -> cursor
+      {_char, _position, rest} -> rest
     end
   end
 

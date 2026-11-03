@@ -457,11 +457,18 @@ defmodule HeexLint.Theme do
 
   # A utility declared again takes the new body and keeps its place.
   defp merge_utilities(utilities, new) do
-    Enum.reduce(new, utilities, fn {name, _properties} = utility, utilities ->
-      if List.keymember?(utilities, name, 0),
-        do: List.keyreplace(utilities, name, 0, utility),
-        else: utilities ++ [utility]
-    end)
+    bodies = Map.new(new)
+    known = MapSet.new(utilities, &elem(&1, 0))
+
+    kept = Enum.map(utilities, fn {name, body} -> {name, Map.get(bodies, name, body)} end)
+
+    added =
+      new
+      |> Enum.uniq_by(&elem(&1, 0))
+      |> Enum.reject(fn {name, _} -> MapSet.member?(known, name) end)
+      |> Enum.map(fn {name, _} -> {name, Map.fetch!(bodies, name)} end)
+
+    kept ++ added
   end
 
   defp finalize(%__MODULE__{} = theme) do
@@ -567,18 +574,19 @@ defmodule HeexLint.Theme do
     end
   end
 
-  defp strip(<<c::utf8, rest::binary>>, quote, acc), do: strip(rest, quote, [<<c::utf8>> | acc])
+  # By the byte: a stylesheet saved as Latin-1 is no reason to stop.
+  defp strip(<<byte, rest::binary>>, quote, acc), do: strip(rest, quote, [byte | acc])
 
   defp take_string("", _q, acc), do: {acc |> Enum.reverse() |> IO.iodata_to_binary(), ""}
 
-  defp take_string(<<?\\, c::utf8, rest::binary>>, q, acc),
-    do: take_string(rest, q, [<<c::utf8>>, "\\" | acc])
+  defp take_string(<<?\\, byte, rest::binary>>, q, acc),
+    do: take_string(rest, q, [byte, "\\" | acc])
 
   defp take_string(<<q, rest::binary>>, q, acc),
     do: {[q | acc] |> Enum.reverse() |> IO.iodata_to_binary(), rest}
 
-  defp take_string(<<c::utf8, rest::binary>>, q, acc),
-    do: take_string(rest, q, [<<c::utf8>> | acc])
+  defp take_string(<<byte, rest::binary>>, q, acc),
+    do: take_string(rest, q, [byte | acc])
 
   @doc false
   def parse_imports(css) do
@@ -625,18 +633,27 @@ defmodule HeexLint.Theme do
   defp tailwind_spec?(spec),
     do: spec == "tailwindcss" or String.starts_with?(spec, "tailwindcss/")
 
+  # Not in @shadcn/lint. Real bodies do not overlap, so reading them is one pass over
+  # the file. Bodies left open or nested in each other each run on to the end of it,
+  # so a file of them is quadratic. Past this many passes a body reads as setting
+  # nothing a category can be read from.
+  @utility_body_passes 16
+
   @doc false
   # Each @utility in source order, with the properties its body sets.
   def parse_utilities(css) do
     stripped = strip_comments(css)
 
-    utilities =
+    {utilities, _left} =
       ~r/@utility\s+([\w-]+\*?)\s*\{/
       |> Regex.scan(stripped, return: :index)
-      |> Enum.map(fn [{start, length}, {name_start, name_length}] ->
-        {binary_part(stripped, name_start, name_length),
-         declared_properties(stripped, start + length)}
-      end)
+      |> Enum.map_reduce(
+        @utility_body_passes * byte_size(stripped),
+        fn [{start, length}, {name_start, name_length}], left ->
+          {properties, left} = declared_properties(stripped, start + length, left)
+          {{binary_part(stripped, name_start, name_length), properties}, left}
+        end
+      )
 
     merge_utilities([], utilities)
   end
@@ -646,13 +663,19 @@ defmodule HeexLint.Theme do
   # semicolon, which neither a selector like &:hover nor an at-rule prelude
   # does. Custom properties stay in: a body that sets --tw-shadow-color is
   # as much a color as one that sets box-shadow.
-  defp declared_properties(css, start) do
-    rest = binary_part(css, start, byte_size(css) - start)
+  defp declared_properties(_css, _start, left) when left <= 0, do: {[], left}
 
-    ~r/(?:^|[;{}])\s*(-{0,2}[a-zA-Z][\w-]*)\s*:/
-    |> Regex.scan(utility_body(rest, 1, 0), capture: :all_but_first)
-    |> Enum.map(fn [name] -> String.downcase(name) end)
-    |> Enum.uniq()
+  defp declared_properties(css, start, left) do
+    rest = binary_part(css, start, byte_size(css) - start)
+    body = utility_body(rest, 1, 0)
+
+    properties =
+      ~r/(?:^|[;{}])\s*(-{0,2}[a-zA-Z][\w-]*)\s*:/
+      |> Regex.scan(body, capture: :all_but_first)
+      |> Enum.map(fn [name] -> String.downcase(name) end)
+      |> Enum.uniq()
+
+    {properties, left - byte_size(body)}
   end
 
   # An unclosed body runs to the end of the file.
@@ -721,9 +744,10 @@ defmodule HeexLint.Theme do
           scope = List.first(stack)
 
           {values, names, decls} =
-            case Regex.run(~r/^\s*--((?:[\w-]+\*?)|\*)\s*:\s*([\s\S]+?)\s*$/, statement) do
+            case Regex.run(~r/^\s*--((?:[\w-]+\*?)|\*)\s*:\s*([\s\S]+)\z/, statement) do
               [_, name, value] when scope == nil or not scope.dark ->
                 theme = scope != nil and scope.theme
+                value = trim_value(value)
 
                 {put_value(values, name, value, scope != nil and scope.scoped),
                  if(theme, do: MapSet.put(names, name), else: names),
@@ -741,6 +765,16 @@ defmodule HeexLint.Theme do
       end)
 
     {values, scoped_names, names, Enum.reverse(declarations)}
+  end
+
+  # Greedy, then trimmed: a lazy value retries the trailing whitespace at every
+  # character of a run of it, and past the regex engine's limit it reads as no
+  # value at all. A value of only whitespace keeps its one character.
+  defp trim_value(value) do
+    case String.trim_trailing(value) do
+      "" -> value
+      trimmed -> trimmed
+    end
   end
 
   # An at-rule's prelude is a condition, not a selector.
@@ -799,49 +833,60 @@ defmodule HeexLint.Theme do
   defp apply_token(set, token, true), do: MapSet.delete(set, token)
   defp apply_token(set, token, false), do: MapSet.put(set, token)
 
+  # Far past any real theme value. A value that names a variable k times, each
+  # naming another k times, grows as k^6 through six levels: k = 10 builds 4 MB and
+  # k = 16 takes seconds to. Every substitution spends its length and one more from
+  # a budget shared by the whole resolution.
+  @resolve_budget 100_000
+
   @doc false
-  # Resolves var() references against `values`; nil when a variable has no
-  # value and no fallback.
+  # Resolves var() references against `values`; nil when a variable has no value
+  # and no fallback, or when resolving the value would spend more than the budget.
   def resolve_variables(value, values, depth \\ 0) do
+    {resolved, _left} = resolve_within(value, values, depth, @resolve_budget)
+    resolved
+  end
+
+  defp resolve_within(value, values, depth, left) do
     cond do
       not String.contains?(value, "var(") ->
-        value
+        {value, left}
 
       depth > 6 ->
-        nil
+        {nil, left}
 
       true ->
-        pattern = ~r/var\(\s*--([\w-]+)\s*(?:,\s*([^()]*(?:\([^()]*\)[^()]*)*))?\)/
+        ~r/var\(\s*--([\w-]+)\s*(?:,\s*([^()]*(?:\([^()]*\)[^()]*)*))?\)/
+        |> Regex.scan(value, return: :index)
+        |> substitute(value, values, depth, left, 0, [])
+    end
+  end
 
-        {out, failed} =
-          pattern
-          |> Regex.scan(value, return: :index)
-          |> Enum.reverse()
-          |> Enum.reduce({value, false}, fn [{start, len} | groups], {text, failed} ->
-            [name | rest] =
-              Enum.map(groups, fn {s, l} -> if s >= 0, do: binary_part(value, s, l) end)
+  defp substitute([], value, _values, _depth, left, from, parts) do
+    rest = binary_part(value, from, byte_size(value) - from)
+    {IO.iodata_to_binary(Enum.reverse([rest | parts])), left}
+  end
 
-            fallback = List.first(rest)
-            inner = Map.get(values, name, fallback)
+  # Left to right, stopping at the first that fails: what follows one past the
+  # budget would only spend more.
+  defp substitute([[{start, length} | groups] | matches], value, values, depth, left, from, parts) do
+    [name | rest] = Enum.map(groups, fn {s, l} -> if s >= 0, do: binary_part(value, s, l) end)
 
-            {replacement, failed} =
-              case inner do
-                nil ->
-                  {"", true}
+    case Map.get(values, name, List.first(rest)) do
+      nil ->
+        {nil, left}
 
-                inner ->
-                  case resolve_variables(String.trim(inner), values, depth + 1) do
-                    nil -> {"", true}
-                    resolved -> {resolved, failed}
-                  end
-              end
+      inner ->
+        {resolved, left} = resolve_within(String.trim(inner), values, depth + 1, left)
+        left = left - 1 - if(resolved, do: String.length(resolved), else: 0)
 
-            {binary_part(text, 0, start) <>
-               replacement <> binary_part(text, start + len, byte_size(text) - start - len),
-             failed}
-          end)
-
-        if failed, do: nil, else: out
+        if resolved == nil or left < 0 do
+          {nil, left}
+        else
+          before = binary_part(value, from, start - from)
+          parts = [resolved, before | parts]
+          substitute(matches, value, values, depth, left, start + length, parts)
+        end
     end
   end
 
@@ -868,45 +913,58 @@ defmodule HeexLint.Theme do
   @doc false
   def default_scales, do: %{radius: default_scale(:radius), text: default_scale(:text)}
 
-  # The theme's own --radius-* / --text-* declarations over Tailwind's
-  # defaults, in cascade order, the way Tailwind reads them.
+  # The theme's own --radius-* / --text-* declarations over Tailwind's defaults,
+  # in cascade order, the way Tailwind reads them. Each step remembers when it was
+  # first declared: a step replaced keeps its place, and one removed and declared
+  # again goes last.
   defp build_scale(theme, kind) do
     prefix = "#{kind}-"
 
-    Enum.reduce(theme.declarations, default_scale(kind), fn
-      %{theme: false}, scale ->
-        scale
+    declared =
+      kind
+      |> default_scale()
+      |> Enum.with_index(fn {name, px}, order -> {name, {order, px}} end)
+      |> Map.new()
 
-      %{name: "*", value: value}, scale ->
-        if String.trim(value) == "initial", do: [], else: scale
+    {steps, _next} =
+      Enum.reduce(theme.declarations, {declared, map_size(declared)}, fn
+        %{theme: false}, read ->
+          read
 
-      %{name: name, value: value}, scale ->
-        if String.starts_with?(name, prefix) and not String.contains?(name, "--") do
-          step = String.slice(name, String.length(prefix)..-1//1)
-          reset = String.trim(value) == "initial"
+        %{name: "*", value: value}, read ->
+          if String.trim(value) == "initial", do: {%{}, elem(read, 1)}, else: read
 
-          cond do
-            step == "*" -> if reset, do: [], else: scale
-            reset -> List.keydelete(scale, step, 0)
-            true -> scale_step(scale, step, value, theme.values)
+        %{name: name, value: value}, {steps, next} = read ->
+          if String.starts_with?(name, prefix) and not String.contains?(name, "--") do
+            step = String.slice(name, String.length(prefix)..-1//1)
+            reset = String.trim(value) == "initial"
+
+            cond do
+              step == "*" -> if reset, do: {%{}, next}, else: read
+              reset -> {Map.delete(steps, step), next}
+              true -> scale_step(read, step, value, theme.values)
+            end
+          else
+            read
           end
-        else
-          scale
-        end
-    end)
+      end)
+
+    steps
+    |> Enum.sort_by(fn {_name, {order, _px}} -> order end)
+    |> Enum.map(fn {name, {_order, px}} -> {name, px} end)
   end
 
-  defp scale_step(scale, step, value, values) do
+  defp scale_step({steps, next}, step, value, values) do
     px =
       case resolve_variables(value, values) do
         nil -> nil
         resolved -> Lengths.px(resolved)
       end
 
-    cond do
-      px == nil -> List.keydelete(scale, step, 0)
-      List.keymember?(scale, step, 0) -> List.keyreplace(scale, step, 0, {step, px})
-      true -> scale ++ [{step, px}]
+    case {px, steps} do
+      {nil, steps} -> {Map.delete(steps, step), next}
+      {px, %{^step => {order, _old}}} -> {Map.put(steps, step, {order, px}), next}
+      {px, steps} -> {Map.put(steps, step, {next, px}), next + 1}
     end
   end
 
@@ -944,7 +1002,9 @@ defmodule HeexLint.Theme do
   # A port of the `resolveFile` @shadcn/lint's theme read calls with `[".css"]`.
   # Tailwind's build resolves differently, with a `style` condition first, so a
   # kit's tokens can come from another file than the one it builds. Both linters
-  # share that, and it is what keeps their findings the same.
+  # share that, and it is what keeps their findings the same. `priv/tailwind_oracle.mjs`
+  # has both ways, and its targets stay inside the package the same way. Containment
+  # reads the path as written: a link the package itself holds is followed, as in Node.
 
   @preferred_conditions ["import", "default", "require", "node", "types"]
 
@@ -975,23 +1035,38 @@ defmodule HeexLint.Theme do
     base = Path.expand(base)
     root = package_root(base) || base
 
+    within = [root, base]
+
     target =
       cond do
-        Regex.match?(~r/^(?:https?:|data:)/, id) ->
+        Regex.match?(~r/^(?:https?:|data:)/, id) or stray_unc?(id, within) ->
           nil
 
         path_import?(id) ->
-          stylesheet_for(Path.expand(id, base))
+          first_stylesheet([Path.expand(id, base)], within)
 
         String.starts_with?(id, "#") ->
-          Enum.find_value(imports_candidates(id, root), &stylesheet_for/1)
+          first_stylesheet(imports_candidates(id, root), within)
 
         true ->
-          Enum.find_value(package_candidates(id, root, base), &stylesheet_for/1) ||
+          first_stylesheet(package_candidates(id, root, base), within) ||
             package_field_stylesheet(id, root, base)
       end
 
     target && real_path(target)
+  end
+
+  defp first_stylesheet(candidates, within) do
+    candidates |> Enum.reject(&stray_unc?(&1, within)) |> Enum.find_value(&stylesheet_for/1)
+  end
+
+  @doc false
+  # A UNC path reaches the network on Windows: stat one and the OS sends the user's
+  # credentials to whatever host it names. A project that lives on a share still
+  # reaches its own files.
+  def stray_unc?(file, within) do
+    String.starts_with?(file, ["//", "\\\\", "/\\", "\\/"]) and
+      not Enum.any?(within, &inside?(Path.expand(&1), Path.expand(file)))
   end
 
   defp path_import?(id) do

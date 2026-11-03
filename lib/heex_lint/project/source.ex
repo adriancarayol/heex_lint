@@ -31,14 +31,20 @@ defmodule HeexLint.Project.Source do
       lines: contents |> String.split(~r/\r?\n/) |> List.to_tuple()
     }
 
-    case Path.extname(path) do
-      ".heex" ->
+    ext = Path.extname(path)
+
+    cond do
+      ext in [".heex", ".ex", ".exs"] and not String.valid?(contents) ->
+        # Neither parser takes it, and they raise.
+        %{source | error: "#{path}: not valid UTF-8"}
+
+      ext == ".heex" ->
         %{source | templates: [%Template{file: path, source: contents}]}
 
-      ext when ext in [".ex", ".exs"] ->
+      ext in [".ex", ".exs"] ->
         parse_elixir(source)
 
-      _ ->
+      true ->
         source
     end
   end

@@ -197,17 +197,17 @@ defmodule HeexLint.Rules.NoInlineStyles do
         c = char(item)
 
         cond do
-          quote != nil and c == quote -> {done, current ++ [item], depth, nil}
-          quote != nil -> {done, current ++ [item], depth, quote}
-          c in [~s("), "'"] -> {done, current ++ [item], depth, c}
-          c == "(" -> {done, current ++ [item], depth + 1, nil}
-          c == ")" -> {done, current ++ [item], max(depth - 1, 0), nil}
-          c == ";" and depth == 0 -> {done ++ [current], [], depth, nil}
-          true -> {done, current ++ [item], depth, nil}
+          quote != nil and c == quote -> {done, [item | current], depth, nil}
+          quote != nil -> {done, [item | current], depth, quote}
+          c in [~s("), "'"] -> {done, [item | current], depth, c}
+          c == "(" -> {done, [item | current], depth + 1, nil}
+          c == ")" -> {done, [item | current], max(depth - 1, 0), nil}
+          c == ";" and depth == 0 -> {[Enum.reverse(current) | done], [], depth, nil}
+          true -> {done, [item | current], depth, nil}
         end
       end)
 
-    done ++ [current]
+    Enum.reverse([Enum.reverse(current) | done])
   end
 
   defp char({:char, c, _}), do: c

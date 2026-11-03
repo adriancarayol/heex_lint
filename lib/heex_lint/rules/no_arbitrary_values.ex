@@ -239,9 +239,16 @@ defmodule HeexLint.Rules.NoArbitraryValues do
   "rounded-tl-[10px]" as utility "rounded-tl", inner "10px", suffix "".
   """
   def split_arbitrary(token) do
-    case Regex.run(~r/^(.+?)-\[([^\]]*)\](.*)$/, Classes.normalize(token)) do
-      [_, utility, inner, suffix] -> %{utility: utility, inner: inner, suffix: suffix}
-      nil -> nil
+    base = Classes.normalize(token)
+
+    # The first "-[" decides: when no "]" follows it, none follows a later one either.
+    with open when open != nil <- Classes.index_from(base, "-[", 1),
+         close when close != nil <- Classes.index_from(base, "]", open + 2) do
+      %{
+        utility: binary_part(base, 0, open),
+        inner: binary_part(base, open + 2, close - open - 2),
+        suffix: binary_part(base, close + 1, byte_size(base) - close - 1)
+      }
     end
   end
 
@@ -273,6 +280,9 @@ defmodule HeexLint.Rules.NoArbitraryValues do
     else
       _ -> nil
     end
+  rescue
+    # Past the float range, where JavaScript reads Infinity: no step is out there.
+    ArithmeticError -> nil
   end
 
   defp number(n) when n == trunc(n), do: Integer.to_string(trunc(n))
