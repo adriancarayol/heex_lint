@@ -178,8 +178,9 @@ A class value is read through:
   component's own input: accepted as-is, with its `attr` default checked;
 - further along a chain, up to 64 bindings: variables bound in the function,
   module attributes, same-module functions (each clause's result), map and
-  keyword lookups (`Map.fetch!(@variants, @variant)` reads every entry), and
-  merge functions.
+  keyword lookups (`Map.fetch!(@variants, @variant)` reads every entry; on
+  `%{base | a: value}`, the key it writes or its base's, and any other is
+  unreadable), and merge functions.
 
 Each binding is read once per attribute, so a class reached through both
 branches of `if on, do: a, else: a` is one class. What cannot be read — a socket assign

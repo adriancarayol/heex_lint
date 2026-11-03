@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- A lookup on a map update reads `%{base | a: value}` as @shadcn/lint reads
+  `{ ...base, a: value }`, in a variable or an assign. A key it writes has that value,
+  any other key is its base's, and a key the base cannot answer is unreadable, as is a
+  computed one. **This adds findings:** these lookups reported nothing. With
+  `t = %{assigns.base | a: Lib.compute()}`, `style={t.a}` and `style={t.b}` are dynamic
+  and `<.button class={t.a}>` reaches `require_static_classes`. With `a: "color: red"`,
+  `style={t.a}` reports `color`, whatever `allow_dynamic_identifiers` names, and
+  `a: "bg-pink-500"` reaches `no_raw_colors` and the other class rules. A raw color the
+  map writes is also seen in a style hole, as in `"--tone: #{t.a}"`.
 - In a template, `assigns.name`, `assigns[:name]`, `Map.get(assigns, :name)` and
   `Map.fetch!(assigns, :name)` read what the rendering function assigns, as `@name`
   does, and a lookup on them or on `@name` reads a table assigned there, as in

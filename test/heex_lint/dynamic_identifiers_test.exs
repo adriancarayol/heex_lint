@@ -643,6 +643,204 @@ defmodule HeexLint.DynamicIdentifiersTest do
     end
   end
 
+  describe "a lookup on a map update" do
+    @tone "Custom property --tone hardcodes a color. Define it as a theme token instead of injecting a raw value."
+
+    for {binding, read} <- [
+          {~S/assigns = assign(assigns, :t, %{assigns.base | a: VALUE})/, "@t"},
+          {~S/assigns = assign(assigns, t: %{assigns.base | a: VALUE})/, "@t"},
+          {~S/assigns = assign(assigns, :t, %{assigns.base | a: VALUE})/, "assigns.t"},
+          {~S/assigns = update(assigns, :t, fn t -> %{t | a: VALUE} end)/, "@t"},
+          {~S/t = %{assigns.base | a: VALUE}/, "t"}
+        ] do
+      test "#{binding}, read as #{read}.a, checks what it writes", %{tmp_dir: dir} do
+        body = String.replace(unquote(binding), "VALUE", ~s("color: red"))
+        name = unquote(read) <> ".a"
+
+        assert styled(dir, body, name, []) == [@color]
+        assert styled(dir, body, name, [name]) == [@color]
+      end
+
+      test "#{binding}, read as #{read}.a, goes by its name on a call", %{tmp_dir: dir} do
+        body = String.replace(unquote(binding), "VALUE", "Lib.compute()")
+        name = unquote(read) <> ".a"
+
+        assert styled(dir, body, name, []) == [@dynamic]
+        assert styled(dir, body, name, [name]) == []
+        assert styled(dir, body, name, ["Lib.compute"]) == []
+      end
+
+      test "#{binding}, read as #{read}.b, is the base's and stays dynamic", %{tmp_dir: dir} do
+        body = String.replace(unquote(binding), "VALUE", ~s("color: red"))
+        name = unquote(read) <> ".b"
+
+        assert styled(dir, body, name, []) == [@dynamic]
+        assert styled(dir, body, name, [name]) == []
+      end
+
+      test "#{binding}, read as a computed key of #{read}, stays dynamic", %{tmp_dir: dir} do
+        body = String.replace(unquote(binding), "VALUE", ~s("color: red"))
+
+        assert styled(dir, body, unquote(read) <> "[assigns.k]", []) == [@dynamic]
+      end
+    end
+
+    test "reads every spelling of a key", %{tmp_dir: dir} do
+      body = ~s/assigns = assign(assigns, :t, %{assigns.base | a: "color: red"})/
+
+      for read <- ["@t[:a]", "Map.get(@t, :a)", "Map.fetch!(@t, :a)", "assigns.t[:a]"] do
+        assert styled(dir, body, read, []) == [@color]
+      end
+    end
+
+    test "reads a key it does not write from a base it can read", %{tmp_dir: dir} do
+      body = ~s/base = %{a: "color: red", b: Lib.compute()}\nt = %{base | c: "--x: 1"}/
+
+      assert styled(dir, body, "t.a", []) == [@color]
+      assert styled(dir, body, "t.a", ["t.a"]) == [@color]
+      assert styled(dir, body, "t.b", []) == [@dynamic]
+      assert styled(dir, body, "t.b", ["t.b"]) == []
+      assert styled(dir, body, "t.c", []) == []
+    end
+
+    test "writes over its base", %{tmp_dir: dir} do
+      body = ~s/base = %{a: "color: red"}\nt = %{base | a: "--x: 1"}/
+
+      assert styled(dir, body, "t.a", []) == []
+    end
+
+    test "reads no entry for a key neither has", %{tmp_dir: dir} do
+      body = ~s/base = %{a: "color: red"}\nt = %{base | b: "color: red"}/
+
+      assert styled(dir, body, "t.zz", []) == [@dynamic]
+      assert styled(dir, body, "t.zz", ["t.zz"]) == []
+      assert styled(dir, body, "t[assigns.k]", []) == [@dynamic]
+    end
+
+    test "cannot say what a computed key wrote", %{tmp_dir: dir} do
+      read = "t.a"
+
+      after_it = ~s/t = %{assigns.base | :a => "color: red", assigns.k => "--x: 1"}/
+      assert styled(dir, after_it, read, []) == [@dynamic]
+      assert styled(dir, after_it, read, [read]) == []
+      assert styled(dir, after_it, "t[assigns.k]", []) == [@dynamic]
+
+      before_it = ~s/t = %{assigns.base | assigns.k => "--x: 1", :a => "color: red"}/
+      assert styled(dir, before_it, read, []) == [@color]
+
+      over_a_base = ~s/base = %{a: "color: red"}\nt = %{base | assigns.k => "--x: 1"}/
+      assert styled(dir, over_a_base, read, []) == [@dynamic]
+
+      in_a_base =
+        ~s/base = %{:a => "color: red", assigns.k => "--x: 1"}\nt = %{base | b: "--y: 1"}/
+
+      assert styled(dir, in_a_base, read, []) == [@dynamic]
+      assert styled(dir, in_a_base, "t[assigns.k]", []) == [@dynamic]
+    end
+
+    test "writes a key twice and the last one counts", %{tmp_dir: dir} do
+      body = ~s/t = %{assigns.base | :a => "color: red", :a => "--x: 1"}/
+
+      assert styled(dir, body, "t.a", []) == []
+    end
+
+    test "reads a base through an assign and a module attribute", %{tmp_dir: dir} do
+      extra = ~s(  @base %{b: "color: red"})
+      body = ~s/assigns = assign(assigns, :t, %{@base | a: "--x: 1"})/
+      files = fn read -> page(body, "<div style={#{read}} />", extra) end
+
+      assert findings(dir, files.("@t.b"), []) == [@color]
+      assert findings(dir, files.("@t.a"), []) == []
+      assert findings(dir, files.("@t.zz"), []) == [@dynamic]
+    end
+
+    test "reads an update of an update", %{tmp_dir: dir} do
+      body =
+        ~s/base = %{assigns.inner | b: "color: red"}\nt = %{base | a: "--x: 1"}/
+
+      assert styled(dir, body, "t.a", []) == []
+      assert styled(dir, body, "t.b", []) == [@color]
+      assert styled(dir, body, "t.zz", []) == [@dynamic]
+    end
+
+    test "reads a map written where it is read", %{tmp_dir: dir} do
+      assert styled(dir, "", ~s/%{assigns.base | a: "color: red"}.a/, []) == [@color]
+      assert styled(dir, "", ~s/%{assigns.base | a: "color: red"}.b/, []) == [@dynamic]
+      assert styled(dir, "", ~s/%{%{b: "color: red"} | a: "--x: 1"}.b/, []) == [@color]
+    end
+
+    test "is no cycle when an entry reads its base", %{tmp_dir: dir} do
+      body = ~s/base = %{a: "color: red"}\nt = %{base | b: base.a}/
+
+      assert styled(dir, body, "t.b", []) == [@color]
+    end
+
+    test "of itself reads what it writes and stops at the rest", %{tmp_dir: dir} do
+      body = ~s/t = %{t | a: "color: red"}/
+
+      assert styled(dir, body, "t.a", []) == [@color]
+      assert styled(dir, body, "t.b", []) == [@dynamic]
+      assert styled(dir, body, "t.b", ["t.b"]) == []
+    end
+
+    test "has a default of its own", %{tmp_dir: dir} do
+      body = ~s/t = %{assigns.base | a: "--x: 1"}/
+
+      assert styled(dir, body, ~s/Map.get(t, :a, "color: red")/, []) == [@color]
+      assert styled(dir, body, ~s/Map.get(t, :b, "color: red")/, []) == [@dynamic, @color]
+    end
+
+    test "fills a hole with what the map itself writes", %{tmp_dir: dir} do
+      body = ~s/t = %{assigns.base | a: "#ff0000", c: "1"}/
+
+      assert styled(dir, body, ~S|"--tone: #{t.a}"|, []) == [@tone]
+      assert styled(dir, body, ~S|"--tone: #{t.b}"|, []) == [@tone]
+      assert styled(dir, body, ~S|"--tone: #{t.c}"|, []) == [@tone]
+    end
+
+    test "leaves its base out of a hole", %{tmp_dir: dir} do
+      body = ~s/base = %{b: "#ff0000"}\nt = %{base | a: "1"}/
+
+      assert styled(dir, body, ~S|"--tone: #{t.b}"|, []) == []
+    end
+
+    for {name, element} <- [{"a component", ".button"}, {"an element", "div"}] do
+      test "of classes on #{name} is read", %{tmp_dir: dir} do
+        rules = [no_raw_colors: :error, require_static_classes: :error]
+        tag = unquote(element)
+
+        lint = fn body, read ->
+          files = page(body, "<#{tag} class={#{read}}>x</#{tag}>")
+          for d <- lint(dir, files, rules: rules), do: d.rule
+        end
+
+        unread = if tag == ".button", do: [:require_static_classes], else: []
+        raw = ~s/assigns = assign(assigns, :t, %{assigns.base | a: "bg-pink-500"})/
+        call = "assigns = assign(assigns, :t, %{assigns.base | a: Lib.compute()})"
+        variable = ~s/t = %{assigns.base | a: "bg-pink-500"}/
+
+        assert lint.(raw, "@t.a") == [:no_raw_colors]
+        assert lint.(raw, "assigns.t.a") == [:no_raw_colors]
+        assert lint.(raw, "@t.b") == unread
+        assert lint.(raw, "@t[assigns.k]") == unread
+        assert lint.(call, "@t.a") == unread
+        assert lint.(variable, "t.a") == [:no_raw_colors]
+        assert lint.(variable, "t.b") == unread
+      end
+    end
+
+    test "reports a written value where it is written", %{tmp_dir: dir} do
+      body = ~s/assigns = assign(assigns, :t, %{assigns.base | a: "bg-pink-500"})/
+      files = page(body, "<div class={@t.a} />")
+
+      assert [%{rule: :no_raw_colors, line: line}] =
+               lint(dir, files, rules: [no_raw_colors: :error])
+
+      source = files[@path] |> String.split("\n") |> Enum.at(line - 1)
+      assert source =~ "bg-pink-500"
+    end
+  end
+
   describe "a value assigned in another function" do
     defp mounted(read) do
       %{

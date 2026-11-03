@@ -278,6 +278,10 @@ What the name holds decides the rest:
   `assign(assigns, :floating_styles, "color: red")` under `@floating_styles` or
   `assigns.floating_styles`, and `assign(assigns, :styles, %{popper: "color: red"})`
   under `@styles.popper` or `assigns.styles.popper`.
+- A lookup on `%{base | a: value}` reads what the map writes, then what its base has.
+  `t = %{assigns.base | a: "color: red"}` reports `color` for `t.a` under `t.a`. `t.b`
+  is whatever the base holds, so it stays dynamic when the base cannot be read or does
+  not have the key, and is exempt under `t.b`. A computed key on it stays dynamic too.
 - Any other value is exempt along with everything it goes on to read, literals
   included: `floating_styles = if assigns.open, do: "color: red", else: Floating.compute()`
   and an alias of another name both report nothing under `floating_styles`. So does a

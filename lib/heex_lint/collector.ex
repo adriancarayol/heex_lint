@@ -964,20 +964,23 @@ defmodule HeexLint.Collector do
   # is called, as both sides of `styles.popper ?? other` are in @shadcn/lint.
   defp lookup(state, map, key, default, meta) do
     written = path_name(map, key)
+    key = literal_key(key)
 
     state =
       case table(state, map, []) do
-        nil ->
-          unresolved(state, meta, written)
+        {:update, pairs, route, _base} when state.kind == :hole ->
+          entries(state, Enum.map(pairs, &elem(&1, 1)), route, key, meta)
 
-        :stopped ->
-          state |> stop() |> unresolved(meta, written)
+        {:update, _pairs, _route, _base} = update ->
+          case update_entry(update, key) do
+            {value, route} ->
+              state |> named(written, [value]) |> entries([value], route, key, meta)
 
-        :cut ->
-          cut(state, meta, written)
+            unread ->
+              unreadable(state, unread, meta, written)
+          end
 
         {pairs, route} ->
-          key = literal_key(key)
           entry = key && List.keyfind(pairs, key, 0)
 
           values =
@@ -989,10 +992,49 @@ defmodule HeexLint.Collector do
           # A key the table does not have reads every entry, none of them its value.
           whole = if entry, do: values, else: []
           state |> named(written, whole) |> entries(values, route, key, meta)
+
+        unread ->
+          unreadable(state, unread, meta, written)
       end
 
     if default, do: visit(state, default), else: state
   end
+
+  defp unreadable(state, nil, meta, written), do: unresolved(state, meta, written)
+
+  defp unreadable(state, :stopped, meta, written),
+    do: state |> stop() |> unresolved(meta, written)
+
+  defp unreadable(state, :cut, meta, written), do: cut(state, meta, written)
+
+  # `%{base | a: value}` is `{ ...base, a: value }` in @shadcn/lint. A key it writes has
+  # that value, whatever the base is. Any other is the base's to answer. When it cannot,
+  # because it is not a table or does not have the key, or the key is only known at
+  # runtime, the read is unreadable and reads no entry. So it is when a computed key
+  # is written after it, which could be the same key. An entry is read on the route to
+  # the map that wrote it, so `%{base | b: base.a}` is no cycle. A hole reads as
+  # `carriesRawColor` does: all the map itself writes, whatever the key, and no base.
+  defp update_entry(_table, nil), do: nil
+
+  defp update_entry({:update, pairs, route, base}, key) do
+    case last_write(pairs, key) do
+      {nil, _} -> nil
+      {_, value} -> {value, route}
+      nil -> update_entry(base, key)
+    end
+  end
+
+  defp update_entry({pairs, route}, key) do
+    case last_write(pairs, key) do
+      {^key, value} -> {value, route}
+      _ -> nil
+    end
+  end
+
+  defp update_entry(unread, _key), do: unread
+
+  defp last_write(pairs, key),
+    do: pairs |> Enum.reverse() |> Enum.find(fn {written, _} -> written in [key, nil] end)
 
   defp entries(state, values, [], _key, _meta), do: Enum.reduce(values, state, &visit(&2, &1))
 
@@ -1005,7 +1047,11 @@ defmodule HeexLint.Collector do
   end
 
   # The entries of a table and the names followed to reach it, nil when it is
-  # not one, :stopped at a name already on the route, or :cut past its limit.
+  # not one, :stopped at a name already on the route, or :cut past its limit. A map
+  # update has its own entries and route, and what its base is by these same answers.
+  defp table(state, {:%{}, _, [{:|, _, [base, updates]}]}, route),
+    do: {:update, literal_pairs(updates), route, table(state, base, route)}
+
   defp table(_state, {:%{}, _, pairs}, route), do: {literal_pairs(pairs), route}
 
   defp table(_state, list, route) when is_list(list) do
