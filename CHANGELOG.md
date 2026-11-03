@@ -44,7 +44,9 @@
   that imports Tailwind, for a workspace or an umbrella where only a UI package depends
   on it, including one only a package's `style` condition leads to. So Node now starts
   for a question whenever a `node_modules` is in reach, and gives way to the standalone
-  binary or the grammar when none holds Tailwind. **This adds findings** where that
+  binary or the grammar when none holds Tailwind, or when `node` exits before its first
+  answer, as a version manager's shim with no version set does. What such a `node` prints
+  still reaches the terminal. **This adds findings** where that
   theme used the grammar or the standalone binary: `no_unknown_classes` now asks that
   Tailwind and offers suggestions.
 - Through the standalone binary, a class with an open bracket or quote, such as the typo

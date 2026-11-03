@@ -149,7 +149,9 @@ plugins:
   workspace or an umbrella, that second place is where only a UI package depends on
   Tailwind. Node follows a package's `style` condition to find it, so only Node can
   say: it starts when any `node_modules` is in reach of those stylesheets, and moves
-  on without a word when none holds Tailwind. Plugins and configs load through
+  on without a word when none holds Tailwind. The same goes for a `node` that exits
+  before its first answer, such as a version manager's shim with no version set,
+  though what it prints still reaches the terminal. Plugins and configs load through
   `@tailwindcss/node` when it is installed (the loader Tailwind's own CLI and Vite
   plugin use), and otherwise through Node's own `import()`.
 - **Standalone CLI.** Otherwise, the binary the `tailwind` hex package

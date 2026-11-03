@@ -7,7 +7,8 @@ defmodule HeexLint.Tailwind do
     * **Node**: when `node` is installed and a `node_modules` is in reach of the
       stylesheet or of a stylesheet it imports, a long-lived Node process looks for
       the project's `tailwindcss` from there. It loads the design system with its
-      imports and plugins and answers with spelling and variant suggestions.
+      imports and plugins and answers with spelling and variant suggestions. One that
+      exits before its first answer leaves the question to the standalone CLI.
     * **Standalone CLI**: otherwise, the `tailwind` binary Phoenix installs
       in `_build/` (or `:tailwind_bin`) builds the theme with the
       candidates as `@source inline(...)`, and a class is known when its
@@ -211,6 +212,9 @@ defmodule HeexLint.Tailwind do
   @impl true
   def init({project, owner}) do
     Process.monitor(owner)
+    # A question too big for the pipe is still being written when a process exits, and
+    # the port going down with that write would take this process along.
+    Process.flag(:trap_exit, true)
 
     {:ok,
      %{
@@ -259,11 +263,15 @@ defmodule HeexLint.Tailwind do
     {:noreply, Enum.reduce(lines, %{state | buffer: rest}, &node_answer/2)}
   end
 
-  def handle_info({port, {:exit_status, status}}, %{port: port} = state) do
-    job = node_job(state)
-    state = %{state | port: nil, buffer: ""}
-    {:noreply, transport_failed(state, job, "exited with status #{status}")}
-  end
+  def handle_info({port, {:exit_status, status}}, %{port: port} = state),
+    do: {:noreply, node_exited(state, "exited with status #{status}")}
+
+  def handle_info({:EXIT, port, reason}, %{port: port} = state) when reason != :normal,
+    do: {:noreply, node_exited(state, "stopped reading its questions (#{inspect(reason)})")}
+
+  # Trapping exits is for the port above, and hides nothing else.
+  def handle_info({:EXIT, from, reason}, state) when is_pid(from) and reason != :normal,
+    do: {:stop, reason, state}
 
   def handle_info({port, {:data, data}}, %{job: %{port: port} = job} = state) do
     {:noreply, %{state | job: %{job | output: keep_output(job.output, data)}}}
@@ -537,7 +545,7 @@ defmodule HeexLint.Tailwind do
         # and with it the deadline.
         send(port, {self(), {:command, request <> "\n"}})
 
-        job = job |> Map.put(:id, id) |> arm(timeout)
+        job = job |> Map.merge(%{id: id, new_process: state.port == nil}) |> arm(timeout)
         %{state | port: port, next: id + 1, job: job}
     end
   end
@@ -554,6 +562,23 @@ defmodule HeexLint.Tailwind do
 
   defp node_job(%{job: %{id: _} = job}), do: job
   defp node_job(_state), do: nil
+
+  defp node_exited(state, what) do
+    job = node_job(state)
+    state = %{state | port: nil, buffer: ""}
+
+    case job do
+      # A process that never answered says nothing against the theme, and may be a
+      # `node` that cannot run at all, such as a version manager's shim with no version
+      # set. So this is no failure: the binary answers, as for a theme Node cannot load.
+      %{new_process: true} ->
+        disarm(job)
+        build_failed_in_node(state, job, "node #{what}")
+
+      _ ->
+        transport_failed(state, job, what)
+    end
+  end
 
   # Whether Node might find Tailwind for `entry`, which only it can say: it follows a
   # package's `style` condition where the theme read does not, so an import can lead
@@ -639,7 +664,7 @@ defmodule HeexLint.Tailwind do
 
   # Fall back to the standalone CLI, then to the grammar.
   defp build_failed_in_node(state, job, reason) do
-    job = Map.drop(job, [:id, :ref, :timer, :timeout])
+    job = Map.drop(job, [:id, :new_process, :ref, :timer, :timeout])
     state = %{state | job: nil}
 
     case standalone_binary(state.project) do

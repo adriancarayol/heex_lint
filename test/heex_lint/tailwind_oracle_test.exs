@@ -802,6 +802,7 @@ defmodule HeexLint.TailwindOracleTest do
       Tailwind.stop(oracle)
     end
 
+    @tag :capture_log
     test "that a crash took down does not take its caller with it", %{tmp_dir: dir} do
       project = bare_project(dir)
       {:ok, oracle} = Tailwind.start(project)
@@ -1432,6 +1433,199 @@ defmodule HeexLint.TailwindOracleTest do
       assert [warning] = result.warnings
       assert warning =~ "within 1 s"
       assert warning =~ "rules use the class grammar"
+    end
+  end
+
+  describe "a node that cannot run" do
+    @describetag :standalone
+
+    @plugin_theme ~s(@import "tailwindcss";\n@plugin "./plugin.js";\n)
+    @plugin_js "module.exports = function ({ addComponents }) { addComponents({ '.plug-card': { color: 'red' } }) }\n"
+
+    # What a version manager's shim does when no version is set.
+    defp broken_node(dir) do
+      starts = Path.join(dir, "node.starts")
+
+      script(dir, "fake/bin/node", """
+      #!/bin/sh
+      echo $$ >> "#{starts}"
+      exit 126
+      """)
+
+      System.put_env("PATH", Path.join(dir, "fake/bin") <> ":" <> System.get_env("PATH"))
+      starts
+    end
+
+    defp plugin_project(root) do
+      Map.merge(page(~s|<p class="flx plug-card flex">x</p>|), %{
+        "assets/css/app.css" => @plugin_theme,
+        "assets/css/plugin.js" => @plugin_js
+      })
+      |> then(&run(root, &1, rules: [no_unknown_classes: :error], settings: binary_settings()))
+    end
+
+    defp binary_settings, do: [tailwind_bin: standalone_bin()]
+
+    defp assert_binary_answered(result, starts) do
+      assert result.warnings == []
+      assert [finding] = result.diagnostics
+      assert finding.message =~ ~s("flx")
+      assert length(pids(starts)) == 1
+    end
+
+    test "leaves the binary to answer beside a node_modules with no Tailwind", %{tmp_dir: dir} do
+      starts = broken_node(dir)
+      write(dir, "assets/node_modules/topbar/package.json", ~s({"name": "topbar"}))
+
+      assert_binary_answered(plugin_project(dir), starts)
+    end
+
+    test "leaves the binary to answer under a node_modules in a parent", %{tmp_dir: dir} do
+      starts = broken_node(dir)
+      write_dir(dir, "node_modules")
+
+      assert_binary_answered(plugin_project(write_dir(dir, "code/app")), starts)
+    end
+
+    @tag :tailwind
+    test "leaves the binary to answer beside a node_modules with Tailwind", %{tmp_dir: dir} do
+      starts = broken_node(dir)
+      with_tailwind(dir)
+
+      assert_binary_answered(plugin_project(dir), starts)
+    end
+
+    test "says so through the status of the stylesheet", %{tmp_dir: dir} do
+      broken_node(dir)
+      write_dir(dir, "node_modules")
+      entry = write(dir, "assets/css/app.css", ~s(@import "tailwindcss";\n))
+      {:ok, oracle} = Tailwind.start(%{root: dir, settings: Map.new(binary_settings())})
+
+      assert [%{token: "zorblax"}] =
+               Tailwind.unknown(%{entry: entry, oracle: oracle}, ~w(flex zorblax))
+
+      assert {:standalone, "node exited with status 126"} = Tailwind.status(oracle, entry)
+      Tailwind.stop(oracle)
+    end
+
+    test "is no failure, however many stylesheets meet it", %{tmp_dir: dir} do
+      starts = broken_node(dir)
+      write_dir(dir, "node_modules")
+
+      entries =
+        for name <- ~w(one two three) do
+          write(dir, "apps/#{name}/app.css", ~s(@import "tailwindcss";\n))
+        end
+
+      {:ok, oracle} = Tailwind.start(%{root: dir, settings: Map.new(binary_settings())})
+
+      for entry <- entries do
+        assert [%{token: "zorblax"}] =
+                 Tailwind.unknown(%{entry: entry, oracle: oracle}, ~w(flex zorblax))
+      end
+
+      # Each stylesheet tries once, and then asks the binary.
+      assert length(pids(starts)) == 3
+      assert Tailwind.warnings(oracle) == []
+      assert %{off: false, failures: 0} = :sys.get_state(oracle)
+      Tailwind.stop(oracle)
+    end
+
+    test "leaves the binary to answer a question too big for the pipe", %{tmp_dir: dir} do
+      # Still there while the pipe fills, so the rest of the question is what fails.
+      script(dir, "fake/bin/node", """
+      #!/bin/sh
+      sleep 0.2
+      exit 126
+      """)
+
+      System.put_env("PATH", Path.join(dir, "fake/bin") <> ":" <> System.get_env("PATH"))
+      write_dir(dir, "node_modules")
+      entry = write(dir, "assets/css/app.css", ~s(@import "tailwindcss";\n))
+      {:ok, oracle} = Tailwind.start(%{root: dir, settings: Map.new(binary_settings())})
+
+      words = for i <- 1..8_000, do: "zorblax-word#{i}"
+
+      assert answer = Tailwind.unknown(%{entry: entry, oracle: oracle}, ["flex" | words])
+      assert length(answer) == 8_000
+      assert Process.alive?(oracle)
+      assert Tailwind.warnings(oracle) == []
+      assert {:standalone, reason} = Tailwind.status(oracle, entry)
+      assert reason =~ "node stopped reading its questions"
+      Tailwind.stop(oracle)
+    end
+
+    test "warns with why when no binary is there to answer", %{tmp_dir: dir} do
+      broken_node(dir)
+      write_dir(dir, "node_modules")
+      entry = write(dir, "assets/css/app.css", ~s(@import "tailwindcss";\n))
+      {:ok, oracle} = Tailwind.start(%{root: dir, settings: %{}})
+
+      assert Tailwind.unknown(%{entry: entry, oracle: oracle}, ~w(zorblax)) == nil
+      assert [warning] = Tailwind.warnings(oracle)
+      assert warning =~ "node exited with status 126"
+      assert warning =~ "rules use the class grammar"
+      Tailwind.stop(oracle)
+    end
+
+    @tag :node
+    test "is not a node that hangs, which the binary would only repeat", %{tmp_dir: dir} do
+      pid_file = fake_node(dir, :async)
+      write_dir(dir, "node_modules")
+      {bin, log} = noting_binary(dir)
+      deadline(1_000)
+      entry = write(dir, "assets/css/app.css", ~s(@import "tailwindcss";\n))
+      {:ok, oracle} = Tailwind.start(%{root: dir, settings: %{tailwind_bin: bin}})
+
+      assert Tailwind.unknown(%{entry: entry, oracle: oracle}, ~w(zorblax)) == nil
+      assert {:none, _} = Tailwind.status(oracle, entry)
+      refute File.exists?(log)
+      assert [os_pid] = pids(pid_file)
+      assert gone?(os_pid)
+      Tailwind.stop(oracle)
+    end
+
+    @tag :node
+    test "is not a process that dies after answering, which stays a failure", %{tmp_dir: dir} do
+      # The second stylesheet takes the whole process down with it.
+      pid_file =
+        fake_tailwind(dir, """
+        globalThis.loads = (globalThis.loads || 0) + 1
+        if (globalThis.loads === 2) process.kill(process.pid, "SIGKILL")
+        """)
+
+      {bin, log} = noting_binary(dir)
+      first = write(dir, "first/app.css", ~s(@import "tailwindcss";\n))
+      second = write(dir, "second/app.css", ~s(@import "tailwindcss";\n))
+      {:ok, oracle} = Tailwind.start(%{root: dir, settings: %{tailwind_bin: bin}})
+
+      assert [%{token: "zorblax"}] =
+               Tailwind.unknown(%{entry: first, oracle: oracle}, ~w(zorblax))
+
+      assert Tailwind.unknown(%{entry: second, oracle: oracle}, ~w(zorblax)) == nil
+
+      assert {:none, _} = Tailwind.status(oracle, second)
+      refute File.exists?(log)
+      assert [warning] = Tailwind.warnings(oracle)
+      assert warning =~ "exited with status"
+      assert %{failures: 1} = :sys.get_state(oracle)
+      assert [os_pid] = pid_file |> pids() |> Enum.uniq()
+      assert gone?(os_pid)
+      Tailwind.stop(oracle)
+    end
+
+    # A binary that only notes it ran.
+    defp noting_binary(dir) do
+      log = Path.join(dir, "builds.log")
+
+      bin =
+        script(dir, "fake/noting_tailwind", """
+        #!/bin/sh
+        echo build >> "#{log}"
+        exec "#{standalone_bin()}" "$@"
+        """)
+
+      {bin, log}
     end
   end
 
