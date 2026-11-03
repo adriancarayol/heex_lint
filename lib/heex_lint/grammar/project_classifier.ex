@@ -60,12 +60,28 @@ defmodule HeexLint.Grammar.ProjectClassifier do
   def text_words(code) do
     if String.contains?(code, "text-") do
       code
-      |> String.split(~r/[\s"'`]+|~[a-zA-Z]\(|\)(?=[\s}\],>]|$)/, trim: true)
+      |> String.split(~r/[\s"'`]+|~[a-zA-Z]\(/, trim: true)
+      |> Enum.map(&before_unopened_paren/1)
       |> Enum.filter(&String.contains?(&1, "text-"))
     else
       []
     end
   end
+
+  # A `)` the word did not open is the code's, as in `~w(text-body)`, where the one in
+  # `text-[var(--brand)]` or `text-(--brand)` is the class's.
+  defp before_unopened_paren(word), do: binary_part(word, 0, word_length(word, 0, 0))
+
+  defp word_length(<<")", _::binary>>, 0, length), do: length
+
+  defp word_length(<<")", rest::binary>>, open, length),
+    do: word_length(rest, open - 1, length + 1)
+
+  defp word_length(<<"(", rest::binary>>, open, length),
+    do: word_length(rest, open + 1, length + 1)
+
+  defp word_length(<<_, rest::binary>>, open, length), do: word_length(rest, open, length + 1)
+  defp word_length(<<>>, _open, length), do: length
 
   @doc "The category of `token`, or nil for layout and unknown classes."
   @spec category_of(Theme.t() | nil, String.t()) :: String.t() | nil

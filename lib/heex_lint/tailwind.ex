@@ -736,10 +736,12 @@ defmodule HeexLint.Tailwind do
     input = Path.join(dir, "input.css")
     args = ["--input", input, "--output", Path.join(dir, "output.css")]
 
-    File.write!(input, """
-    @import "#{job.entry}";
-    @source inline("#{Enum.join(candidates, " ")}");
-    """)
+    # A rule each, since Tailwind splits a list with its bracket-aware split: in one
+    # list, the open bracket of `text-[foo` would keep all that follows in one candidate.
+    File.write!(input, [
+      ~s(@import "#{job.entry}";\n),
+      Enum.map(candidates, &~s[@source inline("#{&1}");\n])
+    ])
 
     case open_build(job.bin, args, cd: Path.dirname(job.entry)) do
       nil ->

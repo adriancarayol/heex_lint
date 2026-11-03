@@ -47,6 +47,9 @@
   binary or the grammar when none holds Tailwind. **This adds findings** where that
   theme used the grammar or the standalone binary: `no_unknown_classes` now asks that
   Tailwind and offers suggestions.
+- Through the standalone binary, a class with an open bracket or quote, such as the typo
+  `text-[foo`, no longer swallows the classes after it. **This removes findings:**
+  `class="text-[foo flex"` reported `flex` as unknown, as it never did through Node.
 - `@import`s in the Node build now resolve the way @shadcn/lint's build does, which
   also follows a package's `main` and `src/` where `@tailwindcss/node` did not. **This
   adds findings:** a theme that warned and used the grammar over one of these imports

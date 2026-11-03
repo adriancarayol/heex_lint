@@ -479,6 +479,23 @@ defmodule HeexLint.TailwindPluginsTest do
     end
   end
 
+  for {way, tag} <- [node: :tailwind, standalone: :standalone] do
+    describe "a class with an open bracket, through #{way}" do
+      @describetag tag
+      @way way
+
+      for {classes, after_it} <- [{"text-[foo flex", "flex"}, {"text-(x p-4", "p-4"}] do
+        test "does not take what follows it, in #{classes}", %{tmp_dir: dir} do
+          template = ~s(<p class="#{unquote(classes)}">x</p>)
+          files = %{"lib/app_web/live/page_live.ex" => live(template)}
+          result = lint_with(@way, dir, files, no_unknown_classes: :error)
+
+          assert found_on(result, unquote(after_it)) == []
+        end
+      end
+    end
+  end
+
   describe "the text classes of a run, through the standalone binary" do
     @describetag :standalone
 
@@ -635,6 +652,103 @@ defmodule HeexLint.TailwindPluginsTest do
       assert result.diagnostics == []
     end
 
+    # Tailwind splits a list of classes with its bracket-aware split: one of these
+    # alone in a list keeps everything after it in one candidate.
+    @open_words ~w"text-[ text-( text-[x text-(x text-x( text-x[ text-' text-(x] text-[(])"
+
+    test "are not lost to a word with an open bracket or quote", %{tmp_dir: dir} do
+      {oracle, entry} = oracle_with_modules(dir)
+
+      Tailwind.expect(oracle, entry, @open_words ++ ~w(text-body))
+
+      assert Tailwind.font_size?(oracle, entry, "text-other") == false
+      assert Tailwind.font_size?(oracle, entry, "text-body") == true
+      assert Tailwind.warnings(oracle) == []
+      Tailwind.stop(oracle)
+    end
+
+    for word <- ~w"text-[ text-( text-'" do
+      test "are not lost to #{word} among the classes that ask", %{tmp_dir: dir} do
+        {oracle, entry} = oracle_with_modules(dir)
+        assert Tailwind.unknown(%{entry: entry, oracle: oracle}, [unquote(word)]) != nil
+        Tailwind.expect(oracle, entry, ~w(text-body))
+
+        assert Tailwind.font_size?(oracle, entry, unquote(word)) == false
+        assert Tailwind.font_size?(oracle, entry, "text-body") == true
+        Tailwind.stop(oracle)
+      end
+    end
+
+    # Each is what another file of the project has, and none is a font size. The first
+    # three are classes as valid as they look.
+    for {name, file, code} <- [
+          {"text-[var(--brand)]", "live/other_live.ex", {:live, "text-[var(--brand)]"}},
+          {"text-[color:var(--brand)]", "live/other_live.ex",
+           {:live, "text-[color:var(--brand)]"}},
+          {"text-[length:var(--size)]", "live/other_live.ex",
+           {:live, "text-[length:var(--size)]"}},
+          {"text-[clamp(1rem,2vw,3rem)]", "live/other_live.ex",
+           {:live, "text-[clamp(1rem,2vw,3rem)]"}},
+          {"text-(--brand) with a class after it", "live/other_live.ex",
+           {:live, "text-(--brand) flex"}},
+          {"the typo text-[14px", "live/other_live.ex", {:live, "text-[14px"}},
+          {"a @doc that names a class with spaces", "other.ex",
+           {:code, ~S|  @doc "Use text-[clamp(1rem, 2vw, 3rem)] here"\n  def x, do: 1|}},
+          {"a helper that builds a class", "other.ex",
+           {:code, ~S|  def x(size), do: "text-[" <> size <> "]"|}},
+          {"a comment", "other.ex", {:code, "  # text-[ goes here\n  def x, do: 1"}}
+        ] do
+      @file_path file
+      @other code
+
+      test "are not lost to #{name} in another file", %{tmp_dir: dir} do
+        other =
+          case @other do
+            {:live, classes} -> live(~s(<p class="#{classes}">z</p>), "OtherLive")
+            {:code, body} -> "defmodule AppWeb.Other do\n#{body}\nend\n"
+          end
+
+        files =
+          page(~s(<.button class="text-body">x</.button>\n<p class="text-body flex">y</p>))
+          |> Map.put("lib/app_web/#{@file_path}", other)
+
+        lint = fn rules ->
+          result = run(dir, files, rules: rules, settings: [tailwind_bin: standalone_bin()])
+          assert result.warnings == []
+          %{result | diagnostics: Enum.filter(result.diagnostics, &(&1.file =~ "page_live"))}
+        end
+
+        result = lint.(no_restyle: :error, no_raw_colors: :error)
+        assert [_only] = result.diagnostics
+        assert owns(result, "text-body") == ["typography"]
+
+        # A class that reads as a color would escape both of these.
+        assert [_only] = lint.(no_restyle: {:error, allow: ["color"]}).diagnostics
+        assert [_only] = lint.(no_restyle: {:error, deny: ["typography"]}).diagnostics
+      end
+    end
+
+    test "take one build with parens in their classes", %{tmp_dir: dir} do
+      {bin, log} = counting_bin(dir)
+
+      classes =
+        Enum.join(
+          ~w"text-body text-[var(--brand)] text-[color:var(--brand)] text-[clamp(1rem,2vw,3rem)] text-(--brand)" ++
+            tones(5),
+          " "
+        )
+
+      result =
+        run(dir, page(button(classes)),
+          rules: [no_restyle: {:error, allow: ["layout"]}],
+          settings: [tailwind_bin: bin]
+        )
+
+      assert builds(log) == 1
+      assert owns(result, "text-body") == ["typography"]
+      assert owns(result, "text-[var(--brand)]") == ["color"]
+    end
+
     test "are not asked about past a limit far above a real project", %{tmp_dir: dir} do
       input = Path.join(dir, "last_input.css")
       bin = Path.join(dir, "fake_tailwind")
@@ -692,6 +806,21 @@ defmodule HeexLint.TailwindPluginsTest do
 
       assert ProjectClassifier.text_words(code) ==
                ~w(text-body md:text-brand text-box text-one text-two text-three text-four)
+    end
+
+    test "keep the parens of a class and lose those of the code around it" do
+      code = ~S"""
+      <p class="text-[var(--brand)] text-(--brand) text-[clamp(1rem,2vw,3rem)]" />
+      <.a class={~w(text-[var(--a)] text-(--b))} />
+      <.a class={~w(text-c)} />
+      {f(~w(text-d), ~w(text-e))}
+      """
+
+      assert ProjectClassifier.text_words(code) ==
+               ~w"""
+               text-[var(--brand)] text-(--brand) text-[clamp(1rem,2vw,3rem)]
+               text-[var(--a)] text-(--b) text-c text-d text-e
+               """
     end
 
     test "are none in code with no such word" do
