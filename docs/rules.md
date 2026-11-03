@@ -179,7 +179,7 @@ Additional `no_restyle` placeholders:
 | `{{category}}` | The class category, including `layout` or `unclassified`.        |
 | `{{variants}}` | Comma-separated variant names, or empty.                         |
 | `{{wrapper}}`  | The forwarding component, or empty.                              |
-| `{{prop}}`     | The class attribute the classes were written in, such as `class` or `title_class`. |
+| `{{prop}}`     | The class attribute the classes were written in, such as `class` or `title_class`. On a slot it is `class`. |
 | `{{sizes}}`    | Comma-separated size names on every finding, or empty.           |
 | `{{where}}`    | Where to add a variant or size: `in lib/app_web/components/button.ex`, or `to <.button>` for a component from `deps/`. |
 | `{{around}}`   | Where spacing can go instead, on spacing findings.               |
@@ -306,7 +306,7 @@ What the name holds decides the rest:
   anywhere else, such as `assign(socket, :floating_styles, "color: red")` in `mount/3`
   or in a helper the function calls, cannot be read: it is reported as dynamic, and
   exempt when named, whatever it holds. In a function body, `assigns.floating_styles`
-  is what came in, whatever the function goes on to assign.
+  is what came in, whatever the function assigns before or after it.
 
 The option does not reach holes or forwarded styles. A hole, as in
 `"--tone: #{tone}"`, is never reported for being unreadable, and a raw color in one is
@@ -316,4 +316,5 @@ unreadable default goes by its own name.
 
 Entries must be strings shaped like these names. Anything else, such as
 `assigns[:floating_styles]` or `Floating.styles()`, is a configuration error, since it
-would match nothing. The option applies to the whole rule; a contract cannot set it.
+would match nothing. The option applies to the whole rule: a contract cannot set it, and
+one that writes it is not told so.
