@@ -627,7 +627,8 @@ defmodule HeexLint.Collector do
   defp root_name({{:., _, [map, key]}, _, []}), do: path_name(map, key)
   defp root_name({{:., _, [Access, :get]}, _, [map, key]}), do: path_name(map, key)
 
-  defp root_name({{:., _, [{:__aliases__, _, [mod]}, fun]}, _, [map, key | _]})
+  # With a default it could be either, so a path through it has no name.
+  defp root_name({{:., _, [{:__aliases__, _, [mod]}, fun]}, _, [map, key]})
        when {mod, fun} in [{:Map, :get}, {:Map, :fetch!}, {:Keyword, :get}, {:Keyword, :fetch!}],
        do: path_name(map, key)
 
@@ -951,34 +952,38 @@ defmodule HeexLint.Collector do
 
   # A lookup reads the entry named by a literal key, or every entry when the
   # key is only known at runtime: the table is the set of classes it can pick.
+  # A default is a value of its own, whatever the table is and whatever its path
+  # is called, as both sides of `styles.popper ?? other` are in @shadcn/lint.
   defp lookup(state, map, key, default, meta) do
     written = path_name(map, key)
 
-    case table(state, map, []) do
-      nil ->
-        unresolved(state, meta, written)
+    state =
+      case table(state, map, []) do
+        nil ->
+          unresolved(state, meta, written)
 
-      :stopped ->
-        state |> stop() |> unresolved(meta, written)
+        :stopped ->
+          state |> stop() |> unresolved(meta, written)
 
-      :cut ->
-        cut(state, meta, written)
+        :cut ->
+          cut(state, meta, written)
 
-      {pairs, route} ->
-        key = literal_key(key)
-        entry = key && List.keyfind(pairs, key, 0)
+        {pairs, route} ->
+          key = literal_key(key)
+          entry = key && List.keyfind(pairs, key, 0)
 
-        values =
-          case entry do
-            {_, value} -> [value]
-            _ -> Enum.map(pairs, &elem(&1, 1))
-          end
+          values =
+            case entry do
+              {_, value} -> [value]
+              _ -> Enum.map(pairs, &elem(&1, 1))
+            end
 
-        # A key the table does not have reads every entry, none of them its value.
-        whole = if entry, do: values, else: []
-        state = state |> named(written, whole) |> entries(values, route, key, meta)
-        if default, do: visit(state, default), else: state
-    end
+          # A key the table does not have reads every entry, none of them its value.
+          whole = if entry, do: values, else: []
+          state |> named(written, whole) |> entries(values, route, key, meta)
+      end
+
+    if default, do: visit(state, default), else: state
   end
 
   defp entries(state, values, [], _key, _meta), do: Enum.reduce(values, state, &visit(&2, &1))

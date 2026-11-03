@@ -267,7 +267,8 @@ The spellings do not cover each other: `@floating_styles` is not
 `assigns.floating_styles`, `styles` is not `styles.popper`, and `Floating.styles` is
 not `MyApp.Floating.styles`. These have no name, so they stay reported: a local or
 imported call such as `floating_styles()`, a string key such as `styles["popper"]`, a
-computed key, and what a call returns, such as `Floating.styles(@anchor).popper`.
+computed key, what a call returns, such as `Floating.styles(@anchor).popper`, and a
+path read through a default, such as `Map.get(styles, :popper, %{}).inner`.
 
 What the name holds decides the rest:
 
@@ -280,6 +281,9 @@ What the name holds decides the rest:
   name bound more than once.
 - Anything on the way counts. With `styles = Floating.compute()`, a `style={styles}`
   is allowed by `styles` or by `Floating.compute`.
+- A lookup's default is a value of its own, like the right side of `||`.
+  `Map.get(@styles, :popper, "color: red")` under `@styles.popper` reports `color`, and
+  `Map.get(@styles, :popper, @other)` needs `@other` as well.
 - A value reached another way is still reported: with `allow_dynamic_identifiers:
   ["a"]`, `a = x`, `b = x` and `style={if @on, do: a, else: b}`, `x` is reported through
   `b`.

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- The default of `Map.get` and `Keyword.get` is read when the map cannot be, as it
+  already was when the map could. **This adds findings:**
+  `style={Map.get(@styles, :popper, "color: red")}` reports `color` as well as the
+  dynamic map, and a `class` default reaches `no_raw_colors` and the other class rules.
 - New `allow_dynamic_identifiers` option on `no_inline_styles`, as in @shadcn/lint: style
   values a library computes, by the name the code reads them under, such as
   `@floating_styles`, `floating_styles`, `assigns.floating_styles`, `styles.popper` or

@@ -37,7 +37,8 @@ defmodule HeexLint.Rules.NoInlineStyles do
         * `"floating_styles"`: that variable.
         * `"styles.popper"`, `"@styles.popper"`: that exact path, also written
           `styles[:popper]`, or with `Map.get`, `Map.fetch!`, `Keyword.get` or
-          `Keyword.fetch!`. `"styles"` does not cover it.
+          `Keyword.fetch!`. `"styles"` does not cover it, nor does it cover a
+          default, which is checked as a value of its own.
         * `"Floating.styles"`: a call to that function with the module as written,
           with any arguments or piped into.
 

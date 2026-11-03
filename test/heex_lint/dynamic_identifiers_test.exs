@@ -131,6 +131,9 @@ defmodule HeexLint.DynamicIdentifiersTest do
           {"styles[key]", "styles"},
           {"styles[nil]", "styles.nil"},
           {"styles[true]", "styles.true"},
+          {"Map.get(styles, :popper, %{}).inner", "styles.popper.inner"},
+          {"Keyword.get(@styles, :popper, []).inner", "@styles.popper.inner"},
+          {"Map.get(assigns.styles, :popper, %{})[:inner]", "assigns.styles.popper.inner"},
           {"Enum.at(styles, :popper).inner", "styles.popper.inner"},
           {"Floating.styles", "styles"},
           {"Floating.styles()", "MyApp.Floating.styles"},
@@ -296,6 +299,83 @@ defmodule HeexLint.DynamicIdentifiersTest do
 
       assert findings(dir, files, ["Floating.compute"]) == []
       assert findings(dir, files, ["styles"]) == [@dynamic]
+    end
+  end
+
+  describe "a lookup's default" do
+    for {value, name} <- [
+          {~s|Map.get(@styles, :popper, "color: red")|, "@styles.popper"},
+          {~s|Keyword.get(@styles, :popper, "color: red")|, "@styles.popper"},
+          {~s|Map.get(styles, :popper, "color: red")|, "styles.popper"},
+          {~s|Keyword.get(styles, :popper, "color: red")|, "styles.popper"},
+          {~s|styles \|> Map.get(:popper, "color: red")|, "styles.popper"},
+          {~s|Map.get(assigns.styles, :popper, "color: red")|, "assigns.styles.popper"}
+        ] do
+      test "#{value} is checked whatever #{name} is", %{tmp_dir: dir} do
+        assert styled(dir, "", unquote(value), [unquote(name)]) == [@color]
+        assert styled(dir, "", unquote(value), ["unrelated"]) == [@dynamic, @color]
+      end
+    end
+
+    test "is checked beside a table a library computes", %{tmp_dir: dir} do
+      value = ~s|Map.get(styles, :popper, "color: red")|
+      body = "styles = Popper.compute()"
+
+      assert styled(dir, body, value, ["styles.popper"]) == [@color]
+      assert styled(dir, body, value, ["unrelated"]) == [@dynamic, @color]
+    end
+
+    test "is checked beside a table that names itself", %{tmp_dir: dir} do
+      value = ~s|Map.get(t, :a, "color: red")|
+
+      assert styled(dir, "t = t", value, ["t.a"]) == [@color]
+      assert styled(dir, "t = t", value, ["unrelated"]) == [@dynamic, @color]
+    end
+
+    test "that cannot be read goes by its own name", %{tmp_dir: dir} do
+      value = "Map.get(@styles, :popper, @other)"
+
+      assert styled(dir, "", value, ["@styles.popper"]) == [@dynamic]
+      assert styled(dir, "", value, ["@other"]) == [@dynamic]
+      assert styled(dir, "", value, ["@styles.popper", "@other"]) == []
+    end
+
+    test "is reported where it is written", %{tmp_dir: dir} do
+      files = page("", "<div style={Map.get(@styles, :popper, @other)} />")
+
+      [d] =
+        lint(dir, files,
+          rules: [no_inline_styles: {:error, allow_dynamic_identifiers: ["@styles.popper"]}]
+        )
+
+      assert {d.line, d.column} == {7, 43}
+    end
+
+    test "that a name allows is exempt, as the path is", %{tmp_dir: dir} do
+      value = "Map.get(styles, :popper, fallback)"
+      body = "fallback = Popper.fallback()"
+
+      assert styled(dir, body, value, ["styles.popper", "fallback"]) == []
+      assert styled(dir, body, value, ["styles.popper", "Popper.fallback"]) == []
+    end
+
+    test "is looked through for raw colors in a hole", %{tmp_dir: dir} do
+      value = ~S|"--tone: #{Map.get(@tones, :warn, "#ff0000")}"|
+
+      assert [message] = styled(dir, "", value, ["unrelated"])
+      assert message =~ "--tone hardcodes a color"
+    end
+
+    test "of a class is read too", %{tmp_dir: dir} do
+      rules = [no_raw_colors: :error, require_static_classes: :error]
+
+      files = page("", ~s|<div class={Map.get(@tones, :warn, "bg-pink-500")} />|)
+      assert [%{rule: :no_raw_colors}] = lint(dir, files, rules: rules)
+
+      files = page("", ~s|<.button class={Map.get(@tones, :warn, "bg-pink-500")}>x</.button>|)
+
+      assert [%{rule: :require_static_classes}, %{rule: :no_raw_colors}] =
+               lint(dir, files, rules: rules)
     end
   end
 

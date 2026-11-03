@@ -805,6 +805,21 @@ defmodule HeexLint.VariableChainsTest do
                end)
     end
 
+    test "keeps its default when the table names itself", %{tmp_dir: dir} do
+      body = "t = t\n" <> assigned(~s|Map.get(t, :a, "bg-pink-500")|)
+
+      assert [%{rule: :require_static_classes}, %{rule: :no_raw_colors}] =
+               within_seconds(fn -> lint(dir, page(body), rules: @rules) end)
+    end
+
+    test "keeps its default past the limit", %{tmp_dir: dir} do
+      body =
+        chain("A", 70, ~s(%{a: "px-2"})) <> assigned(~s|Map.get(v70, :a, "bg-pink-500")|)
+
+      assert [%{rule: :require_static_classes}, %{rule: :no_raw_colors}] =
+               within_seconds(fn -> lint(dir, page(body), rules: @rules) end)
+    end
+
     test "is followed through aliases, to the limit", %{tmp_dir: dir} do
       short = chain("A", 8, ~s(%{a: "bg-pink-500"})) <> assigned("v8[:a]")
 
