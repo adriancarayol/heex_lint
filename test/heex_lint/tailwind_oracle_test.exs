@@ -1176,6 +1176,68 @@ defmodule HeexLint.TailwindOracleTest do
       assert eventually(fn -> oracle_workers() -- before == [] end)
     end
 
+    @tag :tailwind
+    @tag :standalone
+    test "is not handed to the standalone binary once Node refuses it", %{tmp_dir: dir} do
+      with_tailwind(dir)
+      counter = Path.join(dir, "builds")
+
+      bin =
+        script(dir, "fake/tailwind", """
+        #!/bin/sh
+        echo x >> "#{counter}"
+        exec "#{standalone_bin()}" "$@"
+        """)
+
+      deadline(10_000)
+
+      {elapsed, result} =
+        timed(fn ->
+          run(dir, fan_out_page(dir),
+            rules: [no_unknown_classes: :error],
+            settings: [tailwind_bin: bin]
+          )
+        end)
+
+      assert elapsed < 9_000
+      refute File.exists?(counter)
+      assert [warning] = result.warnings
+      assert warning =~ "probably form a cycle"
+    end
+
+    @tag :tailwind
+    @tag :standalone
+    test "another theme that Node cannot build still goes to the standalone binary", %{
+      tmp_dir: dir
+    } do
+      with_tailwind(dir)
+
+      # A plugin that throws as it loads, so Node has no answer for this theme.
+      files =
+        Map.put(
+          page(~s|<div class="flex-cols flex" />|),
+          "assets/css/app.css",
+          ~s(@import "tailwindcss";\n@plugin "./plugin.js";\n)
+        )
+
+      write(dir, "assets/css/plugin.js", ~s|throw new Error("only in node")\n|)
+
+      counter = Path.join(dir, "builds")
+
+      bin =
+        script(dir, "fake/tailwind", """
+        #!/bin/sh
+        echo x >> "#{counter}"
+        : > "$4"
+        """)
+
+      result =
+        run(dir, files, rules: [no_unknown_classes: :error], settings: [tailwind_bin: bin])
+
+      assert File.exists?(counter)
+      assert result.warnings == []
+    end
+
     @tag :standalone
     test "is stopped at the deadline with the standalone binary", %{tmp_dir: dir} do
       deadline(1_000)

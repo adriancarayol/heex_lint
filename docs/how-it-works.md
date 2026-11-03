@@ -181,8 +181,9 @@ plugin throw: Node asks about it alone, and the standalone binary, where a throw
 the whole build, searches for it once a build fails and the theme builds without any
 classes. A build with `@import`s that reach more than 10,000 stylesheets is refused
 through Node, as those form a cycle with fan-out: Tailwind reads a file again wherever
-it is imported and stops only 100 levels down. The standalone binary has only the wait
-to stop one, and can use several gigabytes by then.
+it is imported and stops only 100 levels down. The standalone binary is not tried after
+that. Without Node it has only the wait to stop such a theme, and can use several
+gigabytes by then.
 
 Under `@import "tailwindcss" prefix(tw)`, only `tw:flex` is a Tailwind class.
 `no_raw_colors` judges the class behind the prefix and leaves an unprefixed one

@@ -6,7 +6,8 @@
 //   {"id": 1, "css": "/abs/app.css", "candidates": ["flex", "hovr:flex"]}
 // answered by one JSON line on stdout,
 //   {"id": 1, "ok": true, "unknown": [{"token", "suggestion", "baseKnown"}], "fontSizes": ["text-sm"]}
-// or {"id": 1, "ok": false, "reason": "..."}.
+// or {"id": 1, "ok": false, "reason": "...", "final": false}, where `final` says the
+// standalone binary would do no better.
 //
 // Two threads. Tailwind and the project's plugins run in a worker thread, where
 // they can spin for as long as they like. This file's main thread only passes
@@ -562,7 +563,10 @@ async function build(cssFile) {
     async loadStylesheet(id, base) {
       if (/^(?:https?:|data:)/.test(id)) return { base, content: "" }
       if (++reads > MAX_STYLESHEET_READS) {
-        throw new Error(`its @imports reach more than ${MAX_STYLESHEET_READS} stylesheets, so they probably form a cycle`)
+        const error = new Error(`its @imports reach more than ${MAX_STYLESHEET_READS} stylesheets, so they probably form a cycle`)
+        // Tailwind's own CLI would read them as well, until something stopped it.
+        error.final = true
+        throw error
       }
       const resolved = resolveImport(base, id)
       // Refusing to judge beats judging against half a theme.
@@ -674,7 +678,7 @@ async function query(cssFile, candidates) {
   try {
     system = await systemFor(cssFile)
   } catch (error) {
-    return { ok: false, reason: reasonOf(error) }
+    return { ok: false, reason: reasonOf(error), final: error?.final === true }
   }
   const checked = candidates.filter(checkable)
   const css = cssOfAll(system, checked)

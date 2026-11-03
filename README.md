@@ -135,7 +135,8 @@ rules: `no_arbitrary_values` still keeps `p-[13px]` off the scale.
 - **Tailwind.** `no_unknown_classes` asks your installed Tailwind v4: through
   Node when `tailwindcss` is in `node_modules`, or through the standalone
   `tailwind` binary Phoenix installs in `_build/`. Without either it falls
-  back to the class grammar.
+  back to the class grammar, and so does a Tailwind past the wait
+  `HEEX_LINT_TAILWIND_TIMEOUT` sets, which is then stopped.
 
 See [docs/how-it-works.md](docs/how-it-works.md) for details and limits.
 

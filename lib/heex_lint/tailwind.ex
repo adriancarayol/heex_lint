@@ -566,7 +566,11 @@ defmodule HeexLint.Tailwind do
 
       {:ok, %{"id" => ^id} = answer} ->
         disarm(job)
-        build_failed_in_node(state, job, to_string(answer["reason"]))
+        reason = to_string(answer["reason"])
+
+        if answer["final"] == true,
+          do: state |> Map.put(:job, nil) |> no_build(job, reason),
+          else: build_failed_in_node(state, job, reason)
 
       _ ->
         state
@@ -578,21 +582,29 @@ defmodule HeexLint.Tailwind do
   # Fall back to the standalone CLI, then to the grammar.
   defp build_failed_in_node(state, job, reason) do
     job = Map.drop(job, [:id, :ref, :timer, :timeout])
-    state = %{state | job: nil, reasons: Map.put(state.reasons, job.entry, reason)}
+    state = %{state | job: nil}
 
     case standalone_binary(state.project) do
       nil ->
-        state
-        |> put_strategy(job.entry, :none)
-        |> warn(
-          "The Tailwind theme at #{job.entry} could not be built (#{reason}); the Tailwind build is unavailable there, so rules use the class grammar."
-        )
-        |> reply_all(job)
-        |> pump()
+        no_build(state, job, reason)
 
       _bin ->
-        start_build(put_strategy(state, job.entry, :standalone), job)
+        state
+        |> Map.update!(:reasons, &Map.put(&1, job.entry, reason))
+        |> put_strategy(job.entry, :standalone)
+        |> start_build(job)
     end
+  end
+
+  defp no_build(state, job, reason) do
+    state
+    |> Map.update!(:reasons, &Map.put(&1, job.entry, reason))
+    |> put_strategy(job.entry, :none)
+    |> warn(
+      "The Tailwind theme at #{job.entry} could not be built (#{reason}); the Tailwind build is unavailable there, so rules use the class grammar."
+    )
+    |> reply_all(job)
+    |> pump()
   end
 
   ## Standalone CLI
