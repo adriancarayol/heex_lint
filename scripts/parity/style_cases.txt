@@ -1,0 +1,46 @@
+# no-inline-styles on the same style values, one case per line, tab-separated:
+# name, allowDynamicIdentifiers, the JSX page, allow_dynamic_identifiers, what the
+# HEEx module declares before the function, the function's body, and its template.
+# "-" as a list means the option is not set.
+no_option	-	function Page() { return <div style={floatingStyles} /> }	-			<div style={@floating_styles} />
+empty_list		function Page() { return <div style={floatingStyles} /> }				<div style={@floating_styles} />
+allowed	floatingStyles	function Page() { return <div style={floatingStyles} /> }	@floating_styles			<div style={@floating_styles} />
+unlisted	floatingStyles	function Page() { return <div style={otherStyles} /> }	@floating_styles			<div style={@other_styles} />
+assigns_path	floatingStyles	function Page() { return <div style={floatingStyles} /> }	assigns.floating_styles			<div style={assigns.floating_styles} />
+variable	floatingStyles	function Page() { return <div style={floatingStyles} /> }	floating_styles			<div style={floating_styles} />
+literal	floatingStyles	function Page() { const floatingStyles = { color: "red" }; return <div style={floatingStyles} /> }	floating_styles		floating_styles = "color: red"	<div style={floating_styles} />
+literal_assign	floatingStyles	function Page() { const floatingStyles = { color: "red" }; return <div style={floatingStyles} /> }	@floating_styles		assigns = assign(assigns, :floating_styles, "color: red")	<div style={@floating_styles} />
+literal_color	floatingStyles	function Page() { const floatingStyles = { "--tone": "#ff0000" }; return <div style={floatingStyles} /> }	floating_styles		floating_styles = "--tone: #ff0000"	<div style={floating_styles} />
+from_a_call	floatingStyles	function Page() { const { floatingStyles } = useFloating(); return <div style={floatingStyles} /> }	floating_styles		floating_styles = Floating.compute()	<div style={floating_styles} />
+from_a_call_assign	floatingStyles	function Page() { const floatingStyles = useFloating(); return <div style={floatingStyles} /> }	@floating_styles		assigns = assign(assigns, :floating_styles, Floating.compute())	<div style={@floating_styles} />
+from_a_call_unlisted	other	function Page() { const { floatingStyles } = useFloating(); return <div style={floatingStyles} /> }	other		floating_styles = Floating.compute()	<div style={floating_styles} />
+spread	floatingStyles	function Page() { const { floatingStyles } = useFloating(); return <div style={{ ...floatingStyles, color: "red" }} /> }	floating_styles		floating_styles = Floating.compute()	<div style={[floating_styles, "color: red"]} />
+spread_unlisted	floatingStyles	function Page() { const { other } = useFloating(); return <div style={{ ...other }} /> }	floating_styles		other = Floating.compute()	<div style={[other]} />
+dotted	styles.popper	function Page() { const { styles } = usePopper(); return <div style={styles.popper} /> }	styles.popper		styles = Popper.compute()	<div style={styles.popper} />
+dotted_exact	styles.popper	function Page() { const { styles } = usePopper(); return <div style={styles.arrow} /> }	styles.popper		styles = Popper.compute()	<div style={styles.arrow} />
+dotted_is_not_its_root	styles	function Page() { const { styles } = usePopper(); return <div style={styles.popper} /> }	styles		styles = Popper.compute()	<div style={styles.popper} />
+dotted_deep	styles.popper.inner	function Page() { return <div style={styles.popper.inner} /> }	styles.popper.inner			<div style={styles.popper.inner} />
+table_call	styles.popper	function Page() { const styles = { popper: compute(), arrow: { color: "red" } }; return <div style={styles.popper} /> }	styles.popper		styles = %{popper: Popper.compute(), arrow: "color: red"}	<div style={styles.popper} />
+table_literal	styles.arrow	function Page() { const styles = { popper: compute(), arrow: { color: "red" } }; return <div style={styles.arrow} /> }	styles.arrow		styles = %{popper: Popper.compute(), arrow: "color: red"}	<div style={styles.arrow} />
+table_missing_key	styles.other	function Page() { const styles = { arrow: { color: "red" } }; return <div style={styles.other} /> }	styles.other		styles = %{arrow: "color: red"}	<div style={styles.other} />
+branch	s	function Page() { const s = on ? { color: "red" } : compute(); return <div style={s} /> }	s		s = if(assigns.on, do: "color: red", else: Lib.compute())	<div style={s} />
+branch_unlisted	other	function Page() { const s = on ? { color: "red" } : compute(); return <div style={s} /> }	other		s = if(assigns.on, do: "color: red", else: Lib.compute())	<div style={s} />
+alias	s	function Page() { const t = compute(); const s = t; return <div style={s} /> }	s		t = Lib.compute(); s = t	<div style={s} />
+alias_inner	t	function Page() { const t = compute(); const s = t; return <div style={s} /> }	t		t = Lib.compute(); s = t	<div style={s} />
+written_twice	s	function Page() { let s = { color: "red" }; s = compute(); return <div style={s} /> }	s		s = "color: red"; s = Lib.compute()	<div style={s} />
+two_routes_one	s	function Page() { const x = compute(); const s = x; const t = x; return <div style={on ? s : t} /> }	s		x = Lib.compute(); s = x; t = x	<div style={if(assigns.on, do: s, else: t)} />
+two_routes_other	s	function Page() { const x = compute(); const s = x; const t = x; return <div style={on ? t : s} /> }	s		x = Lib.compute(); s = x; t = x	<div style={if(assigns.on, do: t, else: s)} />
+two_routes_both	s,t	function Page() { const x = compute(); const s = x; const t = x; return <div style={on ? s : t} /> }	s,t		x = Lib.compute(); s = x; t = x	<div style={if(assigns.on, do: s, else: t)} />
+two_routes_shared	x	function Page() { const x = compute(); const s = x; const t = x; return <div style={on ? s : t} /> }	x		x = Lib.compute(); s = x; t = x	<div style={if(assigns.on, do: s, else: t)} />
+ternary	floatingStyles	function Page() { return <div style={on ? floatingStyles : other} /> }	@floating_styles			<div style={if(assigns.on, do: @floating_styles, else: @other)} />
+or	floatingStyles	function Page() { return <div style={floatingStyles || { color: "red" }} /> }	@floating_styles			<div style={@floating_styles || "color: red"} />
+and	floatingStyles	function Page() { return <div style={on && floatingStyles} /> }	@floating_styles			<div style={assigns.on && @floating_styles} />
+root	floatingStyles	function Page() { return <div {...{ style: floatingStyles }} /> }	@floating_styles			<div {%{style: @floating_styles}} />
+root_keyword	floatingStyles	function Page() { return <div {...{ style: floatingStyles }} /> }	@floating_styles			<div {[style: @floating_styles]} />
+root_unlisted	floatingStyles	function Page() { return <div {...{ style: other }} /> }	@floating_styles			<div {%{style: @other}} />
+root_literal	floatingStyles	function Page() { return <div {...{ style: { color: "red" } }} /> }	floating_styles			<div {%{style: "color: red"}} />
+root_dotted	styles.popper	function Page() { const { styles } = usePopper(); return <div {...{ style: styles.popper }} /> }	styles.popper		styles = Popper.compute()	<div {%{style: styles.popper}} />
+custom_property	tone	function Page() { const tone = "#ff0000"; return <div style={{ "--tone": tone }} /> }	tone		tone = "#ff0000"	<div style={"--tone: #{tone}"} />
+forwarded_literal	style	function Page({ style = { color: "red" } }) { return <div style={style} /> }	@style	attr :style, :any, default: "color: red"		<div style={@style} />
+forwarded_call	style	function Page({ style = compute() }) { return <div style={style} /> }	@style	attr :style, :any, default: Lib.compute()		<div style={@style} />
+forwarded_named_default	floatingStyles	function Page({ style = floatingStyles }) { return <div style={style} /> }	floating_styles	attr :style, :any, default: floating_styles		<div style={@style} />

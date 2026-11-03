@@ -52,6 +52,13 @@ on `PassedPanel`'s `otherClassName`, which nothing names.
 The drivers take the configuration, the theme and the class list from the
 `CONFIG`, `THEME` and `CASES` environment variables.
 
+`style_cases.txt` holds `no-inline-styles` on style values written in both languages,
+each with its own `allowDynamicIdentifiers`. `style_driver.ts` and `style_driver.exs`
+lint them and print each case's distinct messages, not where they are, since
+@shadcn/lint reports a value at the attribute that reads it. They use no theme and no
+Tailwind. A string in HEEx is the object literal in JSX, and a list is an object
+with spreads. A case's accepted differences are in `known_gaps/configstyle-cases.txt`.
+
 Messages are compared after naming the components the same way (`<.button>`
 and `<Button>`) and the component and theme files by placeholder.
 
