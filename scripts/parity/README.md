@@ -57,7 +57,8 @@ each with its own `allowDynamicIdentifiers`. `style_driver.ts` and `style_driver
 lint them and print each case's distinct messages, not where they are, since
 @shadcn/lint reports a value at the attribute that reads it. They use no theme and no
 Tailwind. A string in HEEx is the object literal in JSX, a list is an object with
-spreads, and `Map.get` with a default is `??`. A case's accepted differences are in `known_gaps/configstyle-cases.txt`.
+spreads, `%{base | a: value}` is `{ ...base, a: value }`, and `Map.get` with a default
+is `??`. A case's accepted differences are in `known_gaps/configstyle-cases.txt`.
 
 Messages are compared after naming the components the same way (`<.button>`
 and `<Button>`) and the component and theme files by placeholder.

@@ -17,7 +17,7 @@ every finding:
 | `no-restyle` and `no-arbitrary-values` with `allow: ["layout"]`, `no-raw-colors` | 5379 | 0 |
 | `deny`, contracts, per-category messages, placeholders with fallbacks, group and exact-class allows | 5176 | 0 |
 | `no-unknown-classes` with `no-raw-colors`, asking Tailwind 4.3.3 (suggestions and typo ownership) | 3267 | 0 |
-| `no-inline-styles` with `allowDynamicIdentifiers`, on 42 style values written in both languages, comparing each value's distinct messages | 23 | 0 |
+| `no-inline-styles` with `allowDynamicIdentifiers`, on 97 style values written in both languages, comparing each value's distinct messages | 70 | 0 |
 
 Both linters ask the same installed Tailwind, so `no-raw-colors` hands a
 typo of another utility (`text-smal`) to `no-unknown-classes` the same way.
