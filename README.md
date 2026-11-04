@@ -67,7 +67,9 @@ After making changes, run `mix precommit` and fix all errors.
 | [`no_unknown_variables`](lib/heex_lint/rules/no_unknown_variables.ex) | Classes reading CSS variables the theme never defines. *HeexLint addition.* |
 
 Each rule's module documents its examples and options. The shared options,
-class categories and placeholders are in [docs/rules.md](docs/rules.md).
+class categories and placeholders are in [docs/rules.md](docs/rules.md). For a
+`style` value a library computes, such as `@floating_styles`, see
+[`allow_dynamic_identifiers`](docs/rules.md#dynamic-style-identifiers).
 
 ## You decide what can change
 
@@ -122,8 +124,11 @@ rules: `no_arbitrary_values` still keeps `p-[13px]` off the scale.
   checked against `card_title`.
 - **Theme.** The stylesheet that imports Tailwind, found under the project (or
   `theme`). Colors are the `--color-*` tokens in `@theme` (and a utility's own
-  namespace, such as `--background-color-*`); scales come from `--spacing`,
-  `--text-*` and `--radius-*`, over Tailwind's defaults.
+  namespace, such as `--background-color-*`). The scales `@theme` declares join
+  the class grammar over Tailwind's defaults, so `--radius-card` makes
+  `rounded-card` a shape class and `--radius-*: initial` makes `rounded-lg`
+  unrecognized. An `@utility` is classified by the properties its body sets. A
+  design system installed as a package counts once `theme_imports` names it.
 - **Values.** Strings, lists, `if`/`case`/`cond`, `&&`/`||`, `~w(...)`,
   interpolation and `<>`. `@name` follows `assign(assigns, :name, ...)` in the
   rendering function; a function component's received `class` is its own
@@ -133,9 +138,13 @@ rules: `no_arbitrary_values` still keeps `p-[13px]` off the scale.
   functions (`cn`, `Tails.classes`, `TwMerge.merge`...); past that a class
   counts as unreadable, while a `style` has no such limit.
 - **Tailwind.** `no_unknown_classes` asks your installed Tailwind v4: through
-  Node when `tailwindcss` is in `node_modules`, or through the standalone
-  `tailwind` binary Phoenix installs in `_build/`. Without either it falls
-  back to the class grammar.
+  Node when `tailwindcss` is in reach, in `node_modules` beside the theme or beside
+  a stylesheet it imports, or through the standalone `tailwind` binary Phoenix
+  installs in `_build/`. Without either it uses the class grammar, which checks
+  less, with no warning. A Tailwind past the wait `HEEX_LINT_TAILWIND_TIMEOUT`
+  sets is stopped and that stylesheet uses the grammar too, with a warning. Other
+  rules ask only for what the grammar cannot answer, such as a font size from an
+  `@config` or `@plugin`.
 
 See [docs/how-it-works.md](docs/how-it-works.md) for details and limits.
 
@@ -193,13 +202,15 @@ options set before it.
 | `ui`                | Module prefixes added to the design system: `"MyAppWeb.UI"` matches it and `MyAppWeb.UI.*`. |
 | `component_imports` | Regexes on module names that are also the design system.                   |
 | `ignore_imports`    | Regexes on module names that never are. Takes precedence.                  |
+| `theme_imports`     | Regexes on `@import` specifiers whose stylesheets count as your theme, for a [design system installed as a package](docs/design-systems.md#a-design-system-installed-as-a-package). |
 | `merge_functions`   | Functions whose arguments contain classes, such as `"classes"`.            |
-| `variant_functions` | Functions whose map values contain classes.                                |
+| `variant_functions` | Functions whose config holds classes, under `base`, `variants` and the like. |
 | `note`              | Appended to every rule's message.                                          |
 | `tailwind_bin`      | The standalone Tailwind binary, when it is not in `_build/`.               |
 
 A rule's own `ui`, `component_imports`, `ignore_imports`, `merge_functions`
-or `variant_functions` option wins over the shared setting.
+or `variant_functions` option wins over the shared setting. `theme_imports` is a
+setting only.
 
 ### Your own words
 
@@ -255,15 +266,18 @@ Start with warnings, fix the common patterns, then promote rules to errors.
 
 The six rules, the policy engine (`allow`, `deny`, contracts, categories,
 groups, patterns, entry validation), messages and placeholders, theme reading
-and the Tailwind oracle follow `@shadcn/lint` 0.2, down to its message text.
-The class grammar is [cn](https://github.com/shadcn-ui/cn) 0.4.0's, with
-the scales your theme declares applied.
+and the Tailwind oracle follow `@shadcn/lint` 0.2.4 and the changes merged after
+it, up to commit `9231259`, down to its message text. The class grammar is
+[cn](https://github.com/shadcn-ui/cn) 0.4.0's, with the scales your theme
+declares applied.
 
 A parity check runs @shadcn/lint's own rules and HeexLint over equivalent
-React and Phoenix projects, asking the same Tailwind: across 552 classes on
-elements and components, with and without contracts and custom messages,
-their 4,618 findings are identical. What changes for Phoenix is how components, variants, wrappers and
-values are found. See [docs/parity.md](docs/parity.md).
+React and Phoenix projects, asking the same Tailwind: across 13 themes and up to
+552 classes on elements, components and wrappers, with and without contracts and
+custom messages, their 71,377 findings are identical, with no accepted
+differences. What changes for Phoenix is how components, variants, wrappers and
+values are found. See [docs/parity.md](docs/parity.md), which also lists where the
+two differ beyond what the check reaches.
 
 ## Acknowledgements
 

@@ -11,7 +11,7 @@ defmodule HeexLint.Project do
   `ignore_imports` excludes.
   """
 
-  alias HeexLint.{Code, Template, Theme}
+  alias HeexLint.{Code, Collector, Element, Template, Theme}
   alias HeexLint.Project.{Component, ModuleInfo, Source}
 
   defstruct root: nil,
@@ -46,6 +46,8 @@ defmodule HeexLint.Project do
     * `:ui` - module name prefixes of the design system, such as `"MyAppWeb.CoreComponents"`
     * `:component_imports` - regexes on module names that are also the design system
     * `:ignore_imports` - regexes on module names that never are
+    * `:theme_imports` - regexes on `@import` specifiers whose stylesheets count
+      as the project's own, though they resolve under `node_modules`
   """
   @spec load(String.t(), [String.t()], map() | keyword()) :: t()
   def load(root, files, settings \\ %{}) do
@@ -196,6 +198,13 @@ defmodule HeexLint.Project do
   # way each package of a JavaScript monorepo does. A configured theme
   # applies everywhere.
   defp load_theme(project) do
+    {patterns, invalid} = Theme.compile_imports(project.settings[:theme_imports])
+
+    pattern_warnings =
+      for pattern <- Enum.uniq(invalid) do
+        "settings.theme_imports has an invalid pattern, #{pattern}; it is ignored."
+      end
+
     roots =
       project.sources
       |> Map.keys()
@@ -206,24 +215,24 @@ defmodule HeexLint.Project do
     {themes, warnings} =
       case project.settings[:theme] do
         nil ->
-          {Map.new(roots, &{&1, discovered_theme(&1)}), []}
+          {Map.new(roots, &{&1, discovered_theme(&1, patterns)}), []}
 
         configured ->
-          {info, warnings} = configured_theme(project.root, configured)
+          {info, warnings} = configured_theme(project.root, configured, patterns)
           {Map.new(roots, &{&1, info}), warnings}
       end
 
-    %{project | themes: themes, warnings: project.warnings ++ warnings}
+    %{project | themes: themes, warnings: project.warnings ++ pattern_warnings ++ warnings}
     |> with_theme_info(Map.fetch!(themes, project.root))
   end
 
-  defp configured_theme(root, configured) do
+  defp configured_theme(root, configured, patterns) do
     path = Path.expand(configured, root)
 
     if File.regular?(path) do
-      {theme_info(path, root), []}
+      {theme_info(path, root, patterns), []}
     else
-      discovered = Theme.discover(root)
+      discovered = Theme.discover(root, patterns)
 
       message =
         "The theme is set to #{configured}, which does not exist. " <>
@@ -233,14 +242,15 @@ defmodule HeexLint.Project do
               "No stylesheet importing Tailwind was found, so declared tokens cannot be checked until the path is fixed."
           )
 
-      {theme_info(discovered, root), [message]}
+      {theme_info(discovered, root, patterns), [message]}
     end
   end
 
-  defp discovered_theme(root), do: theme_info(Theme.discover(root), root)
+  defp discovered_theme(root, patterns),
+    do: theme_info(Theme.discover(root, patterns), root, patterns)
 
-  defp theme_info(file, root) do
-    theme = Theme.load(file)
+  defp theme_info(file, root, patterns) do
+    theme = Theme.load(file, patterns)
 
     # The stylesheet Tailwind builds: a theme partial that does not import
     # Tailwind knows no base utilities.
@@ -248,18 +258,20 @@ defmodule HeexLint.Project do
       cond do
         file == nil -> nil
         theme.tailwind -> file
-        true -> Theme.discover(root)
+        true -> Theme.discover(root, patterns)
       end
 
-    # And the prefix that build gives, which a partial cannot declare.
-    prefix =
+    # And the prefix that build gives, which a partial cannot declare. A package
+    # theme_imports names does not declare it either, as in @shadcn/lint. Whether
+    # that build loads JavaScript is about the same stylesheet.
+    {prefix, modules} =
       cond do
-        entry == nil -> nil
-        entry == file -> theme.prefix
-        true -> Theme.prefix_of(entry)
+        entry == nil -> {nil, false}
+        entry == file and patterns == [] -> {theme.prefix, theme.modules}
+        true -> {Theme.prefix_of(entry), Theme.modules_of(entry)}
       end
 
-    %{file: file, theme: theme, entry: entry, prefix: prefix}
+    %{file: file, theme: theme, entry: entry, prefix: prefix, modules: modules}
   end
 
   @doc false
@@ -267,12 +279,20 @@ defmodule HeexLint.Project do
   def with_theme_info(project, info) do
     %{
       project
-      | theme: info.theme,
+      | theme: theme_with_oracle(info, project.oracle),
         theme_file: info.file,
         entry: info.entry,
         tailwind_prefix: info.prefix
     }
   end
+
+  # Classifying a class can take this theme's own Tailwind only when it loads
+  # JavaScript. No other theme gets the handle, and so no other can ask.
+  defp theme_with_oracle(%{modules: true, entry: entry, theme: theme}, oracle)
+       when oracle != nil,
+       do: %{theme | oracle: {oracle, entry}}
+
+  defp theme_with_oracle(%{theme: theme}, _oracle), do: theme
 
   @doc """
   Whether Tailwind can read `token` at all: under `prefix(tw)`, only `tw:flex`
@@ -787,7 +807,13 @@ defmodule HeexLint.Project do
           handoff = handoff(attribute, component),
           do: {resolve(project, template.module, element.type, element.name), handoff}
 
-    read = for {_target, {_lands, reads}} <- handoffs, prop <- reads, do: prop
+    # A prop read anywhere in a template is named, so a spread does not carry it past a
+    # tag it reaches nothing through.
+    read =
+      for template <- component.templates,
+          {:expr, code, _position} <- Element.expressions(template),
+          prop <- class_props_read(code, component),
+          do: prop
 
     declared =
       for %{name: name, global: false} <- component.attrs,
@@ -825,39 +851,84 @@ defmodule HeexLint.Project do
   # attribute hands on the assigns its value reads under its own name, and a map
   # spread onto the tag under theirs.
   defp lands_as(:spread, prop, component), do: if(!Component.attr(component, prop), do: prop)
+
+  defp lands_as({:keys, entries}, prop, _component) do
+    Enum.find_value(entries, fn {key, reads} -> if prop in reads, do: key end)
+  end
+
   defp lands_as({lands, reads}, prop, _component), do: if(prop in reads, do: lands || prop)
 
   # What an attribute hands on: `:spread` for `{@rest}` with `attr :rest, :global`,
-  # `{name, assigns}` for `class={["w-full", @class]}`, `{nil, assigns}` for
-  # `{%{class: @class}}`.
+  # `{name, assigns}` for `class={["w-full", @class]}`, `{:keys, [{key, assigns}]}` for
+  # `{%{class: @title_class}}`, which lands under the key, and `{nil, assigns}` for a
+  # spread nothing can read the keys of.
   defp handoff(%{name: :root, value: {:expr, code, _}}, component) do
     with [_, name] <- Regex.run(~r/^\s*@(\w+)\s*$/, code),
          %{global: true} <- Component.attr(component, name) do
       :spread
     else
-      _ -> {nil, class_props_read(code)}
+      _ -> spread_handoff(code, component)
     end
   end
 
-  defp handoff(%{name: name, value: {:expr, code, _}}, _component) when is_binary(name) do
-    if HeexLint.Sites.class_attribute?(name), do: {name, class_props_read(code)}
+  defp handoff(%{name: name, value: {:expr, code, _}}, component) when is_binary(name) do
+    if HeexLint.Sites.class_attribute?(name), do: {name, class_props_read(code, component)}
   end
 
   defp handoff(_attribute, _component), do: nil
 
-  # The class props an expression reads: `@name`, `assigns.name`, `assigns[:name]`.
-  defp class_props_read(code) do
-    case Code.parse(code) do
-      {:ok, ast} ->
-        ast
-        |> Macro.prewalk([], fn node, acc -> {node, assign_read(node) ++ acc} end)
-        |> elem(1)
-        |> Enum.filter(&HeexLint.Sites.class_attribute?/1)
-
-      {:error, _} ->
-        []
+  defp spread_handoff(code, component) do
+    with {:ok, ast} <- Code.parse(code),
+         entries when is_list(entries) <- Collector.spread_entries(ast) do
+      {:keys,
+       for {key, value} <- entries, HeexLint.Sites.class_attribute?(key) do
+         {key, ast_class_props(value, component)}
+       end}
+    else
+      _ -> {nil, class_props_read(code, component)}
     end
   end
+
+  # The class props an expression reads: `@name`, `assigns.name`, `assigns[:name]`,
+  # `Map.get(assigns, :name)` and `Map.fetch!(assigns, :name)`, and what it reads out of
+  # global attributes, as `@rest[:class]`.
+  defp class_props_read(code, component) do
+    case Code.parse(code) do
+      {:ok, ast} -> ast_class_props(ast, component)
+      {:error, _} -> []
+    end
+  end
+
+  defp ast_class_props(ast, component) do
+    ast
+    |> Macro.prewalk([], fn node, acc ->
+      {node, assign_read(node) ++ global_read(node, component) ++ acc}
+    end)
+    |> elem(1)
+    |> Enum.filter(&HeexLint.Sites.class_attribute?/1)
+  end
+
+  defp global_read({{:., _, [Access, :get]}, _, [map, key]}, component),
+    do: global_member(map, key, component)
+
+  defp global_read({{:., _, [{:__aliases__, _, [:Map]}, fun]}, _, [map, key | _]}, component)
+       when fun in [:get, :fetch!],
+       do: global_member(map, key, component)
+
+  defp global_read({{:., _, [map, key]}, _, []}, component) when is_atom(key),
+    do: global_member(map, key, component)
+
+  defp global_read(_node, _component), do: []
+
+  defp global_member({:@, _, [{name, _, context}]}, key, component)
+       when is_atom(name) and is_atom(context) do
+    case {Component.attr(component, Atom.to_string(name)), Code.name(key)} do
+      {%{global: true}, member} when is_binary(member) -> [member]
+      _ -> []
+    end
+  end
+
+  defp global_member(_map, _key, _component), do: []
 
   defp assign_read({:@, _, [{name, _, context}]}) when is_atom(name) and is_atom(context),
     do: [Atom.to_string(name)]
@@ -868,6 +939,12 @@ defmodule HeexLint.Project do
 
   defp assign_read({{:., _, [Access, :get]}, _, [{:assigns, _, context}, name]})
        when is_atom(name) and is_atom(context),
+       do: [Atom.to_string(name)]
+
+  defp assign_read(
+         {{:., _, [{:__aliases__, _, [:Map]}, fun]}, _, [{:assigns, _, context}, name | _default]}
+       )
+       when fun in [:get, :fetch!] and is_atom(name) and is_atom(context),
        do: [Atom.to_string(name)]
 
   defp assign_read(_node), do: []

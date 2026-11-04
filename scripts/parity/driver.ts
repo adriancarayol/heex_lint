@@ -56,6 +56,7 @@ const config: any = [
     files: ["**/*.tsx"],
     languageOptions: { parser, parserOptions: { ecmaFeatures: { jsx: true } } },
     plugins: { shadcn: plugin },
+    settings: { shadcn: { themeImports: ["^parity-installed-kit/theme", "^parity-installed-bare/"] } },
     rules:
       process.env.CONFIG === "3"
         ? {

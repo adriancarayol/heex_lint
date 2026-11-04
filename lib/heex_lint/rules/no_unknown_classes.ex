@@ -16,6 +16,9 @@ defmodule HeexLint.Rules.NoUnknownClasses do
   Without a Tailwind to ask (see `HeexLint.Tailwind`), the class grammar,
   `@utility` names and class selectors answer instead; that checks less.
 
+  A class longer than 10,000 characters or with more than 64 variants is not
+  checked, and neither is one that makes Tailwind or a plugin throw.
+
   ## Options
 
     * `:allow`, `:deny`, `:contracts` - exceptions; entries may name

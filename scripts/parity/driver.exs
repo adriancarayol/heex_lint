@@ -7,6 +7,8 @@
 
 here = Path.expand(".", __DIR__)
 dir = Path.join(System.tmp_dir!(), "heex_lint_parity_#{System.unique_integer([:positive])}")
+# The number repeats between runs, and a run that crashed leaves its directory.
+File.rm_rf!(dir)
 File.mkdir_p!(dir)
 
 cases =
@@ -119,7 +121,11 @@ rules =
       ]
   end
 
-diagnostics = HeexLint.TestProject.lint(dir, files, rules: rules)
+diagnostics =
+  HeexLint.TestProject.lint(dir, files,
+    rules: rules,
+    settings: [theme_imports: ["^parity-installed-kit/theme", "^parity-installed-bare/"]]
+  )
 
 # The template starts on line 6 of the generated module.
 out =

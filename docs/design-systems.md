@@ -109,6 +109,77 @@ container."* Placeholders use the component's actual names and values; see
 [Your own words](./rules.md#your-own-words). Every rule also accepts a
 `message`, and the `note` setting is appended to every finding.
 
+## A design system installed as a package
+
+A stylesheet under `node_modules` contributes `@utility` names and classes but
+no tokens, so Tailwind's palette is not your vocabulary. A design system
+published to npm falls under the same rule: once your theme declares one color
+of its own, every color of the package reads as undeclared. Name its import with
+`theme_imports`:
+
+```elixir
+# .heex_lint.exs
+[
+  settings: [theme_imports: ["^@acme/ui/"]]
+]
+```
+
+```css
+/* assets/css/app.css */
+@import "tailwindcss";
+@import "@acme/ui/theme.css";
+```
+
+Each pattern is a regex, as a string or a `Regex`, on the `@import` as written.
+`@acme/ui/theme.css` then counts as your own: its tokens, scales, values and
+resets. So do the stylesheets it imports from within the same package. Another
+package it imports does not until a pattern names it, and its own
+`@import "tailwindcss"` stays out, so Tailwind's palette is still reported. A
+pattern that is not a valid regex warns once and is ignored.
+
+`theme_imports` is a setting only; rules do not accept it as an option. In an
+umbrella it applies to every app's theme.
+
+### Which file a package import reads
+
+Tokens come from the file the import resolves to, as in @shadcn/lint: the package's
+`exports`, by the conditions `import`, `default`, `require`, `node`, `types` and then
+the others as written, and otherwise its own files, under `src/` too. A target has to
+be `./` relative and stay inside the package, as in Node: one that walks out, reaches
+into `node_modules` or encodes a separator is passed over for the next condition.
+Tailwind's build prefers a `style` condition, so the two can read different files. With
+this package:
+
+```json
+{ "exports": { ".": { "style": "./theme.css", "import": "./index.js" } } }
+```
+
+`@import "@acme/ui"` builds `theme.css` but reads `index.js`, which has no `@theme`, so
+the package's colors stay undeclared. Import the stylesheet itself instead: a
+subpath the package exports with one target, or a path with a pattern that matches it.
+
+```css
+@import "../node_modules/@acme/ui/theme.css";
+```
+
+```elixir
+settings: [theme_imports: ["node_modules/@acme/ui/"]]
+```
+
+### A stylesheet from a Hex package
+
+This needs no setting. `deps/` is not `node_modules`, so a stylesheet there,
+and whatever it imports by path, already counts as your own:
+
+```css
+@import "../../deps/my_kit/priv/static/theme.css";
+```
+
+The same goes for a dependency linked from `assets/package.json` with
+`"my_kit": "file:../deps/my_kit"` under npm, which links it to `deps/my_kit`. pnpm
+keeps a copy under `node_modules/.pnpm` instead, so there it is an installed package:
+name it with `theme_imports`.
+
 ## Share a policy
 
 `.heex_lint.exs` is Elixir, so a policy can live in its own file and be

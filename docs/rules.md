@@ -54,7 +54,8 @@ An omitted `allow` and an empty `allow` differ when `deny` is present:
 The policy only affects what the rule checks: `deny: ["bg-primary"]` does
 not make a declared token a raw color, class exceptions do not bypass SVG
 attribute checks, and property exceptions do not bypass `<style>` or
-dynamic-style checks.
+dynamic-style checks. For a style value a library computes, see
+[dynamic style identifiers](#dynamic-style-identifiers).
 
 In `no_raw_colors`, `transparent`, `current` and `inherit` are always accepted.
 `white` and `black` are accepted too, since Tailwind declares them in every
@@ -71,6 +72,11 @@ it still passes.
 Under `@import "tailwindcss" prefix(tw)`, `no_raw_colors` judges `tw:bg-pink-500`
 and leaves `bg-pink-500` alone: it is no Tailwind class, and `no_unknown_classes`
 reports it.
+
+Tokens come from your theme and its imports. A design system installed as a
+package contributes its tokens once the
+[`theme_imports`](./design-systems.md#a-design-system-installed-as-a-package)
+setting names its import.
 
 ### Contracts
 
@@ -117,10 +123,12 @@ does not cover `inline-full` or `[width:100%]`. Allowing `p-*` also allows
 
 Invalid regexes and misspellings of a category or class group such as
 `spacig` are configuration errors: reported on line 1 of each file, pausing
-the rule there. Other unknown names, such as a plugin's `prose` or a custom
-`btn`, may be real classes, so they only warn and match a class named exactly
-that. `no_unknown_classes` accepts unknown entries, since they may name
-external classes.
+the rule there. A class the theme's Tailwind build generates, such as `prose`
+from a plugin, is known like any other class. Other unknown names, such as a
+custom `btn`, may be real classes, so they only warn and match a class named
+exactly that, and so does `prose` when the build fails or there is no Tailwind to
+ask. `no_unknown_classes` accepts unknown entries, since they may name external
+classes.
 
 ### Recognition
 
@@ -133,12 +141,13 @@ the shared settings of the same name:
 | `component_imports` | Regexes on module names that are also the design system.       |
 | `ignore_imports`    | Regexes on module names that never are. Takes precedence.      |
 | `merge_functions`   | Adds functions whose arguments contain classes.                |
-| `variant_functions` | Adds functions whose map or keyword values contain classes.    |
+| `variant_functions` | Adds functions whose config holds classes: `base`, `slots`, `class`, `variants` and more. |
 
 The built-in merge functions are `cn`, `Tails.classes`, `TwMerge.merge` and
-`Twix.tw`. Inside class values, `Enum.join`, `Enum.filter`, `Enum.reject`,
-`Enum.uniq`, `Enum.concat`, `List.flatten`, `List.wrap` and `String.trim`
-are read through as well.
+`Twix.tw`. A call to one is checked wherever the file has it, inside a class value
+or not: see [where it looks](how-it-works.md#where-it-looks). Inside class values,
+`Enum.join`, `Enum.filter`, `Enum.reject`, `Enum.uniq`, `Enum.concat`,
+`List.flatten`, `List.wrap` and `String.trim` are read through as well.
 
 ### Your own words
 
@@ -171,7 +180,7 @@ Additional `no_restyle` placeholders:
 | `{{category}}` | The class category, including `layout` or `unclassified`.        |
 | `{{variants}}` | Comma-separated variant names, or empty.                         |
 | `{{wrapper}}`  | The forwarding component, or empty.                              |
-| `{{prop}}`     | The class attribute the classes were written in, such as `class` or `title_class`. |
+| `{{prop}}`     | The class attribute the classes were written in, such as `class` or `title_class`. On a slot it is `class`. |
 | `{{sizes}}`    | Comma-separated size names on every finding, or empty.           |
 | `{{where}}`    | Where to add a variant or size: `in lib/app_web/components/button.ex`, or `to <.button>` for a component from `deps/`. |
 | `{{around}}`   | Where spacing can go instead, on spacing findings.               |
@@ -223,4 +232,92 @@ A scale your `@theme` declares joins the grammar: `--radius-card` makes
 `--radius-*: initial` reset replaces the default names, so `rounded-lg` is
 unclassified until the theme declares it again.
 
+A theme that loads an `@config` or `@plugin` can add a font size the CSS never
+names, so its own Tailwind answers for the `text-*` classes the grammar reads as
+colors: a `fontSize` of `body` makes `text-body` typography, and `no_raw_colors`
+leaves it alone. A `text-brand` from `colors` in that config stays a color. Without
+a Tailwind to ask, `text-body` reads as a color.
+
 The complete mapping is `HeexLint.Grammar.Categories`.
+
+## Dynamic style identifiers
+
+`no_inline_styles` reports a `style` value it cannot read. Some are computed by a
+library, such as the position a floating element needs. Name them to allow them:
+
+```elixir
+no_inline_styles: {:error, allow_dynamic_identifiers: ["@floating_styles", "styles.popper"]}
+```
+
+```heex
+<%!-- Allowed. --%>
+<div style={@floating_styles} />
+
+<%!-- Allowed, and color is still checked. --%>
+<div style={[@floating_styles, "color: red"]} />
+
+<%!-- Reported: another value. --%>
+<div style={@other_styles} />
+```
+
+A name matches the read spelled the same way and nothing else, on any element or
+component, in a `style` attribute or a map or keyword list spread onto a tag
+(`{%{style: @floating_styles}}`):
+
+| Name                      | Matches                                                                                                  |
+| ------------------------- | -------------------------------------------------------------------------------------------------------- |
+| `@floating_styles`        | `@floating_styles`: an assign in a template, a module attribute in a function body.                      |
+| `assigns.floating_styles` | `assigns.floating_styles`, `assigns[:floating_styles]`, and `Map.get` or `Map.fetch!` on `assigns`.      |
+| `floating_styles`         | That variable, however it is bound: in the function, in the function's head, by `:for` or `:let`.        |
+| `styles.popper`           | That exact path, also as `styles[:popper]` or with `Map.get`, `Map.fetch!`, `Keyword.get`, `Keyword.fetch!`. `@styles.popper` and `assigns.styles.popper` work the same way. |
+| `Floating.styles`         | A call to that function with the module as written, with any arguments or piped into.                    |
+
+The spellings do not cover each other: `@floating_styles` is not
+`assigns.floating_styles`, `styles` is not `styles.popper`, and `Floating.styles` is
+not `MyApp.Floating.styles`. These have no name, so they stay reported: a local or
+imported call such as `floating_styles()`, a string key such as `styles["popper"]`, a
+computed key, what a call returns, such as `Floating.styles(@anchor).popper`, and a
+path read through a default, such as `Map.get(styles, :popper, %{}).inner`.
+
+What the name holds decides the rest:
+
+- A value written out where the name is bound is still checked, since it can be read:
+  a string, `<>`, a sigil, a list, or a map, which stays reported as dynamic.
+  `floating_styles = "color: red"` is reported. So is
+  `assign(assigns, :floating_styles, "color: red")` under `@floating_styles` or
+  `assigns.floating_styles`, and `assign(assigns, :styles, %{popper: "color: red"})`
+  under `@styles.popper` or `assigns.styles.popper`.
+- A lookup on `%{base | a: value}` reads what the map writes, then what its base has.
+  `t = %{assigns.base | a: "color: red"}` reports `color` for `t.a` under `t.a`. `t.b`
+  is whatever the base holds, so it stays dynamic when the base cannot be read or does
+  not have the key, and is exempt under `t.b`. A computed key on it stays dynamic too.
+  So does a computed or missing key on a table assigned with `assign/3`, as in
+  `@styles[@tone]`.
+- Any other value is exempt along with everything it goes on to read, literals
+  included: `floating_styles = if assigns.open, do: "color: red", else: Floating.compute()`
+  and an alias of another name both report nothing under `floating_styles`. So does a
+  name bound more than once.
+- Anything on the way counts. With `styles = Floating.compute()`, a `style={styles}`
+  is allowed by `styles` or by `Floating.compute`.
+- A lookup's default is a value of its own, like the right side of `||`.
+  `Map.get(@styles, :popper, "color: red")` under `@styles.popper` reports `color`, and
+  `Map.get(@styles, :popper, @other)` needs `@other` as well.
+- A value reached another way is still reported: with `allow_dynamic_identifiers:
+  ["a"]`, `a = x`, `b = x` and `style={if @on, do: a, else: b}`, `x` is reported through
+  `b`.
+- A template reads only what the function rendering it assigns. A value assigned
+  anywhere else, such as `assign(socket, :floating_styles, "color: red")` in `mount/3`
+  or in a helper the function calls, cannot be read: it is reported as dynamic, and
+  exempt when named, whatever it holds. In a function body, `assigns.floating_styles`
+  is what came in, whatever the function assigns before or after it.
+
+The option does not reach holes or forwarded styles. A hole, as in
+`"--tone: #{tone}"`, is never reported for being unreadable, and a raw color in one is
+reported whatever `tone` is called. A function component's received `style` is
+already allowed, and its `attr` default is checked even if `@style` is listed, so an
+unreadable default goes by its own name.
+
+Entries must be strings shaped like these names. Anything else, such as
+`assigns[:floating_styles]` or `Floating.styles()`, is a configuration error, since it
+would match nothing. The option applies to the whole rule: a contract cannot set it, and
+one that writes it is a configuration error.

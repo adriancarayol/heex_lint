@@ -8,13 +8,19 @@ defmodule HeexLint.Theme do
   names, class selectors and `--animate-*` theme names but not tokens, since
   Tailwind's own palette is not the project's vocabulary. A workspace package
   linked into `node_modules` really lives outside it, so it counts as the
-  project's own. Dark-mode blocks are skipped, so values are the light theme's.
+  project's own, and so does a design system installed as a package once the
+  `theme_imports` setting names its import. Dark-mode blocks are skipped, so
+  values are the light theme's.
 
-  `load/1` also applies the scales the stylesheets declare to cn's grammar,
+  `load/2` also applies the scales the stylesheets declare to cn's grammar,
   once per read, and `signature` tells two reads of an edited file apart.
 
   `prefix` is the `tw` of `@import "tailwindcss" prefix(tw)`, read like the
   tokens from the project's own files.
+
+  `modules` says the stylesheets load an `@config` or `@plugin`, in any file: then
+  JavaScript adds to the theme and only Tailwind can say what. `oracle` is how to
+  ask, `{oracle, entry}`, for a theme in a run that has one and needs it.
   """
 
   @derive {Inspect, except: [:grammar]}
@@ -24,6 +30,8 @@ defmodule HeexLint.Theme do
   defstruct file: nil,
             tailwind: false,
             prefix: nil,
+            modules: false,
+            oracle: nil,
             tokens: MapSet.new(),
             scoped: %{},
             utilities: MapSet.new(),
@@ -57,6 +65,8 @@ defmodule HeexLint.Theme do
           file: String.t() | nil,
           tailwind: boolean(),
           prefix: String.t() | nil,
+          modules: boolean(),
+          oracle: {pid(), String.t()} | nil,
           tokens: MapSet.t(String.t()),
           scoped: %{String.t() => MapSet.t(String.t())},
           utilities: MapSet.t(String.t()),
@@ -91,6 +101,8 @@ defmodule HeexLint.Theme do
 
   @prefix_function ~r/\bprefix\(\s*([\w-]+)\s*\)/
 
+  @module_rule ~r/@(?:config|plugin)\s/
+
   # `:root, :host` is how Tailwind writes its own theme.
   @root_selector ~r/^(?::root|html|:host)$/
 
@@ -105,46 +117,88 @@ defmodule HeexLint.Theme do
   @doc """
   Reads the theme at `file`, following its imports. An empty theme when
   `file` is `nil`.
-  """
-  @spec load(String.t() | nil) :: t()
-  def load(nil), do: %__MODULE__{}
 
-  def load(file) do
-    theme = read_stylesheets(file)
+  `theme_imports` are regexes, as strings or `Regex`es, on `@import` specifiers
+  as written: the stylesheets they reach count as the project's own though they
+  resolve under `node_modules`, and so do the files those import from within
+  the same package. A string that is not a regex is skipped; `compile_imports/1`
+  says which.
+  """
+  @spec load(String.t() | nil, [String.t() | Regex.t()]) :: t()
+  def load(file, theme_imports \\ [])
+  def load(nil, _theme_imports), do: %__MODULE__{}
+
+  def load(file, theme_imports) do
+    theme = read_stylesheets(file, theme_imports)
 
     %{theme | grammar: theme.declarations |> ThemeScales.of() |> Classifier.grammar()}
   end
 
-  # Without the grammar, which only a theme the rules read needs.
-  defp read_stylesheets(file) do
-    file = Path.expand(file)
+  @doc """
+  The `theme_imports` setting as regexes, and the strings that are not regexes.
+  """
+  @spec compile_imports(String.t() | Regex.t() | [String.t() | Regex.t()] | nil) ::
+          {[Regex.t()], [String.t()]}
+  def compile_imports(patterns) do
+    {valid, invalid} =
+      patterns
+      |> List.wrap()
+      |> Enum.map(&compile_import/1)
+      |> Enum.split_with(&match?({:ok, _}, &1))
 
-    {read, _seen} = read(file, MapSet.new(), %__MODULE__{file: file}, false)
+    {Enum.map(valid, &elem(&1, 1)), Enum.map(invalid, &elem(&1, 1))}
+  end
+
+  defp compile_import(%Regex{} = regex), do: {:ok, regex}
+
+  defp compile_import(pattern) do
+    case Regex.compile(pattern) do
+      {:ok, regex} -> {:ok, regex}
+      {:error, _} -> {:error, pattern}
+    end
+  end
+
+  # Without the grammar, which only a theme the rules read needs.
+  defp read_stylesheets(file, theme_imports \\ []) do
+    file = Path.expand(file)
+    {patterns, _invalid} = compile_imports(theme_imports)
+    walk = %{patterns: patterns, from_package: false, own_package: nil}
+
+    {read, _seen} = read(file, MapSet.new(), %__MODULE__{file: file}, walk)
 
     finalize(read)
   end
 
   @doc """
   The prefix the stylesheet at `file` gives Tailwind, for a theme file that is
-  not the stylesheet Tailwind builds.
+  not the stylesheet Tailwind builds. `theme_imports` plays no part, as in
+  @shadcn/lint: a prefix a design system's package declares is not read.
   """
   @spec prefix_of(String.t()) :: String.t() | nil
   def prefix_of(file), do: read_stylesheets(file).prefix
 
   @doc """
+  Whether the stylesheet at `file` loads an `@config` or `@plugin`, for a theme file
+  that is not the stylesheet Tailwind builds.
+  """
+  @spec modules_of(String.t()) :: boolean()
+  def modules_of(file), do: read_stylesheets(file).modules
+
+  @doc """
   Finds the stylesheet that imports Tailwind under `root`, the way the
   shadcn CLI does: when several do, the one declaring the most color tokens
-  wins, then the one nearest the root.
+  wins, then the one nearest the root. `theme_imports` is as in `load/2`, so
+  the tokens of a package it names count.
   """
-  @spec discover(String.t()) :: String.t() | nil
-  def discover(root) do
+  @spec discover(String.t(), [String.t() | Regex.t()]) :: String.t() | nil
+  def discover(root, theme_imports \\ []) do
     root = Path.expand(root)
 
     root
     |> css_files(0, [])
     |> Enum.sort()
     |> Enum.reduce(nil, fn file, best ->
-      theme = read_stylesheets(file)
+      theme = read_stylesheets(file, theme_imports)
 
       if theme.tailwind do
         tokens = MapSet.size(theme.tokens)
@@ -305,21 +359,38 @@ defmodule HeexLint.Theme do
   # `seen` comes back out because it spans the whole walk: a stylesheet two
   # imports reach is read at the first, and reading it again at the second
   # would put its declarations over the ones read between them.
-  defp read(file, seen, acc, from_package) do
-    if MapSet.member?(seen, file) or MapSet.size(seen) > 64 do
+  defp read(file, seen, acc, walk) do
+    key = seen_key(file)
+
+    if MapSet.member?(seen, key) or MapSet.size(seen) > 64 do
       {acc, seen}
     else
-      seen = MapSet.put(seen, file)
+      seen = MapSet.put(seen, key)
       acc = %{acc | files: acc.files ++ [file]}
 
       case File.read(file) do
-        {:ok, css} -> read_css(css, file, seen, acc, from_package)
+        {:ok, css} -> read_css(without_bom(css), file, seen, acc, walk)
         {:error, _} -> {acc, seen}
       end
     end
   end
 
-  defp read_css(css, file, seen, acc, from_package) do
+  # @shadcn/lint's realpath gives a case-insensitive disk's own spelling, and Elixir has
+  # no such call. Two spellings of one file agree on this, where two files or two hard
+  # links, which that realpath keeps apart, do not.
+  defp seen_key(file) do
+    case File.stat(file) do
+      {:ok, stat} -> {String.downcase(file), stat.major_device, stat.inode}
+      {:error, _} -> file
+    end
+  end
+
+  # JavaScript's `trim` and `\s` take a byte order mark for white space, and Elixir's do
+  # not: left in, a leading `:root` reads as a scoped selector.
+  defp without_bom(<<0xEF, 0xBB, 0xBF, css::binary>>), do: css
+  defp without_bom(css), do: css
+
+  defp read_css(css, file, seen, acc, walk) do
     utilities = parse_utilities(css)
 
     acc = %{
@@ -327,7 +398,9 @@ defmodule HeexLint.Theme do
       | utilities: MapSet.union(acc.utilities, MapSet.new(utilities, &elem(&1, 0))),
         utility_properties: merge_utilities(acc.utility_properties, utilities),
         classes: MapSet.union(acc.classes, parse_class_selectors(css)),
-        prefix: if(from_package, do: acc.prefix, else: acc.prefix || parse_tailwind_prefix(css))
+        prefix:
+          if(walk.from_package, do: acc.prefix, else: acc.prefix || parse_tailwind_prefix(css)),
+        modules: acc.modules or Regex.match?(@module_rule, strip_comments(css))
     }
 
     dir = Path.dirname(file)
@@ -339,20 +412,20 @@ defmodule HeexLint.Theme do
 
         case resolve_stylesheet(dir, spec) do
           nil ->
-            {%{acc | missing_imports: acc.missing_imports ++ [spec]}, seen}
+            {%{acc | missing_imports: [spec | acc.missing_imports]}, seen}
 
           target when spec == "tailwindcss" ->
-            {read_tailwind_entry(target, seen, acc), seen}
+            read_tailwind_entry(target, seen, acc)
 
           target ->
-            read(target, seen, acc, from_package or package_file?(target))
+            read(target, seen, acc, import_walk(walk, spec, target))
         end
       end)
 
     # Every declaration anywhere, dark mode included, for variable checks.
     acc = %{acc | variables: MapSet.union(acc.variables, all_variable_names(css))}
 
-    if from_package do
+    if walk.from_package do
       {%{acc | theme_names: MapSet.union(acc.theme_names, package_animations(css))}, seen}
     else
       {values, scoped_names, theme_names, declarations} = parse_declarations(css)
@@ -377,12 +450,22 @@ defmodule HeexLint.Theme do
   # its JavaScript entry, so Tailwind's stylesheets add no animations and
   # `--animate-*: initial` removes the grammar's defaults. Any other path into
   # the package reads a stylesheet like any package's. So this walk keeps no
-  # animations and marks nothing seen: a later `tailwindcss/theme.css` still
+  # animations and marks none of them seen: a later `tailwindcss/theme.css` still
   # counts. It adds no declarations, being all inside node_modules, so that
-  # later read cannot put any over the ones read in between.
+  # later read cannot put any over the ones read in between. No `theme_imports`
+  # reaches this walk, so that stays true of an index.css that imports its parts:
+  # the JavaScript entry imports none for a pattern to match. What it marks is the
+  # entry, which takes a slot of the limit there and is not read twice.
   defp read_tailwind_entry(target, seen, acc) do
-    {walked, _seen} = read(target, seen, acc, true)
-    %{walked | theme_names: acc.theme_names}
+    entry = {:tailwind_entry, target}
+
+    if MapSet.member?(seen, entry) do
+      {acc, seen}
+    else
+      walk = %{patterns: [], from_package: true, own_package: nil}
+      {walked, _seen} = read(target, seen, acc, walk)
+      {%{walked | theme_names: acc.theme_names}, MapSet.put(seen, entry)}
+    end
   end
 
   # A package's own @theme animations are generated all the same:
@@ -398,16 +481,31 @@ defmodule HeexLint.Theme do
 
   # A utility declared again takes the new body and keeps its place.
   defp merge_utilities(utilities, new) do
-    Enum.reduce(new, utilities, fn {name, _properties} = utility, utilities ->
-      if List.keymember?(utilities, name, 0),
-        do: List.keyreplace(utilities, name, 0, utility),
-        else: utilities ++ [utility]
-    end)
+    bodies = Map.new(new)
+    known = MapSet.new(utilities, &elem(&1, 0))
+
+    kept = Enum.map(utilities, fn {name, body} -> {name, Map.get(bodies, name, body)} end)
+
+    added =
+      new
+      |> Enum.uniq_by(&elem(&1, 0))
+      |> Enum.reject(fn {name, _} -> MapSet.member?(known, name) end)
+      |> Enum.map(fn {name, _} -> {name, Map.fetch!(bodies, name)} end)
+
+    kept ++ added
   end
 
   defp finalize(%__MODULE__{} = theme) do
     {tokens, scoped} = apply_token_declarations(theme.declarations, MapSet.new(), %{})
-    theme = %{theme | tokens: tokens, scoped: scoped, files: Enum.uniq(theme.files)}
+
+    theme = %{
+      theme
+      | tokens: tokens,
+        scoped: scoped,
+        files: Enum.uniq(theme.files),
+        # Newest first while reading: a stylesheet can miss tens of thousands of them.
+        missing_imports: Enum.reverse(theme.missing_imports)
+    }
 
     %{
       theme
@@ -421,11 +519,61 @@ defmodule HeexLint.Theme do
   defp read_signature(%__MODULE__{} = theme) do
     :erlang.phash2(
       {theme.file, theme.declarations, theme.utility_properties, theme.classes, theme.theme_names,
-       theme.values, theme.variables, theme.tailwind, theme.prefix}
+       theme.values, theme.variables, theme.tailwind, theme.prefix, theme.modules}
     )
   end
 
   defp package_file?(file), do: String.contains?(file, "/node_modules/")
+
+  # How an import is read: as the project's own if it reaches an owned package,
+  # and otherwise as a package's once it is under node_modules or its importer
+  # was. Walking through another package forgets the owned one.
+  defp import_walk(walk, spec, target) do
+    own = own_package_of(spec, target, walk)
+
+    %{
+      walk
+      | own_package: own,
+        from_package: if(own, do: false, else: walk.from_package or package_file?(target))
+    }
+  end
+
+  # The package whose tokens an import contributes: one `theme_imports` names,
+  # or the same package a counted file imports from within. A kit's own
+  # `@import "tailwindcss"` is another package, so Tailwind's palette stays out.
+  defp own_package_of(spec, target, %{patterns: patterns, own_package: current}) do
+    dir = package_dir_of(target)
+
+    cond do
+      dir == nil -> nil
+      Enum.any?(patterns, &Regex.match?(&1, spec)) -> dir
+      dir == current -> dir
+      true -> nil
+    end
+  end
+
+  # The installed package a file belongs to: the directory after the last
+  # node_modules, two segments for a scope. Nil outside node_modules.
+  defp package_dir_of(file) do
+    segments = String.split(file, "/")
+
+    last_marker =
+      segments
+      |> Enum.drop(-1)
+      |> Enum.with_index()
+      |> Enum.filter(fn {segment, _at} -> segment == "node_modules" end)
+      |> List.last()
+
+    case last_marker do
+      nil ->
+        nil
+
+      {_segment, at} ->
+        {head, [first | _] = rest} = Enum.split(segments, at + 1)
+        depth = if String.starts_with?(first, "@"), do: 2, else: 1
+        Enum.join(head ++ Enum.take(rest, depth), "/")
+    end
+  end
 
   @doc false
   # Removes /* */ comments the way a CSS tokenizer would: a "/*" inside a
@@ -458,24 +606,39 @@ defmodule HeexLint.Theme do
     end
   end
 
-  defp strip(<<c::utf8, rest::binary>>, quote, acc), do: strip(rest, quote, [<<c::utf8>> | acc])
+  # By the byte: a stylesheet saved as Latin-1 is no reason to stop.
+  defp strip(<<byte, rest::binary>>, quote, acc), do: strip(rest, quote, [byte | acc])
 
   defp take_string("", _q, acc), do: {acc |> Enum.reverse() |> IO.iodata_to_binary(), ""}
 
-  defp take_string(<<?\\, c::utf8, rest::binary>>, q, acc),
-    do: take_string(rest, q, [<<c::utf8>>, "\\" | acc])
+  defp take_string(<<?\\, byte, rest::binary>>, q, acc),
+    do: take_string(rest, q, [byte, "\\" | acc])
 
   defp take_string(<<q, rest::binary>>, q, acc),
     do: {[q | acc] |> Enum.reverse() |> IO.iodata_to_binary(), rest}
 
-  defp take_string(<<c::utf8, rest::binary>>, q, acc),
-    do: take_string(rest, q, [<<c::utf8>> | acc])
+  defp take_string(<<byte, rest::binary>>, q, acc),
+    do: take_string(rest, q, [byte | acc])
 
   @doc false
-  def parse_imports(css) do
-    ~r/@import\s+(?:url\(\s*)?["']([^"']+)["']\s*\)?[^;]*;/
-    |> Regex.scan(strip_comments(css), capture: :all_but_first)
-    |> List.flatten()
+  def parse_imports(css), do: css |> strip_comments() |> imports(0, [])
+
+  # A rule's end is its `;`, found with one search. A `[^;]*` after each @import reads
+  # the rest of a file that has none once per @import in it.
+  defp imports(text, offset, acc) do
+    case Regex.run(@import_head, text, offset: offset, return: :index) do
+      nil ->
+        Enum.reverse(acc)
+
+      [{start, length}, {id_start, id_length}] ->
+        head_end = start + length
+
+        case :binary.match(text, ";", scope: {head_end, byte_size(text) - head_end}) do
+          # No `;` ends this @import, so none ends a later one either.
+          :nomatch -> Enum.reverse(acc)
+          {at, _} -> imports(text, at + 1, [binary_part(text, id_start, id_length) | acc])
+        end
+    end
   end
 
   @doc false
@@ -516,20 +679,59 @@ defmodule HeexLint.Theme do
   defp tailwind_spec?(spec),
     do: spec == "tailwindcss" or String.starts_with?(spec, "tailwindcss/")
 
+  # Not in @shadcn/lint. Bodies with no other inside them cannot overlap, so reading all
+  # of them is one pass over the file. One that holds another, nested in it or left open,
+  # can run on to the end of the file, so a file of them is quadratic, and a `{` in a
+  # string counts as a brace here too. Past this many passes such a body reads as setting
+  # nothing a category can be read from.
+  @utility_body_passes 16
+
   @doc false
   # Each @utility in source order, with the properties its body sets.
   def parse_utilities(css) do
     stripped = strip_comments(css)
+    heads = Regex.scan(~r/@utility\s+([\w-]+\*?)\s*\{/, stripped, return: :index)
+    closes = body_closes(stripped, heads)
+    next_heads = Enum.map(Enum.drop(heads, 1), fn [{start, _} | _] -> start end)
 
-    utilities =
-      ~r/@utility\s+([\w-]+\*?)\s*\{/
-      |> Regex.scan(stripped, return: :index)
-      |> Enum.map(fn [{start, length}, {name_start, name_length}] ->
-        {binary_part(stripped, name_start, name_length),
-         declared_properties(stripped, start + length)}
-      end)
+    {utilities, _left} =
+      heads
+      |> Enum.zip(next_heads ++ [byte_size(stripped)])
+      |> Enum.map_reduce(
+        @utility_body_passes * byte_size(stripped),
+        fn {[{start, length}, {name_start, name_length}], next_head}, left ->
+          open = start + length
+          # An unclosed body runs to the end of the file.
+          close = Map.get(closes, open, byte_size(stripped))
+          {properties, left} = declared_properties(stripped, open, close, next_head, left)
+          {{binary_part(stripped, name_start, name_length), properties}, left}
+        end
+      )
 
     merge_utilities([], utilities)
+  end
+
+  # Where each body closes, by where it opens, with one pass over the braces.
+  defp body_closes(css, heads) do
+    opens = MapSet.new(heads, fn [{start, length} | _] -> start + length end)
+
+    {_stack, closes} =
+      css
+      |> :binary.matches(["{", "}"])
+      |> Enum.reduce({[], %{}}, fn {at, 1}, {stack, closes} ->
+        case {:binary.at(css, at), stack} do
+          {?{, stack} ->
+            {[at + 1 | stack], closes}
+
+          {?}, []} ->
+            {[], closes}
+
+          {?}, [open | stack]} ->
+            {stack, if(MapSet.member?(opens, open), do: Map.put(closes, open, at), else: closes)}
+        end
+      end)
+
+    closes
   end
 
   # The properties an @utility body sets, from just inside its brace to the
@@ -537,42 +739,77 @@ defmodule HeexLint.Theme do
   # semicolon, which neither a selector like &:hover nor an at-rule prelude
   # does. Custom properties stay in: a body that sets --tw-shadow-color is
   # as much a color as one that sets box-shadow.
-  defp declared_properties(css, start) do
-    rest = binary_part(css, start, byte_size(css) - start)
+  defp declared_properties(_css, _open, close, next_head, left)
+       when next_head < close and left <= 0,
+       do: {[], left}
 
-    ~r/(?:^|[;{}])\s*(-{0,2}[a-zA-Z][\w-]*)\s*:/
-    |> Regex.scan(utility_body(rest, 1, 0), capture: :all_but_first)
-    |> Enum.map(fn [name] -> String.downcase(name) end)
-    |> Enum.uniq()
-  end
+  defp declared_properties(css, open, close, next_head, left) do
+    properties =
+      ~r/(?:^|[;{}])\s*(-{0,2}[a-zA-Z][\w-]*)\s*:/
+      |> Regex.scan(binary_part(css, open, close - open), capture: :all_but_first)
+      |> Enum.map(fn [name] -> String.downcase(name) end)
+      |> Enum.uniq()
 
-  # An unclosed body runs to the end of the file.
-  defp utility_body(css, depth, length) when depth == 0 or length == byte_size(css) do
-    binary_part(css, 0, if(depth == 0, do: length - 1, else: length))
-  end
-
-  defp utility_body(css, depth, length) do
-    case :binary.at(css, length) do
-      ?{ -> utility_body(css, depth + 1, length + 1)
-      ?} -> utility_body(css, depth - 1, length + 1)
-      _ -> utility_body(css, depth, length + 1)
-    end
+    {properties, if(next_head < close, do: left - (close - open), else: left)}
   end
 
   @doc false
   # A class that exists in CSS (.legacy-card) is not an unknown class. A
   # "dist/*.js" in a string is a glob, not a .js selector.
   def parse_class_selectors(css) do
-    stripped =
-      css
-      |> strip_comments()
-      |> String.replace(~r/"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'/, ~s(""))
+    stripped = css |> strip_comments() |> blank_strings()
 
     ~r/\.(-?[_a-zA-Z][\w-]*)/
     |> Regex.scan(stripped, capture: :all_but_first)
     |> List.flatten()
     |> MapSet.new()
   end
+
+  @doc false
+  # Replaces what `"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'` matches with `""`, in one pass. That
+  # regex retries from each quote of a string that never closes, so `\"` repeated is
+  # quadratic. A retry cannot do better: a quote like it before the point the read stopped
+  # was escaped, or it would have closed the string, so reading on from it stops there too.
+  def blank_strings(css), do: blank_strings(css, 0, 0, {0, 0}, [])
+
+  defp blank_strings(css, from, at, stops, acc) do
+    case :binary.match(css, ["\"", "'"], scope: {at, byte_size(css) - at}) do
+      :nomatch ->
+        [binary_part(css, from, byte_size(css) - from) | acc]
+        |> Enum.reverse()
+        |> IO.iodata_to_binary()
+
+      {open, 1} ->
+        quote = :binary.at(css, open)
+        rest = binary_part(css, open + 1, byte_size(css) - open - 1)
+
+        case open >= stop_for(stops, quote) && string_close(rest, quote, open + 1) do
+          false ->
+            blank_strings(css, from, open + 1, stops, acc)
+
+          {:closed, close} ->
+            acc = [~s(""), binary_part(css, from, open - from) | acc]
+            blank_strings(css, close + 1, close + 1, stops, acc)
+
+          {:open, stop} ->
+            blank_strings(css, from, open + 1, put_stop(stops, quote, stop), acc)
+        end
+    end
+  end
+
+  defp stop_for({double, _single}, ?"), do: double
+  defp stop_for({_double, single}, ?'), do: single
+
+  defp put_stop({_double, single}, ?", stop), do: {stop, single}
+  defp put_stop({double, _single}, ?', stop), do: {double, stop}
+
+  # `.` takes no newline, so a backslash before one, or before nothing, ends the read.
+  defp string_close(<<quote, _::binary>>, quote, at), do: {:closed, at}
+  defp string_close(<<?\\, ?\n, _::binary>>, _quote, at), do: {:open, at}
+  defp string_close(<<?\\, _, rest::binary>>, quote, at), do: string_close(rest, quote, at + 2)
+  defp string_close(<<?\\>>, _quote, at), do: {:open, at}
+  defp string_close(<<_, rest::binary>>, quote, at), do: string_close(rest, quote, at + 1)
+  defp string_close(<<>>, _quote, at), do: {:open, at}
 
   defp all_variable_names(css) do
     ~r/(?<![\w-])--([\w-]+)\s*:/
@@ -612,9 +849,10 @@ defmodule HeexLint.Theme do
           scope = List.first(stack)
 
           {values, names, decls} =
-            case Regex.run(~r/^\s*--((?:[\w-]+\*?)|\*)\s*:\s*([\s\S]+?)\s*$/, statement) do
+            case Regex.run(~r/^\s*--((?:[\w-]+\*?)|\*)\s*:\s*([\s\S]+)\z/, statement) do
               [_, name, value] when scope == nil or not scope.dark ->
                 theme = scope != nil and scope.theme
+                value = trim_value(value)
 
                 {put_value(values, name, value, scope != nil and scope.scoped),
                  if(theme, do: MapSet.put(names, name), else: names),
@@ -632,6 +870,16 @@ defmodule HeexLint.Theme do
       end)
 
     {values, scoped_names, names, Enum.reverse(declarations)}
+  end
+
+  # Greedy, then trimmed: a lazy value retries the trailing whitespace at every
+  # character of a run of it, and past the regex engine's limit it reads as no
+  # value at all. A value of only whitespace keeps its one character.
+  defp trim_value(value) do
+    case String.trim_trailing(value) do
+      "" -> value
+      trimmed -> trimmed
+    end
   end
 
   # An at-rule's prelude is a condition, not a selector.
@@ -690,62 +938,133 @@ defmodule HeexLint.Theme do
   defp apply_token(set, token, true), do: MapSet.delete(set, token)
   defp apply_token(set, token, false), do: MapSet.put(set, token)
 
+  # Far past any real theme value. A value that names a variable k times, each
+  # naming another k times, grows as k^6 through six levels: k = 10 builds 4 MB and
+  # k = 16 takes seconds to. Every substitution spends its length in UTF-16 units and
+  # one more from a budget shared by the whole resolution.
+  @resolve_budget 100_000
+
   @doc false
-  # Resolves var() references against `values`; nil when a variable has no
-  # value and no fallback.
+  # Resolves var() references against `values`; nil when a variable has no value
+  # and no fallback, or when resolving the value would spend more than the budget.
   def resolve_variables(value, values, depth \\ 0) do
-    cond do
-      not String.contains?(value, "var(") ->
-        value
+    {resolved, _known} = resolve_known(value, values, %{}, depth)
+    resolved
+  end
 
-      depth > 6 ->
-        nil
-
-      true ->
-        pattern = ~r/var\(\s*--([\w-]+)\s*(?:,\s*([^()]*(?:\([^()]*\)[^()]*)*))?\)/
-
-        {out, failed} =
-          pattern
-          |> Regex.scan(value, return: :index)
-          |> Enum.reverse()
-          |> Enum.reduce({value, false}, fn [{start, len} | groups], {text, failed} ->
-            [name | rest] =
-              Enum.map(groups, fn {s, l} -> if s >= 0, do: binary_part(value, s, l) end)
-
-            fallback = List.first(rest)
-            inner = Map.get(values, name, fallback)
-
-            {replacement, failed} =
-              case inner do
-                nil ->
-                  {"", true}
-
-                inner ->
-                  case resolve_variables(String.trim(inner), values, depth + 1) do
-                    nil -> {"", true}
-                    resolved -> {resolved, failed}
-                  end
-              end
-
-            {binary_part(text, 0, start) <>
-               replacement <> binary_part(text, start + len, byte_size(text) - start - len),
-             failed}
-          end)
-
-        if failed, do: nil, else: out
+  # The budget pays for what a substitution yields, not for the text read to get there:
+  # `--pad: var(--k, ...)` with a fallback of 100 KB, named 20,000 times, reads 2 GB for
+  # 80,000 units. So `known` keeps what each variable comes to, per level since a level
+  # can be too deep, and a theme's values read against the same `values` share it.
+  #
+  # That leaves the results as they were. A resolution stops at the first failure and
+  # all it returns then is nil, so a variable either fails from any budget, or spends the
+  # same amount from any budget and fits or does not. A read is `{text, units, spent}`,
+  # or nil when it fails from a full budget. `text` is iodata, because a copy of each
+  # result is up to 300 KB kept per variable.
+  defp resolve_known(value, values, known, depth \\ 0) do
+    case read_value(value, values, depth, known) do
+      {nil, known} -> {nil, known}
+      {{text, _units, _spent}, known} -> {IO.iodata_to_binary(text), known}
     end
   end
 
+  defp read_value(value, values, depth, known) do
+    cond do
+      not String.contains?(value, "var(") ->
+        {{value, units(value), 0}, known}
+
+      depth > 6 ->
+        {nil, known}
+
+      true ->
+        ~r/var\(\s*--([\w-]+)\s*(?:,\s*([^()]*(?:\([^()]*\)[^()]*)*))?\)/
+        |> Regex.scan(value, return: :index)
+        |> substitute(value, values, depth, known, {0, [], 0, 0})
+    end
+  end
+
+  defp substitute([], value, _values, _depth, known, {from, parts, units, spent}) do
+    rest = binary_part(value, from, byte_size(value) - from)
+    {{Enum.reverse([rest | parts]), units + units(rest), spent}, known}
+  end
+
+  # Left to right, stopping at the first that fails: what follows one past the
+  # budget would only spend more.
+  defp substitute(
+         [[{start, length} | groups] | matches],
+         value,
+         values,
+         depth,
+         known,
+         {from, parts, units, spent}
+       ) do
+    [name | rest] = Enum.map(groups, fn {s, l} -> if s >= 0, do: binary_part(value, s, l) end)
+
+    case read_reference(name, List.first(rest), values, depth + 1, known) do
+      {nil, known} ->
+        {nil, known}
+
+      {{text, text_units, text_spent}, known} ->
+        spent = spent + text_spent + 1 + text_units
+
+        if spent > @resolve_budget do
+          {nil, known}
+        else
+          before = binary_part(value, from, start - from)
+
+          read =
+            {start + length, [text, before | parts], units + units(before) + text_units, spent}
+
+          substitute(matches, value, values, depth, known, read)
+        end
+    end
+  end
+
+  # A fallback is part of the value that holds it, which is read once.
+  defp read_reference(name, fallback, values, depth, known) do
+    case {Map.fetch(known, {name, depth}), Map.fetch(values, name)} do
+      {{:ok, read}, _value} ->
+        {read, known}
+
+      {:error, {:ok, value}} ->
+        {read, known} = read_value(String.trim(value), values, depth, known)
+        {read, Map.put(known, {name, depth}, read)}
+
+      {:error, :error} when fallback == nil ->
+        {nil, known}
+
+      {:error, :error} ->
+        read_value(String.trim(fallback), values, depth, known)
+    end
+  end
+
+  # JavaScript's `.length`: UTF-16 units, of the text Node reads, where each run of bytes
+  # it cannot decode is one U+FFFD. Characters will not do: one letter with any number of
+  # combining marks would cost 1, and every substitution copies all of them. No unit takes
+  # more than three bytes, so a text past three times the budget is over without reading it.
+  defp units(text) when byte_size(text) > 3 * @resolve_budget, do: @resolve_budget + 1
+  defp units(text), do: count_units(text, 0)
+
+  defp count_units(<<char::utf8, rest::binary>>, count),
+    do: count_units(rest, count + if(char > 0xFFFF, do: 2, else: 1))
+
+  defp count_units(<<>>, count), do: count
+  defp count_units(rest, count), do: rest |> String.replace_invalid() |> count_units(count)
+
   defp colors_of(theme) do
-    for token <- theme.tokens,
-        raw = Map.get(theme.values, "color-" <> token),
-        raw != nil,
-        resolved = resolve_variables(raw, theme.values),
-        resolved != nil,
-        lab = Colors.parse(resolved),
-        lab != nil,
-        into: %{},
-        do: {token, lab}
+    {colors, _known} =
+      for token <- theme.tokens,
+          raw = Map.get(theme.values, "color-" <> token),
+          raw != nil,
+          reduce: {%{}, %{}} do
+        {colors, known} ->
+          {resolved, known} = resolve_known(raw, theme.values, known)
+          lab = resolved && Colors.parse(resolved)
+          {if(lab, do: Map.put(colors, token, lab), else: colors), known}
+      end
+
+    colors
   end
 
   defp default_scale(kind) do
@@ -759,45 +1078,77 @@ defmodule HeexLint.Theme do
   @doc false
   def default_scales, do: %{radius: default_scale(:radius), text: default_scale(:text)}
 
-  # The theme's own --radius-* / --text-* declarations over Tailwind's
-  # defaults, in cascade order, the way Tailwind reads them.
+  # The theme's own --radius-* / --text-* declarations over Tailwind's defaults,
+  # in cascade order, the way Tailwind reads them. Each step remembers when it was
+  # first declared: a step replaced keeps its place, and one removed and declared
+  # again goes last.
   defp build_scale(theme, kind) do
     prefix = "#{kind}-"
 
-    Enum.reduce(theme.declarations, default_scale(kind), fn
-      %{theme: false}, scale ->
-        scale
+    declared =
+      kind
+      |> default_scale()
+      |> Enum.with_index(fn {name, px}, order -> {name, {order, px}} end)
+      |> Map.new()
 
-      %{name: "*", value: value}, scale ->
-        if String.trim(value) == "initial", do: [], else: scale
+    {steps, _next, _known, _lengths} =
+      Enum.reduce(theme.declarations, {declared, map_size(declared), %{}, %{}}, fn
+        %{theme: false}, read ->
+          read
 
-      %{name: name, value: value}, scale ->
-        if String.starts_with?(name, prefix) and not String.contains?(name, "--") do
-          step = String.slice(name, String.length(prefix)..-1//1)
-          reset = String.trim(value) == "initial"
+        %{name: "*", value: value}, {_steps, next, known, lengths} = read ->
+          if String.trim(value) == "initial", do: {%{}, next, known, lengths}, else: read
 
-          cond do
-            step == "*" -> if reset, do: [], else: scale
-            reset -> List.keydelete(scale, step, 0)
-            true -> scale_step(scale, step, value, theme.values)
+        %{name: name, value: value}, {steps, next, known, lengths} = read ->
+          if String.starts_with?(name, prefix) and not String.contains?(name, "--") do
+            step = String.slice(name, String.length(prefix)..-1//1)
+            reset = String.trim(value) == "initial"
+
+            cond do
+              step == "*" -> if reset, do: {%{}, next, known, lengths}, else: read
+              reset -> {Map.delete(steps, step), next, known, lengths}
+              true -> scale_step(read, step, value, theme.values)
+            end
+          else
+            read
           end
-        else
-          scale
-        end
-    end)
+      end)
+
+    steps
+    |> Enum.sort_by(fn {_name, {order, _px}} -> order end)
+    |> Enum.map(fn {name, {_order, px}} -> {name, px} end)
   end
 
-  defp scale_step(scale, step, value, values) do
-    px =
-      case resolve_variables(value, values) do
-        nil -> nil
-        resolved -> Lengths.px(resolved)
-      end
+  defp scale_step({steps, next, known, lengths}, step, value, values) do
+    {resolved, known} = resolve_known(value, values, known)
+    {px, lengths} = length_of(resolved, lengths)
 
-    cond do
-      px == nil -> List.keydelete(scale, step, 0)
-      List.keymember?(scale, step, 0) -> List.keyreplace(scale, step, 0, {step, px})
-      true -> scale ++ [{step, px}]
+    case {px, steps} do
+      {nil, steps} ->
+        {Map.delete(steps, step), next, known, lengths}
+
+      {px, %{^step => {order, _old}}} ->
+        {Map.put(steps, step, {order, px}), next, known, lengths}
+
+      {px, steps} ->
+        {Map.put(steps, step, {next, px}), next + 1, known, lengths}
+    end
+  end
+
+  # Parsed once per value: steps naming a long one would each parse all of it. By digest,
+  # since keeping hundreds of values of 100 KB makes each parse a third slower.
+  defp length_of(nil, lengths), do: {nil, lengths}
+
+  defp length_of(resolved, lengths) do
+    key = :erlang.md5(resolved)
+
+    case lengths do
+      %{^key => px} ->
+        {px, lengths}
+
+      _ ->
+        px = Lengths.px(resolved)
+        {px, Map.put(lengths, key, px)}
     end
   end
 
@@ -832,139 +1183,333 @@ defmodule HeexLint.Theme do
 
   ## Stylesheet resolution
 
+  # A port of the `resolveFile` @shadcn/lint's theme read calls with `[".css"]`.
+  # Tailwind's build resolves differently, with a `style` condition first, so a
+  # kit's tokens can come from another file than the one it builds. Both linters
+  # share that, and it is what keeps their findings the same. `priv/tailwind_oracle.mjs`
+  # has both ways, and its targets stay inside the package the same way. Containment
+  # reads the path as written: a link the package itself holds is followed, as in Node.
+
+  @preferred_conditions ["import", "default", "require", "node", "types"]
+
+  # Real exports nest conditions a few levels deep. Past this a manifest has no
+  # target.
+  @max_condition_depth 32
+
+  # nodenext and bundler resolution import "./button.js" for button.ts.
+  @source_for_js %{
+    ".js" => [".ts", ".tsx"],
+    ".jsx" => [".tsx"],
+    ".mjs" => [".mts", ".ts"],
+    ".cjs" => [".cts", ".ts"]
+  }
+
   @doc """
-  Resolves an `@import` the way Tailwind's bundler does: relative paths,
-  then a package naming itself, then packages under `node_modules` through
-  their `style` export. The answer is the file's real path, symlinks resolved.
+  Resolves an `@import` the way @shadcn/lint's theme read does: a path, an
+  `imports` map entry (`#tokens`), or a package under `node_modules` through its
+  `exports` and then its own files. The package's `style` and `main` fields count
+  only when that finds nothing, which @shadcn/lint does not do. The answer is the
+  file's real path, symlinks resolved.
   """
   @spec resolve_stylesheet(String.t(), String.t()) :: String.t() | nil
   def resolve_stylesheet(base, "tailwindcss"),
     do: resolve_stylesheet(base, "tailwindcss/index.css")
 
   def resolve_stylesheet(base, id) do
+    base = Path.expand(base)
+    root = package_root(base) || base
+
+    within = [root, base]
+
     target =
       cond do
-        Regex.match?(~r/^(?:https?:|data:)/, id) ->
+        Regex.match?(~r/^(?:https?:|data:)/, id) or stray_unc?(id, within) ->
           nil
 
-        String.starts_with?(id, ".") or Path.type(id) == :absolute ->
-          full = Path.expand(id, base)
-          stylesheet_at(Path.dirname(full), Path.basename(full))
+        path_import?(id) ->
+          first_stylesheet([Path.expand(id, base)], within)
+
+        String.starts_with?(id, "#") ->
+          first_stylesheet(imports_candidates(id, root), within)
 
         true ->
-          resolve_package(base, id)
+          first_stylesheet(package_candidates(id, root, base), within) ||
+            package_field_stylesheet(id, root, base)
       end
 
     target && real_path(target)
   end
 
-  defp resolve_package(base, id) do
-    with [_, name | subpath] <- Regex.run(~r/^(@[^\/]+\/[^\/]+|[^\/]+)(?:\/(.*))?$/, id),
-         dir when dir != nil <- package_directory(base, name) do
-      pkg = read_package_json(dir)
-      exports = Map.get(pkg, "exports")
-      subpath = List.first(subpath)
+  defp first_stylesheet(candidates, within) do
+    candidates |> Enum.reject(&stray_unc?(&1, within)) |> Enum.find_value(&stylesheet_for/1)
+  end
 
-      if subpath not in [nil, ""] do
-        case is_map(exports) && exported_style(exports, subpath) do
-          target when is_binary(target) ->
-            existing_file(Path.join(dir, target))
+  @doc false
+  # A UNC path reaches the network on Windows: stat one and the OS sends the user's
+  # credentials to whatever host it names. A project that lives on a share still
+  # reaches its own files.
+  def stray_unc?(file, within) do
+    String.starts_with?(file, ["//", "\\\\", "/\\", "\\/"]) and
+      not Enum.any?(within, &inside?(Path.expand(&1), Path.expand(file)))
+  end
+
+  defp path_import?(id) do
+    id in [".", ".."] or String.starts_with?(id, ["./", "../"]) or Path.type(id) == :absolute
+  end
+
+  defp imports_candidates(id, root) do
+    case read_package_json(root)["imports"] do
+      {:object, _} = imports ->
+        mapped =
+          Enum.flat_map(map_subpath(imports, id, root, true), fn
+            {:file, file} -> [file]
+            # A package target resolves as a package, never as a path.
+            {:spec, spec} -> package_candidates(spec, root, root)
+          end)
+
+        mapped ++ directory_aliases(imports, id, root)
+
+      _ ->
+        []
+    end
+  end
+
+  defp package_candidates(id, root, from) do
+    with {name, subpath} <- split_package_specifier(id),
+         dir when dir != nil <- find_package(name, root, from) do
+      key = if subpath == "", do: ".", else: "./" <> subpath
+
+      mapped =
+        case read_package_json(dir)["exports"] do
+          {:object, _} = exports ->
+            files = for {:file, file} <- map_subpath(exports, key, dir), do: file
+            files ++ directory_aliases(exports, key, dir)
 
           _ ->
-            full = Path.join(dir, subpath)
-            stylesheet_at(Path.dirname(full), Path.basename(full))
+            []
         end
-      else
-        root =
-          cond do
-            is_binary(exports) -> exports
-            is_map(exports) -> style_target(Map.get(exports, ".", exports))
-            true -> nil
-          end
 
-        Enum.find_value([root, pkg["style"], pkg["main"]], fn
-          target when is_binary(target) -> existing_file(Path.join(dir, target))
+      # The package's own files, never a path that walks out of it.
+      own = [Path.join(dir, subpath), Path.join([dir, "src", subpath])]
+      mapped ++ (own |> Enum.map(&Path.expand/1) |> Enum.filter(&inside?(dir, &1)))
+    else
+      _ -> []
+    end
+  end
+
+  # A directory alias against a wildcard key ("./components/*").
+  defp directory_aliases(map, key, dir) do
+    for {:file, file} <- map_subpath(map, key <> "/*", dir), do: Path.dirname(file)
+  end
+
+  # Not in @shadcn/lint: Tailwind reads a package's `style` field, so a kit that
+  # only names its stylesheet there still contributes what it declares.
+  defp package_field_stylesheet(id, root, from) do
+    with {name, ""} <- split_package_specifier(id),
+         dir when dir != nil <- find_package(name, root, from) do
+      manifest = read_package_json(dir)
+
+      Enum.find_value(["style", "main"], fn field ->
+        with target when is_binary(target) <- manifest[field],
+             file = Path.expand(Path.join(dir, target)),
+             true <- inside?(dir, file) do
+          existing_file(file)
+        else
           _ -> nil
-        end) || stylesheet_at(dir, "index")
-      end
+        end
+      end)
     else
       _ -> nil
     end
   end
 
-  defp package_directory(base, name) do
-    ancestors = base |> Path.expand() |> Stream.iterate(&Path.dirname/1) |> Enum.take(32)
-    ancestors = Enum.uniq(ancestors)
+  defp split_package_specifier(id) do
+    parts = String.split(id, "/")
+    name_length = if String.starts_with?(id, "@"), do: 2, else: 1
 
-    self_package_directory(ancestors, name) ||
-      Enum.find_value(ancestors, fn dir ->
-        candidate = Path.join([dir, "node_modules", name])
-        if File.regular?(Path.join(candidate, "package.json")), do: candidate
-      end)
+    if length(parts) >= name_length do
+      {name, rest} = Enum.split(parts, name_length)
+      {Enum.join(name, "/"), Enum.join(rest, "/")}
+    end
   end
 
-  # A package importing itself by name: from its real path, a workspace
-  # package may have no node_modules above it that links it back.
-  defp self_package_directory(ancestors, name) do
-    dir = Enum.find(ancestors, &File.regular?(Path.join(&1, "package.json")))
-    if dir && read_package_json(dir)["name"] == name, do: dir
+  # A package naming itself comes first: from its real path, a workspace package
+  # may have no node_modules above it that links it back. `root` is the nearest
+  # package.json above the import, so `from` has the same one.
+  defp find_package(name, root, from) do
+    self_package_directory(name, root) || package_directory(name, root) ||
+      package_directory(name, from)
   end
 
+  defp self_package_directory(name, root) do
+    if read_package_json(root)["name"] == name, do: real_path(root)
+  end
+
+  # By the directory alone: a package with no package.json still has files.
+  defp package_directory(name, from) do
+    found = find_up(from, Path.join("node_modules", name))
+    found && real_path(found)
+  end
+
+  defp package_root(from) do
+    manifest = find_up(from, "package.json")
+    manifest && Path.dirname(manifest)
+  end
+
+  defp find_up(from, name), do: find_up(from, name, 32)
+
+  defp find_up(_dir, _name, 0), do: nil
+
+  defp find_up(dir, name, depth) do
+    candidate = Path.join(dir, name)
+    parent = Path.dirname(dir)
+
+    cond do
+      File.exists?(candidate) -> candidate
+      parent == dir -> nil
+      true -> find_up(parent, name, depth - 1)
+    end
+  end
+
+  # Objects keep their order, since the first matching condition or key wins:
+  # `{:object, pairs}`, with a repeated key where it first appeared and with its
+  # last value, as `JSON.parse` has it. The top level is a plain map.
   defp read_package_json(dir) do
     with {:ok, text} <- File.read(Path.join(dir, "package.json")),
-         {:ok, json} when is_map(json) <- JSON.decode(text) do
-      json
+         {{:object, pairs}, :ok, ""} <- decode_ordered(text) do
+      Map.new(pairs)
     else
       _ -> %{}
     end
   end
 
-  defp style_target(entry) when is_binary(entry), do: entry
+  defp decode_ordered(text) do
+    JSON.decode(text, :ok,
+      object_start: fn _acc -> [] end,
+      object_push: fn key, value, pairs -> [{key, value} | pairs] end,
+      object_finish: fn pairs, acc -> {{:object, in_written_order(pairs)}, acc} end
+    )
+  end
 
-  defp style_target(entry) when is_map(entry),
-    do: Enum.find_value(["style", "default"], &style_target(Map.get(entry, &1)))
+  defp in_written_order(newest_first) do
+    pairs = Enum.reverse(newest_first)
+    last = Map.new(pairs)
+    pairs |> Enum.uniq_by(&elem(&1, 0)) |> Enum.map(fn {key, _} -> {key, last[key]} end)
+  end
 
-  defp style_target(_), do: nil
+  # Through an exports or imports map, longest key first, as files inside `dir`
+  # or, with `bare`, as package specifiers an imports map points at.
+  defp map_subpath({:object, pairs}, subpath, dir, bare \\ false) do
+    pairs
+    |> Enum.filter(fn {key, _} -> String.starts_with?(key, [".", "#"]) end)
+    |> Enum.sort_by(fn {key, _} -> -String.length(key) end)
+    |> Enum.flat_map(fn {key, value} ->
+      captured = match_pattern(key, subpath)
 
-  defp exported_style(exports, subpath) do
-    case style_target(Map.get(exports, "./" <> subpath)) do
-      nil ->
-        exports
-        |> Map.keys()
-        |> Enum.filter(&(String.starts_with?(&1, "./") and String.contains?(&1, "*")))
-        |> Enum.sort_by(&(-String.length(&1)))
-        |> Enum.find_value(fn key ->
-          [prefix, suffix] = key |> String.slice(2..-1//1) |> String.split("*", parts: 2)
+      with true <- captured != nil and safe_segments?(captured),
+           target when target != nil <- pick_target(value, &valid_target?(&1, bare), 0) do
+        map_target(target, captured, dir)
+      else
+        _ -> []
+      end
+    end)
+  end
 
-          if String.length(subpath) >= String.length(prefix) + String.length(suffix) and
-               String.starts_with?(subpath, prefix) and String.ends_with?(subpath, suffix) do
-            case style_target(Map.get(exports, key)) do
-              nil ->
-                nil
-
-              target ->
-                captured =
-                  String.slice(
-                    subpath,
-                    String.length(prefix),
-                    String.length(subpath) - String.length(prefix) - String.length(suffix)
-                  )
-
-                String.replace(target, "*", captured, global: false)
-            end
-          end
-        end)
-
-      target ->
-        target
+  defp map_target("./" <> _ = target, captured, dir) do
+    case package_target(dir, target, captured) do
+      nil -> []
+      file -> [{:file, file}]
     end
   end
 
-  defp stylesheet_at(dir, name) do
-    base = Path.join(dir, name)
+  defp map_target(target, captured, _dir), do: [{:spec, expand_target(target, captured)}]
 
-    existing_file(base) || existing_file(base <> ".css") ||
-      existing_file(Path.join(base, "index.css"))
+  defp valid_target?(target, bare), do: package_target?(target) or (bare and bare_target?(target))
+
+  # The first target `valid?` accepts, so an invalid one falls through to the next
+  # fallback. Each condition is tried once.
+  defp pick_target(value, valid?, _depth) when is_binary(value),
+    do: if(valid?.(value), do: value)
+
+  defp pick_target(_value, _valid?, depth) when depth >= @max_condition_depth, do: nil
+
+  defp pick_target(value, valid?, depth) when is_list(value),
+    do: Enum.find_value(value, &pick_target(&1, valid?, depth + 1))
+
+  defp pick_target({:object, pairs}, valid?, depth) do
+    preferred =
+      for key <- @preferred_conditions, pair = List.keyfind(pairs, key, 0), do: pair
+
+    rest =
+      Enum.reject(pairs, fn {key, _} ->
+        String.starts_with?(key, ".") or key in @preferred_conditions
+      end)
+
+    Enum.find_value(preferred ++ rest, fn {_key, value} ->
+      pick_target(value, valid?, depth + 1)
+    end)
+  end
+
+  defp pick_target(_value, _valid?, _depth), do: nil
+
+  # The text `*` captured, "" for an exact match, or nil.
+  defp match_pattern(pattern, value) do
+    case String.split(pattern, "*", parts: 2) do
+      [^value] ->
+        ""
+
+      [prefix, suffix] ->
+        taken = byte_size(prefix) + byte_size(suffix)
+
+        if byte_size(value) >= taken and String.starts_with?(value, prefix) and
+             String.ends_with?(value, suffix) do
+          binary_part(value, byte_size(prefix), byte_size(value) - taken)
+        end
+
+      _ ->
+        nil
+    end
+  end
+
+  defp expand_target(target, captured), do: String.replace(target, "*", captured, global: false)
+
+  # What Node refuses in a target or a `*` capture: walking up, reaching into
+  # node_modules, and percent-encoded separators.
+  defp safe_segments?(text) do
+    not Regex.match?(~r/%2f|%5c/i, text) and
+      not (text
+           |> String.split(["/", "\\"])
+           |> Enum.any?(&Regex.match?(~r/^(?:\.|%2e){1,2}\z|^node_modules\z/i, &1)))
+  end
+
+  defp package_target?("./" <> rest), do: safe_segments?(rest)
+  defp package_target?(_target), do: false
+
+  # An imports target may also name a package, never a path or a URL.
+  defp bare_target?(target), do: Regex.match?(~r/^[^.\/\\#][^:\\]*\z/, target)
+
+  # The file a target names, or nil when it would leave the package.
+  defp package_target(dir, target, captured) do
+    if package_target?(target) and safe_segments?(captured) do
+      file = Path.expand(expand_target(target, captured), dir)
+      if inside?(dir, file), do: file
+    end
+  end
+
+  defp inside?(dir, file),
+    do: file == dir or String.starts_with?(file, String.trim_trailing(dir, "/") <> "/")
+
+  defp stylesheet_for(candidate) do
+    existing_file(candidate) || source_for_js(candidate) ||
+      existing_file(candidate <> ".css") || existing_file(Path.join(candidate, "index.css"))
+  end
+
+  defp source_for_js(candidate) do
+    extension = Path.extname(candidate)
+
+    @source_for_js
+    |> Map.get(extension, [])
+    |> Enum.find_value(&existing_file(String.replace_suffix(candidate, extension, &1)))
   end
 
   defp existing_file(path), do: if(File.regular?(path), do: path)
