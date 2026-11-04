@@ -239,6 +239,12 @@ Each of these reports something that passed before.
 
 ### Findings that change
 
+- A name bound by `:for`, `:let`, a `case`, `with` or `fn` clause head is what is only known
+  at runtime, not a variable of the same name in the function body. `c = "bg-pink-500"` with
+  `<.button :for={c <- @classes} class={c}>` is now dynamic, not `no_raw_colors`, and the
+  same goes for `style`. A template's own `<%= for %>` block and a call outside the
+  attribute, as in `title={cn(c)}` or `{cn(c)}`, still read the function's.
+
 - Theme variables resolve from `:root`, `html`, `:host` and `@theme` over scoped selectors
   such as `.compact`, across imported files too. With `--radius-card: var(--radius)`, `:root
   { --radius: 8px }` and `.compact { --radius: 4px }`, `no_arbitrary_values` called

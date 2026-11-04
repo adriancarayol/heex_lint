@@ -1013,6 +1013,108 @@ defmodule HeexLint.VariableChainsTest do
     end
   end
 
+  describe "a name a loop or a clause binds" do
+    @shadowed ~s(c = "bg-pink-500"\n)
+
+    for template <- [
+          ~S|<.button :for={c <- @classes} class={c}>x</.button>|,
+          ~S|<.button :for={{c, _} <- @classes} class={c}>x</.button>|,
+          ~S|<.button :for={a <- @a, c <- a} class={c}>x</.button>|,
+          ~S|<ul :for={c <- @classes}><li><.button class={c}>x</.button></li></ul>|,
+          ~S|<.card :let={c}><.button class={c}>x</.button></.card>|,
+          ~S|<.card :let={%{tone: c}}><.button class={c}>x</.button></.card>|,
+          ~S|<.button class={case @x do c -> c end}>x</.button>|,
+          ~S|<.button class={case @x do {c, _} when c != 1 -> c end}>x</.button>|,
+          ~S|<.button class={with c <- @x do c end}>x</.button>|,
+          ~S|<.button class={with {:ok, _} <- @y do nil else c -> c end}>x</.button>|,
+          ~S'<.button class={@x |> case do c -> c end}>x</.button>',
+          ~S|<.button :for={c <- @classes} {%{class: c}}>x</.button>|,
+          ~S|<.button :for={c <- @classes} class={c.tone}>x</.button>|
+        ] do
+      test "#{template} is unreadable, not the body's value", %{tmp_dir: dir} do
+        assert [%{rule: :require_static_classes}] =
+                 lint(dir, page(@shadowed, unquote(template)), rules: @rules)
+      end
+    end
+
+    for template <- [
+          ~S|<.card :let={c} class={c}>x</.card>|,
+          ~S|<ul :for={c <- @classes}></ul><.button class={c}>x</.button>|,
+          ~S|<.card :let={c}></.card><.button class={c}>x</.button>|,
+          ~S|<.button class={cond do c -> c end}>x</.button>|,
+          ~S|<.button class={case @x do ^c -> c end}>x</.button>|,
+          ~S|<.button class={case @x do @c -> c end}>x</.button>|,
+          ~S|<.button class={case @x do d -> c end}>x</.button>|
+        ] do
+      test "#{template} still reads the body's value", %{tmp_dir: dir} do
+        assert [%{rule: :no_raw_colors}] =
+                 lint(dir, page(@shadowed, unquote(template)), rules: @rules)
+      end
+    end
+
+    test "a name the clause binds again is read", %{tmp_dir: dir} do
+      bindings = ~s(x = case assigns.y do c -> c = "bg-pink-500"; c end\n)
+
+      assert [%{rule: :no_raw_colors}] =
+               lint(dir, page(bindings, "<.button class={x}>x</.button>"), rules: @rules)
+    end
+
+    test "what the clause reads through a binding is the body's", %{tmp_dir: dir} do
+      template = ~S|<.button class={case @x do c -> d end}>x</.button>|
+      bindings = ~s(c = "bg-pink-500"\nd = c\n)
+
+      assert [%{rule: :no_raw_colors}] = lint(dir, page(bindings, template), rules: @rules)
+    end
+
+    test "a head's name stays a prop's, and a clause's hides it", %{tmp_dir: dir} do
+      files = fn value ->
+        %{
+          @path => """
+          defmodule AppWeb.Page do
+            use AppWeb, :html
+            attr :class, :any, default: nil
+
+            def page(%{class: class} = assigns) do
+              ~H"<.button class={#{value}}>x</.button>"
+            end
+          end
+          """
+        }
+      end
+
+      assert lint(dir, files.("class"), rules: @rules) == []
+
+      assert [%{rule: :require_static_classes}] =
+               lint(dir, files.("case @x do class -> class end"), rules: @rules)
+    end
+
+    test "a function's parameter is not the body's value", %{tmp_dir: dir} do
+      bindings = ~S"""
+      t = %{b: "color: red"}
+      assigns = update(assigns, :x, fn t -> %{t | a: "--y: 1"} end)
+      """
+
+      style = fn read -> ~s(<div style={#{read}} />) end
+      rules = [no_inline_styles: :error]
+
+      assert [%{message: "Dynamic style" <> _}] =
+               lint(dir, page(bindings, style.("@x.b")), rules: rules)
+
+      assert lint(dir, page(bindings, style.("@x.a")), rules: rules) == []
+    end
+
+    test "a function's own binding is still read", %{tmp_dir: dir} do
+      bindings = ~S"""
+      assigns = update(assigns, :c, fn c ->
+        c = "bg-pink-500"
+        c
+      end)
+      """
+
+      assert [%{rule: :no_raw_colors}] = lint(dir, page(bindings), rules: @rules)
+    end
+  end
+
   describe "an assign set another way" do
     for set <- [
           ~S|Phoenix.Component.assign(assigns, :c, "bg-pink-500")|,

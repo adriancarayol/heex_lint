@@ -105,6 +105,7 @@ defmodule HeexLint.Collector do
 
     * `:mode` - `:class` (default) or `:style`
     * `:merge_functions` / `:variant_functions` - helper names
+    * `:bound` - the names the template binds there, from `bound_names/2`
   """
   @spec attribute(HeexLint.Element.value(), map(), keyword()) :: t()
   def attribute(value, context, opts \\ [])
@@ -122,7 +123,7 @@ defmodule HeexLint.Collector do
       {:ok, ast} ->
         context
         |> state(opts, expression_text(code, position, context), :template)
-        |> visit(ast)
+        |> visit(bound(ast, Keyword.get(opts, :bound, [])))
         |> result()
 
       {:error, _} ->
@@ -183,6 +184,33 @@ defmodule HeexLint.Collector do
   end
 
   @doc """
+  The names the template binds at `element`: its own `:for`, and the `:for` and `:let`
+  of `parents`. An element's own `:let` is for what is inside it.
+  """
+  @spec bound_names(HeexLint.Element.t(), [HeexLint.Element.t()]) :: [atom()]
+  def bound_names(element, parents) do
+    Enum.flat_map(element.attributes, &binder_names(&1, [":for"])) ++
+      Enum.flat_map(parents, fn parent ->
+        Enum.flat_map(parent.attributes, &binder_names(&1, [":for", ":let"]))
+      end)
+  end
+
+  defp binder_names(%{name: name, value: {:expr, code, _position}}, names) do
+    # A `:for` can have several generators, which only a list holds.
+    with true <- name in names,
+         {:ok, ast} <- Code.parse("[" <> code <> "]") do
+      Enum.flat_map(ast, fn
+        {:<-, _, [pattern, _from]} -> pattern_names(pattern)
+        pattern -> if name == ":let", do: pattern_names(pattern), else: []
+      end)
+    else
+      _ -> []
+    end
+  end
+
+  defp binder_names(_attribute, _names), do: []
+
+  @doc """
   The keys a root attribute sets when it spreads a readable map or keyword list
   onto the element: `{%{class: "p-4"}}`. Empty when it is not one.
   """
@@ -210,7 +238,7 @@ defmodule HeexLint.Collector do
          {_key, value} <- Enum.find(pairs, fn {k, _v} -> Code.name(k) == key end) do
       context
       |> state(opts, expression_text(code, position, context), :template)
-      |> visit(value)
+      |> visit(bound(value, Keyword.get(opts, :bound, [])))
       |> result()
     else
       _ -> nil
@@ -473,11 +501,19 @@ defmodule HeexLint.Collector do
   end
 
   defp visit(state, {:case, _, [_subject, [do: clauses]]}), do: visit_clauses(state, clauses)
-  defp visit(state, {:cond, _, [[do: clauses]]}), do: visit_clauses(state, clauses)
+
+  # The left of a `cond` clause is a condition, which binds nothing.
+  defp visit(state, {:cond, _, [[do: clauses]]}) do
+    Enum.reduce(List.wrap(clauses), state, fn
+      {:->, _, [_condition, body]}, acc -> visit(acc, body)
+      _, acc -> acc
+    end)
+  end
 
   defp visit(state, {:with, _, args}) when is_list(args) do
     opts = args |> List.last() |> Code.keyword()
-    state = visit(state, Keyword.get(opts, :do))
+    generators = for {:<-, _, [pattern, _from]} <- args, do: pattern
+    state = visit(state, scoped(generators, Keyword.get(opts, :do)))
     visit_clauses(state, Keyword.get(opts, :else, []))
   end
 
@@ -503,6 +539,10 @@ defmodule HeexLint.Collector do
   defp visit(state, {{:., _, [Access, :get]}, meta, [{:assigns, _, ctx}, name]})
        when is_atom(ctx) and is_atom(name),
        do: assigns_read(state, Atom.to_string(name), meta)
+
+  # A name a loop or a clause binds holds what is only known at runtime.
+  defp visit(state, {name, meta, :bound}) when is_atom(name),
+    do: unresolved(state, meta, Atom.to_string(name))
 
   # A variable.
   defp visit(state, {name, meta, ctx}) when is_atom(name) and is_atom(ctx),
@@ -558,12 +598,47 @@ defmodule HeexLint.Collector do
 
   defp visit_clauses(state, clauses) when is_list(clauses) do
     Enum.reduce(clauses, state, fn
-      {:->, _, [_patterns, body]}, acc -> visit(acc, body)
+      {:->, _, [patterns, body]}, acc -> visit(acc, scoped(patterns, body))
       _, acc -> acc
     end)
   end
 
   defp visit_clauses(state, _), do: state
+
+  # `body` with the names `patterns` bind marked, so that they are not looked up in the
+  # enclosing function. One the body binds again is the function's to answer for.
+  defp scoped(patterns, body) do
+    case pattern_names(patterns) do
+      [] -> body
+      names -> bound(body, names -- Map.keys(bindings(body)))
+    end
+  end
+
+  defp pattern_names(patterns) do
+    {_, names} =
+      Macro.prewalk(patterns, [], fn
+        {op, _, _}, acc when op in [:^, :@] -> {nil, acc}
+        {:when, meta, args}, acc -> {{:__block__, meta, Enum.drop(args, -1)}, acc}
+        {:_, _, ctx} = node, acc when is_atom(ctx) -> {node, acc}
+        {name, _, ctx} = node, acc when is_atom(name) and is_atom(ctx) -> {node, [name | acc]}
+        node, acc -> {node, acc}
+      end)
+
+    names
+  end
+
+  defp bound(ast, []), do: ast
+  defp bound({:@, _, _} = node, _names), do: node
+
+  defp bound({name, meta, ctx} = node, names) when is_atom(name) and is_atom(ctx),
+    do: if(name in names, do: {name, meta, :bound}, else: node)
+
+  defp bound({form, meta, args}, names),
+    do: {bound(form, names), meta, bound(args, names)}
+
+  defp bound({left, right}, names), do: {bound(left, names), bound(right, names)}
+  defp bound(list, names) when is_list(list), do: Enum.map(list, &bound(&1, names))
+  defp bound(other, _names), do: other
 
   defp map_entries(state, [{:|, _, [map, entries]}]),
     do: state |> visit(map) |> map_entries(entries)
@@ -1245,6 +1320,8 @@ defmodule HeexLint.Collector do
       else: nil
   end
 
+  defp table(_state, {_name, _, :bound}, _route), do: nil
+
   defp table(state, {name, _, ctx}, route) when is_atom(name) and is_atom(ctx) do
     case bound_values(state.clause, name) do
       [value] -> alias_of(%{state | mode: :body}, variable_key(state, name), value, route)
@@ -1470,7 +1547,9 @@ defmodule HeexLint.Collector do
 
   defp assignment(_node), do: []
 
-  defp fn_bodies({:fn, _, clauses}), do: for({:->, _, [_args, body]} <- clauses, do: body)
+  defp fn_bodies({:fn, _, clauses}),
+    do: for({:->, _, [args, body]} <- clauses, do: scoped(args, body))
+
   defp fn_bodies(_other), do: []
 
   defp concat_operands({:<>, _, [left, right]}),

@@ -84,6 +84,7 @@ defmodule HeexLint.Sites do
     parents = parents(element, by_index)
 
     context = template_context(project, source, template)
+    opts = Keyword.put(opts, :bound, Collector.bound_names(element, parents))
 
     element.attributes
     |> Enum.flat_map(fn
