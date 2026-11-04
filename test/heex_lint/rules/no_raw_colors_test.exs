@@ -1222,6 +1222,21 @@ defmodule HeexLint.Rules.NoRawColorsTest do
       assert finding.message =~ ~s|fill="#f00" hardcodes a color|
     end
 
+    test "read no heredoc", %{tmp_dir: dir} do
+      path = "lib/app_web/controllers/page_html/show.html.heex"
+
+      page =
+        "defmodule AppWeb.PageHTML do\n  use AppWeb, :html\n  embed_templates \"page_html/*\"\nend\n"
+
+      files = %{"lib/app_web/controllers/page_html.ex" => page}
+      rules = [no_raw_colors: :error]
+
+      assert [_] = lint(dir, Map.put(files, path, ~S|<svg fill={"red"} />|), rules: rules)
+
+      heredoc = ~s|<svg fill={"""\nred\n"""} />|
+      assert lint(dir, Map.put(files, path, heredoc), rules: rules) == []
+    end
+
     test "with no value have nothing to read", %{tmp_dir: dir} do
       for template <- [
             ~S|<svg fill />|,
@@ -1241,6 +1256,11 @@ defmodule HeexLint.Rules.NoRawColorsTest do
 
       assert {braced.line, braced.column} == {quoted.line, quoted.column + 1}
       assert {spaced.line, spaced.column} == {quoted.line, quoted.column + 2}
+
+      for literal <- [~S|"\x72ed"|, ~S|"\#f00"|] do
+        assert [escaped] = colors(dir, "<svg fill={#{literal}} />"), literal
+        assert {escaped.line, escaped.column} == {braced.line, braced.column}, literal
+      end
     end
 
     test "read nothing but a literal, and pass what a quoted value passes", %{tmp_dir: dir} do
@@ -1252,6 +1272,9 @@ defmodule HeexLint.Rules.NoRawColorsTest do
             ~S|<svg fill={"currentColor"} />|,
             ~S|<svg fill={"none"} />|,
             ~S|<svg fill={"var(--color-primary)"} />|,
+            ~S|<svg fill={"rgb(\xFF)"} />|,
+            ~S|<svg fill={"rgb(0 0 0 / \xFF)"} />|,
+            ~S|<svg fill={"oklch(\xFF)"} />|,
             ~S|<.icon fill={"red"} />|
           ] do
         assert colors(dir, template) == [], template

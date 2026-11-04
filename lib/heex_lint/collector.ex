@@ -256,6 +256,18 @@ defmodule HeexLint.Collector do
   end
 
   @doc """
+  Where the value of a quoted literal in a template expression starts, past its quote.
+  """
+  @spec template_literal_start(keyword(), HeexLint.Element.value(), map()) ::
+          {pos_integer(), pos_integer()}
+  def template_literal_start(meta, {:expr, _code, position}, context) do
+    {line, column} =
+      locator(position, context.template.indentation).(meta[:line], meta[:column])
+
+    {line, column + 1}
+  end
+
+  @doc """
   Collects from a piece of a template expression, such as one literal the caller
   found by walking it, at its place in the template.
   """

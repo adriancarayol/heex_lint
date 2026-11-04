@@ -568,16 +568,20 @@ defmodule HeexLint.Rules.NoRawColors do
     end
   end
 
-  # A quoted value, or `{"#f00"}`, which says the same. Nothing else in braces is read.
+  # A quoted value, or `{"#f00"}`, which says the same. Nothing else in braces is read:
+  # not a heredoc, and not a string an escape leaves without valid UTF-8, which no
+  # message could print.
   defp static_value({:string, value, position}, _context), do: [{value, position}]
 
   defp static_value({:expr, code, _} = expression, context) do
-    with {:ok, {:__block__, _, [value]} = node} when is_binary(value) <- Code.parse(code),
-         %{strings: [%{items: [{:char, _text, position} | _]}]} <-
-           Collector.template_expression(node, expression, context) do
-      [{value, position}]
-    else
-      _ -> []
+    case Code.parse(code) do
+      {:ok, {:__block__, meta, [value]}} when is_binary(value) ->
+        if meta[:delimiter] == "\"" and String.valid?(value),
+          do: [{value, Collector.template_literal_start(meta, expression, context)}],
+          else: []
+
+      _ ->
+        []
     end
   end
 

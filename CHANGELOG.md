@@ -173,7 +173,8 @@ Each of these reports something that passed before.
 - `scan_all_strings` skips plain string map keys such as `%{"fill-color" => 1}`, in
   `no_raw_colors` and `no_arbitrary_values`. Map values are still checked, and so are the
   keys of a map that reaches a merge function, directly or through a list, branch, pipe,
-  variable, module attribute, same-module function or an assign set anywhere in the module.
+  variable, same-module function or an assign set anywhere in the module, or a module
+  attribute from a function's body.
   **Some real class keys go unread with them:** a map a function returns, as in `cn(tones())`
   in a template, a map piped through another call first, as in `%{...} |> Map.put(...) |> cn()`,
   and a map reaching `cn(@tones)` as a component's prop or a `:for` variable. A map written
