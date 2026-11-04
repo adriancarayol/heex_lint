@@ -1385,7 +1385,16 @@ defmodule HeexLint.DynamicIdentifiersTest do
           {[".popper"], "is not a name as written"},
           {["color: red"], "is not a name as written"},
           {["bad\nname"], "is not a name as written"},
-          {["floating_styles\n"], "is not a name as written"}
+          {["floating_styles\n"], "is not a name as written"},
+          {["nil"], "is not a name as written"},
+          {["@nil"], "is not a name as written"},
+          {["true"], "is not a name as written"},
+          {["do"], "is not a name as written"},
+          {["end.popper"], "is not a name as written"},
+          {["Map.get"], "is not a name as written"},
+          {["Map.fetch!"], "is not a name as written"},
+          {["Keyword.get"], "is not a name as written"},
+          {["Keyword.fetch!"], "is not a name as written"}
         ] do
       test "#{inspect(value)} is a configuration error", %{tmp_dir: dir} do
         value = unquote(Macro.escape(value))
@@ -1414,22 +1423,29 @@ defmodule HeexLint.DynamicIdentifiersTest do
           "Floating.styles",
           "MyApp.Floating.styles",
           "Floating.styles!",
-          "estilós"
+          "estilós",
+          "nil?",
+          "styles.nil",
+          "Map.put"
         ] do
       test "#{name} is a name", %{tmp_dir: dir} do
         assert styled(dir, "", ~s("--gap: 4px"), [unquote(name)]) == []
       end
     end
 
-    test "a name in a contract does nothing, as upstream has none there", %{tmp_dir: dir} do
+    test "a name in a contract is a configuration error, as upstream's schema has it", %{
+      tmp_dir: dir
+    } do
       options = [
         contracts: [[pattern: "^card$", allow_dynamic_identifiers: ["@floating_styles"]]]
       ]
 
       files = page("", "<.card style={@floating_styles} />")
 
-      assert [%{message: @dynamic}] =
+      assert [%{line: 1, column: 1, message: message} | _] =
                lint(dir, files, rules: [no_inline_styles: {:error, options}])
+
+      assert message =~ "a contract cannot set it"
     end
 
     test "a file override can set it", %{tmp_dir: dir} do

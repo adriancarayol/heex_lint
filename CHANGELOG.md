@@ -24,8 +24,9 @@ gradually, set the affected rules to `:warning` and use `mix heex_lint --max-war
   `assigns.floating_styles`, `styles.popper` or `Floating.styles`. A name matches the read
   spelled the same way, in a `style` attribute or a map spread onto a tag. A value written
   out where the name is bound is still checked; any other value is exempt with whatever it
-  goes on to read. Anything but a list of such names is a configuration error. See [dynamic
-  style identifiers](docs/rules.md#dynamic-style-identifiers).
+  goes on to read. Anything but a list of such names is a configuration error, as is the
+  option in a contract. See [dynamic style
+  identifiers](docs/rules.md#dynamic-style-identifiers).
 - `HEEX_LINT_TAILWIND_TIMEOUT`, in milliseconds, replaces how long the linter waits for
   Tailwind. See [Crashes, hangs and slowness](#crashes-hangs-and-slowness).
 - `no_restyle` messages have `{{prop}}`, the class attribute the class was written in, and
