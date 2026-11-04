@@ -92,6 +92,14 @@ defmodule HeexLint.DynamicIdentifiersTest do
           {~S|%{:a => "--x: 1", assigns.k => Lib.compute()}|, "@t.a", :dynamic},
           {~S|%{a: "--x: 1", a: "color: red"}|, "@t.a", :color},
           {~S|%{a: "color: red", a: "--x: 1"}|, "@t.a", :clean},
+          {~S|%{:a => "color: red", -1 => "--x: 1"}|, "@t.a", :color},
+          {~S|%{:a => "color: red", -1.5 => "--x: 1"}|, "@t.a", :color},
+          {~S|%{:a => "color: red", +1 => "--x: 1"}|, "@t.a", :color},
+          {~S|%{-1 => "color: red", 1 => "--x: 1"}|, "@t[-1]", :color},
+          {~S|%{-1 => "--x: 1", 1 => "color: red"}|, "@t[-1]", :clean},
+          {~S|%{1 => "--x: 1", +1 => "color: red"}|, "@t[1]", :color},
+          {~S|%{{:x, -1} => "color: red", {:x, 1} => "--x: 1"}|, "@t[{:x, -1}]", :color},
+          {~S|%{:a => "color: red", -x => "--x: 1"}|, "@t.a", :dynamic},
           {~S|%{popper: "color: red"}|, "@t.popper", :color},
           {~S|%{popper: "color: red"}|, "assigns.t.popper", :color},
           {~S|%{popper: "--x: 1"}|, "@t.popper", :clean},
@@ -123,6 +131,16 @@ defmodule HeexLint.DynamicIdentifiersTest do
     end
 
     @rules [no_raw_colors: :error, require_static_classes: :error]
+
+    test "a signed number is a key, and hides no other", %{tmp_dir: dir} do
+      table = ~S|%{:a => "bg-pink-500", -1 => "p-1"}|
+
+      assert classes(dir, table, ~S|<div class={@t.a} />|, @rules) == [:no_raw_colors]
+
+      assert classes(dir, table, ~S|<.button class={@t.a}>x</.button>|, @rules) == [
+               :no_raw_colors
+             ]
+    end
 
     test "a computed key is dynamic on a class, and reads no entry", %{tmp_dir: dir} do
       assert classes(

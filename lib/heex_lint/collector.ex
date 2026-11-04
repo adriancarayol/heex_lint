@@ -1256,15 +1256,17 @@ defmodule HeexLint.Collector do
   end
 
   # What a key names, or nil for one only known at runtime. So `nil` as a key is wrapped,
-  # and a key such as `1`, `Foo` or `{:x, 1}` is compared without its position.
+  # and a key such as `1`, `-1`, `Foo` or `{:x, 1}` is compared without its position.
   defp literal_key(nil), do: {:literal, nil}
   defp literal_key(key) when is_atom(key), do: key
   defp literal_key({:__block__, _, [text]}) when is_binary(text), do: text
 
   defp literal_key(key) do
     key =
-      Macro.prewalk(key, fn
+      Macro.postwalk(key, fn
         {:__block__, _, [inner]} -> inner
+        {:-, _, [number]} when is_number(number) -> -number
+        {:+, _, [number]} when is_number(number) -> number
         node -> Macro.update_meta(node, fn _meta -> [] end)
       end)
 
