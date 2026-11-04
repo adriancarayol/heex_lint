@@ -141,7 +141,7 @@ the shared settings of the same name:
 | `component_imports` | Regexes on module names that are also the design system.       |
 | `ignore_imports`    | Regexes on module names that never are. Takes precedence.      |
 | `merge_functions`   | Adds functions whose arguments contain classes.                |
-| `variant_functions` | Adds functions whose map or keyword values contain classes.    |
+| `variant_functions` | Adds functions whose config holds classes: `base`, `slots`, `class`, `variants` and more. |
 
 The built-in merge functions are `cn`, `Tails.classes`, `TwMerge.merge` and
 `Twix.tw`. A call to one is checked wherever the file has it, inside a class value

@@ -40,6 +40,19 @@ Each of these reports something that passed before.
 
 **Whatever your configuration.**
 
+- **Class map keys in merge calls.** `cn(%{"bg-pink-500" => @on})` is read by every rule, in
+  code and in a template, and a computed key is dynamic.
+- **Templates in more places.** A `~H` in a template's `{...}`, a `rescue`, `catch` or `else`,
+  a `defmacro`, a `quote`, a module attribute or a `def` inside an `if` is read.
+- **EEx tags a block splits.** `<%= Enum.map(cn("bg-pink-500"), fn x -> %>` and
+  `<% end, cn("bg-pink-500")) %>` are read.
+- **`~s` holes.** `class={~s(p-2 #{@t.a})}` reads the hole as a string's, and a class glued to
+  one is dynamic.
+- **Map updates spread onto a tag.** `<div {%{@attrs | style: "color: red"}} />` is read.
+- **Global attributes read by name.** `<.card class={@rest[:class]}>` forwards `class` to the
+  card, and a class prop read on any attribute, as in
+  `<.plain {@rest} /><.card data-x={@title_class} {@rest}>`, tries each spread in turn.
+
 - **Merge-function calls outside a class value.** Every call to `cn`, `Tails.classes`,
   `TwMerge.merge`, `Twix.tw` or a function in `merge_functions` or `variant_functions` is now
   checked, wherever the file has it. In a template that is `title={cn("bg-pink-500")}`,
@@ -176,6 +189,10 @@ Each of these reports something that passed before.
 
 ### Findings that go away
 
+- `variant_functions` read only what holds classes: `base`, `slots`, `class`, `class_name`,
+  `variants` and a compound variant's `class`. `default_variants` and other keys are names.
+- `allow: ["blue-500"]` on `no_restyle` is a warning and no longer stops the rule. The rules
+  that read a color vocabulary still stop on it.
 - `data-*` and `aria-*` attributes such as `data-class` are no longer read as class lists,
   and a component passing `@class` only through `data-class` no longer counts as forwarding
   it. `data_class` and `metadata-class` still are. Under `scan_all_strings` their values are
@@ -240,6 +257,8 @@ Each of these reports something that passed before.
 
 ### Findings that change
 
+- A map spread onto a tag lands under its key: `<.panel {%{class: @title_class}} />` is judged
+  on what `class` reaches, and a key that is no class attribute lands nowhere.
 - A map spread onto a tag reads a repeated key's last value, as `%{class: "p-1", class:
   "bg-pink-500"}` holds at runtime. A table read by a literal key is dynamic when a computed
   key is written after it, as in `%{:a => "--x: 1", assigns.k => v}` with `t.a`, on a variable

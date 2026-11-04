@@ -497,6 +497,97 @@ defmodule HeexLint.Rules.NoRawColorsTest do
       end
     end
 
+    test "a template anywhere in a module is read", %{tmp_dir: dir} do
+      helper = ~S|~H"<div class=\"bg-pink-500\" />"|
+
+      for code <- [
+            "def a(assigns) do\n  :ok\nrescue\n  _ -> #{helper}\nend",
+            "def a(assigns) do\n  :ok\ncatch\n  _ -> #{helper}\nend",
+            "def a(assigns) do\n  :ok\nelse\n  _ -> #{helper}\nend",
+            "defmacro a(assigns), do: #{helper}",
+            "defmacro __using__(_) do\n  quote do\n    def b(assigns), do: #{helper}\n  end\nend",
+            "quote do\n  def b(assigns), do: #{helper}\nend",
+            "@tag #{helper}",
+            "if true do\n  def a(assigns), do: #{helper}\nend"
+          ] do
+        module = "defmodule AppWeb.Anywhere do\n  use AppWeb, :html\n#{code}\nend\n"
+
+        assert [finding] =
+                 lint(dir, %{"lib/app_web/anywhere.ex" => module}, rules: [no_raw_colors: :error]),
+               code
+
+        assert finding.message =~ "bg-pink-500"
+      end
+    end
+
+    test "a nested module keeps its own template, once", %{tmp_dir: dir} do
+      module = """
+      defmodule AppWeb.Outer do
+        use AppWeb, :html
+
+        defmodule Inner do
+          use AppWeb, :html
+          def a(assigns), do: ~H"<div class='bg-pink-500' />"
+        end
+      end
+      """
+
+      assert [_] = lint(dir, %{"lib/app_web/outer.ex" => module}, rules: [no_raw_colors: :error])
+    end
+
+    test "a ~H in a template's expression is read where it stands", %{tmp_dir: dir} do
+      for {template, position} <- [
+            {~S'<div>{if @on, do: ~H|<b class="bg-pink-500" />|}</div>', {6, 36}},
+            {~S'<.button title={~H|<b class="bg-pink-500" />|}>x</.button>', {6, 34}},
+            {~S'<%= if @on do %><%= ~H|<b class="bg-pink-500" />| %><% end %>', {6, 38}}
+          ] do
+        assert [finding] = colors(dir, template), template
+        assert finding.message =~ "bg-pink-500"
+        assert {finding.line, finding.column} == position, template
+      end
+    end
+
+    test "a ~H nested twice is read", %{tmp_dir: dir} do
+      template = ~S'<div>{~H|{~H(<b class="bg-pink-500" />)}|}</div>'
+      assert [_] = colors(dir, template)
+    end
+
+    test "a ~H in a .heex file's expression is read", %{tmp_dir: dir} do
+      files = %{
+        "lib/app_web/page.ex" => """
+        defmodule AppWeb.Page do
+          use Phoenix.Component
+          embed_templates "page/*"
+        end
+        """,
+        "lib/app_web/page/index.html.heex" =>
+          ~S'<div>{~H|<b class="bg-pink-500" />|}</div>' <> "\n"
+      }
+
+      assert [finding] = lint(dir, files, rules: [no_raw_colors: :error])
+      assert {finding.line, finding.column} == {1, 20}
+    end
+
+    test "EEx tags a block splits are read", %{tmp_dir: dir} do
+      for {template, class} <- [
+            {~S'<%= Enum.map(cn("bg-pink-500"), fn x -> %><i /><% end) %>', "bg-pink-500"},
+            {~S'<%= Enum.map(@list, fn x -> %><i /><% end, cn("bg-lime-400")) %>', "bg-lime-400"},
+            {~S'<%= foo(fn x -> %><i /><% end, opt: cn("bg-pink-500")) %>', "bg-pink-500"},
+            {~S'<%= [cn("bg-pink-500") | for x <- @l do %><i /><% end] %>', "bg-pink-500"}
+          ] do
+        assert [finding] = colors(dir, template), template
+        assert finding.message =~ class
+      end
+
+      assert colors(dir, ~S'<%= Enum.map(@list, fn x -> %><i /><% end) %>') == []
+      assert colors(dir, ~S'<%= if @on do %><i /><% end %>') == []
+    end
+
+    test "a split tag's class is where it stands", %{tmp_dir: dir} do
+      assert [finding] = colors(dir, ~S'<%= f(fn x -> %><i /><% end, cn("bg-pink-500")) %>')
+      assert {finding.line, finding.column} == {6, 38}
+    end
+
     test "a variant config reads only what holds classes", %{tmp_dir: dir} do
       for config <- [
             ~S|%{meta: "bg-pink-500"}|,
@@ -539,6 +630,13 @@ defmodule HeexLint.Rules.NoRawColorsTest do
       assert finding.message =~ ~s("bg-lime-400")
 
       assert [_] = colors(dir, ~S|<div title={cn(%{@a \| "bg-pink-500" => @on})} />|)
+    end
+
+    test "an atom key is a class at its map, and a keyword list holds options", %{tmp_dir: dir} do
+      assert [finding] = colors(dir, ~S|<div class={cn(%{"bg-pink-500": @on})} />|)
+      assert {finding.line, finding.column} == {6, 20}
+
+      assert colors(dir, ~S|<div class={cn("p-1", "bg-pink-500": @on)} />|) == []
     end
 
     test "a map outside a merge call has no class keys", %{tmp_dir: dir} do
@@ -668,11 +766,6 @@ defmodule HeexLint.Rules.NoRawColorsTest do
     test "do not add to a template that does not parse, or code that does not", %{tmp_dir: dir} do
       assert colors(dir, ~S|<div title={cn("bg-pink-500"} />|) == []
       assert colors(dir, ~S|<div title={cn(} />|) == []
-    end
-
-    test "a tag a block leaves open does not parse alone, so it is unread", %{tmp_dir: dir} do
-      assert colors(dir, ~S|<%= Enum.map(cn("bg-pink-500"), fn x -> %><b /><% end) %>|) == []
-      assert colors(dir, ~S|<%= Enum.map(@a, fn x -> %><b /><% end, cn("bg-pink-500")) %>|) == []
     end
 
     test "are checked anywhere in Elixir code", %{tmp_dir: dir} do
