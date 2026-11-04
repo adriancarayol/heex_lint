@@ -1062,8 +1062,12 @@ defmodule HeexLint.Collector do
               unreadable(state, unread, meta, written)
           end
 
+        # A hole reads every entry, whatever the key, as `carriesRawColor` does.
+        {pairs, route} when state.kind == :hole ->
+          entries(state, Enum.map(pairs, &elem(&1, 1)), route, key, meta)
+
         {pairs, route} ->
-          entry = key && List.keyfind(pairs, key, 0)
+          entry = written_entry(pairs, key)
 
           values =
             case entry do
@@ -1081,6 +1085,12 @@ defmodule HeexLint.Collector do
 
     if default, do: visit(state, default), else: state
   end
+
+  # A map keeps a key's last value, and `1` and `1.0` are two keys.
+  defp written_entry(_pairs, nil), do: nil
+
+  defp written_entry(pairs, key),
+    do: pairs |> Enum.reverse() |> Enum.find(fn {written, _} -> written === key end)
 
   defp unreadable(state, nil, meta, written), do: unresolved(state, meta, written)
 

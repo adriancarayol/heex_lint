@@ -40,6 +40,43 @@ defmodule HeexLint.DynamicIdentifiersTest do
   defp styled(dir, body, value, names),
     do: findings(dir, page(body, "<div style={#{value}} />"), names)
 
+  describe "a table in a variable" do
+    for {table, value, expected} <- [
+          {~S|%{1 => "--x: 1", 1 => "color: red"}|, "t[1]", :color},
+          {~S|%{1 => "color: red", 1 => "--x: 1"}|, "t[1]", :clean},
+          {~S|%{"a" => "color: red", "a" => "--x: 1"}|, ~S|t["a"]|, :clean},
+          {~S|%{1 => "color: red", 1.0 => "--x: 1"}|, "t[1.0]", :clean},
+          {~S|%{1 => "--x: 1", 1.0 => "color: red"}|, "t[1]", :clean},
+          {~S|%{false => "--x: 1", a: "color: red"}|, "t[false]", :clean},
+          {~S|%{false => "color: red", a: "--x: 1"}|, "t[false]", :color},
+          {~S|%{nil => "--x: 1", a: "color: red"}|, "t[nil]", :clean},
+          {~S|[a: "--x: 1", a: "color: red"]|, "t[:a]", :clean}
+        ] do
+      test "#{table} under #{value}", %{tmp_dir: dir} do
+        expected =
+          case unquote(expected) do
+            :color -> [@color]
+            :clean -> []
+          end
+
+        assert styled(dir, "t = #{unquote(table)}", unquote(value), []) == expected
+      end
+    end
+
+    for {table, key} <- [
+          {~S|%{a: "#ec4899", b: "1"}|, "t.b"},
+          {~S|%{1 => "1", 1 => "#ec4899"}|, "t[1]"},
+          {~S|%{1 => "#ec4899", 1.0 => "1"}|, "t[1.0]"},
+          {~S|%{false => "1", a: "#ec4899"}|, "t[false]"}
+        ] do
+      test "a hole reads every entry of #{table} under #{key}", %{tmp_dir: dir} do
+        value = ~s|"--x: \#{#{unquote(key)}}"|
+        assert [finding] = styled(dir, "t = #{unquote(table)}", value, [])
+        assert finding =~ "color"
+      end
+    end
+  end
+
   describe "a table assigned in the rendering function" do
     defp assigned(table), do: "assigns = assign(assigns, :t, #{table})"
 
