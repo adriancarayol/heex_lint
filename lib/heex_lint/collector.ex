@@ -11,27 +11,41 @@ defmodule HeexLint.Collector do
     * strings, `~w(...)`, lists, `&&`/`||`, `if`/`unless`/`case`/`cond`
     * interpolation and `<>`, where text glued to a runtime value is no
       class of its own and the value is unresolved
-    * in a template, `@name` follows `assign(assigns, :name, ...)` in the
-      rendering function; in a function component, the received `class`
-      is the component's own input: accepted, with its authored default read
-    * in function bodies, variables, module attributes, `assigns.name`,
-      same-module functions, map lookups (`Map.fetch!(%{...}, key)`), and
-      the configured merge and variant functions
+    * in a template, `@name` and `assigns.name` follow `assign(assigns, :name, ...)`
+      in the rendering function, and so does a lookup on them; in a function
+      component, the received `class` is the component's own input: accepted, with
+      its authored default read
+    * in function bodies, variables, module attributes, `assigns.name` as it came
+      in, same-module functions, map lookups (`Map.fetch!(%{...}, key)`), and the
+      configured merge and variant functions
 
   A route to a class follows 64 bindings; the next one is unresolved at the place
   that reads it. Each binding is read once per site, so a class reached through
   both branches of `if on, do: a, else: a` is one class and a chain of such
   branches stays linear. A read that stopped on its route is remembered with that
-  route, since it could read more from another one. A style has no such limit: its
+  route, since it could read more from another one, and what is read again is pushed
+  once. A style has no such limit: its
   value is read however far away it is, and what a hole in it can hold is looked
   at for raw colors the same way.
+
+  A style also keeps what its reads were called (`reads`), since which names count
+  as a library's computed styles is a rule option, and sites are collected for
+  every rule. `outside_names/2` is how the rule asks.
+
+  `calls` says where the merge and variant functions it read with no hop are:
+  those are this read's, and a call nothing read is a site of its own.
   """
 
   alias HeexLint.Code
   alias HeexLint.Project
-  alias HeexLint.Project.{Component, ModuleInfo}
+  alias HeexLint.Project.{Component, ModuleInfo, Source}
 
-  defstruct strings: [], unresolved: []
+  @no_reads %{within: %{}, at: %{}}
+
+  # Past any real expression in a template, in bytes.
+  @long_expression 4_096
+
+  defstruct strings: [], unresolved: [], reads: @no_reads, calls: []
 
   @type item ::
           {:char, String.t(), {pos_integer(), pos_integer()}}
@@ -40,17 +54,36 @@ defmodule HeexLint.Collector do
   @typedoc """
   A string the value can produce. `literal` locates its text in the file,
   for suggestions that rewrite it: nil when its source text differs from
-  its value (escapes, heredocs, interpolation).
+  its value (escapes, heredocs, interpolation). A string of a style also
+  says which read reached it (`read`).
   """
   @type string_value :: %{
-          value: String.t(),
-          items: [item()],
-          holes: %{{pos_integer(), pos_integer()} => [String.t()]},
-          literal:
-            %{file: String.t(), from: {pos_integer(), pos_integer()}, raw: String.t()} | nil
+          required(:value) => String.t(),
+          required(:items) => [item()],
+          required(:holes) => %{{pos_integer(), pos_integer()} => [String.t()]},
+          required(:literal) =>
+            %{file: String.t(), from: {pos_integer(), pos_integer()}, raw: String.t()} | nil,
+          optional(:read) => term()
         }
 
-  @type t :: %__MODULE__{strings: [string_value()], unresolved: [{pos_integer(), pos_integer()}]}
+  @typedoc """
+  How a style value's reads hang together, as `outside_names/2` needs them: what
+  each read went on to read and what it called that (`within`, from the value itself,
+  `:value`, with nil where no name can exempt it, and one entry per spelling, as
+  `@x` and `assigns.x` are one read), and which read reached each unresolved position
+  under what name (`at`). Empty for a class.
+  """
+  @type reads :: %{
+          within: %{term() => MapSet.t({term(), String.t() | nil})},
+          at: %{{pos_integer(), pos_integer()} => MapSet.t({term(), String.t() | nil})}
+        }
+
+  @type t :: %__MODULE__{
+          strings: [string_value()],
+          unresolved: [{pos_integer(), pos_integer()}],
+          reads: reads(),
+          calls: [{pos_integer(), pos_integer()}]
+        }
 
   # How many bindings a route to a class follows before the next one is
   # unreadable, the way a dynamic value is. No written chain of aliases is this
@@ -58,10 +91,20 @@ defmodule HeexLint.Collector do
   # keep no route: only what is on the route stops it.
   @max_route 64
 
+  @class_names ["class", "class_name", "className"]
+  @variant_class_keys ["base", "slots", "variants" | @class_names]
+  @variant_compound_keys [
+    "compound_variants",
+    "compoundVariants",
+    "compound_slots",
+    "compoundSlots"
+  ]
+
   # How many times a site may read a binding it has already read. Only reads
   # that stopped on their route are read again, and bindings that all read each
-  # other can do that on every route there is. First reads do not count, so this
-  # never limits how much a site reads.
+  # other can do that on every route there is. First reads do not count. A read cut
+  # at the limit has a count of its own, as reading it again can find a class, so a
+  # site's cycles do not cost it one; past its own count, one can still be lost.
   @max_rereads 4096
 
   @doc """
@@ -71,6 +114,7 @@ defmodule HeexLint.Collector do
 
     * `:mode` - `:class` (default) or `:style`
     * `:merge_functions` / `:variant_functions` - helper names
+    * `:bound` - the names the template binds there, from `bound_names/2`
   """
   @spec attribute(HeexLint.Element.value(), map(), keyword()) :: t()
   def attribute(value, context, opts \\ [])
@@ -88,7 +132,7 @@ defmodule HeexLint.Collector do
       {:ok, ast} ->
         context
         |> state(opts, expression_text(code, position, context), :template)
-        |> visit(ast)
+        |> visit(bound(ast, Keyword.get(opts, :bound, [])))
         |> result()
 
       {:error, _} ->
@@ -97,18 +141,153 @@ defmodule HeexLint.Collector do
   end
 
   @doc """
-  Collects `key` ("class" or "style") from a root attribute that spreads a
-  readable map or keyword list onto the element: `{%{class: "p-4"}}`.
-  Nil when the root is not one, or does not set `key`.
+  What a style value is left with when the reads called one of `names` are exempt,
+  for `allow_dynamic_identifiers`. As in @shadcn/lint, such a read says nothing,
+  and neither does what it went on to read, unless another route reaches that too.
+  A read whose value is written out where it is bound has no name to be exempted by,
+  so what it says still counts.
+  """
+  @spec outside_names(
+          %{
+            :strings => [string_value()],
+            :unresolved => [{pos_integer(), pos_integer()}],
+            :reads => reads(),
+            optional(atom()) => term()
+          },
+          MapSet.t(String.t())
+        ) :: {[string_value()], [{pos_integer(), pos_integer()}]}
+  def outside_names(%{strings: strings, unresolved: unresolved, reads: reads}, names) do
+    if MapSet.size(names) == 0 do
+      {strings, unresolved}
+    else
+      live = live_reads([:value], MapSet.new([:value]), reads, names)
+
+      {Enum.filter(strings, &MapSet.member?(live, Map.get(&1, :read, :value))),
+       Enum.filter(unresolved, &position_live?(&1, reads, live, names))}
+    end
+  end
+
+  defp live_reads([], live, _reads, _names), do: live
+
+  defp live_reads([read | rest], live, reads, names) do
+    next =
+      for {inner, name} <- Map.get(reads.within, read, []),
+          not MapSet.member?(live, inner),
+          not MapSet.member?(names, name),
+          do: inner
+
+    live_reads(next ++ rest, Enum.into(next, live), reads, names)
+  end
+
+  # A position with no read behind it could not be parsed, so nothing names it.
+  defp position_live?(position, reads, live, names) do
+    case Map.get(reads.at, position) do
+      nil ->
+        true
+
+      reached ->
+        Enum.any?(reached, fn {read, name} ->
+          MapSet.member?(live, read) and not MapSet.member?(names, name)
+        end)
+    end
+  end
+
+  @doc """
+  The names the template binds at `element`: its own `:for`, and the `:for` and `:let`
+  of `parents`. An element's own `:let` is for what is inside it.
+  """
+  @spec bound_names(HeexLint.Element.t(), [HeexLint.Element.t()]) :: [atom()]
+  def bound_names(element, parents) do
+    Enum.flat_map(element.attributes, &binder_names(&1, [":for"])) ++
+      Enum.flat_map(parents, fn parent ->
+        Enum.flat_map(parent.attributes, &binder_names(&1, [":for", ":let"]))
+      end)
+  end
+
+  # Every element inside a `:for` asks, so it is parsed once. Hashing the code on each
+  # question would cost its length, so the key is the position, which another file can
+  # share, and the code settles it.
+  defp binder_names(%{name: name, value: {:expr, code, position}}, names) do
+    if name in names do
+      key = {__MODULE__, :binder_names, name, position}
+
+      case Process.get(key) do
+        {^code, found} ->
+          found
+
+        _ ->
+          found = binders(name, code)
+          Process.put(key, {code, found})
+          found
+      end
+    else
+      []
+    end
+  end
+
+  defp binder_names(_attribute, _names), do: []
+
+  # A `:for` can have several generators, which only a list holds.
+  defp binders(name, code) do
+    case Code.parse("[" <> code <> "]") do
+      {:ok, ast} ->
+        Enum.flat_map(ast, fn
+          {:<-, _, [pattern, _from]} -> pattern_names(pattern)
+          pattern -> if name == ":let", do: pattern_names(pattern), else: []
+        end)
+
+      _ ->
+        []
+    end
+  end
+
+  @doc """
+  The keys a root attribute sets when it spreads a readable map or keyword list
+  onto the element: `{%{class: "p-4"}}`. Empty when it is not one.
+  """
+  @spec root_keys(HeexLint.Element.value()) :: [String.t()]
+  def root_keys({:expr, code, _position}) do
+    with {:ok, ast} <- Code.parse(code),
+         pairs when is_list(pairs) <- root_pairs(ast) do
+      for {key, _value} <- pairs, name = Code.name(key), uniq: true, do: name
+    else
+      _ -> []
+    end
+  end
+
+  def root_keys(_value), do: []
+
+  @doc """
+  What a readable map or keyword list spread onto a tag sets, each key once with the
+  value the runtime keeps. Nil for any other expression.
+  """
+  @spec spread_entries(Macro.t()) :: [{String.t(), Macro.t()}] | nil
+  def spread_entries({:%{}, _, [{:|, _, _}]}), do: nil
+
+  # A component's attributes go through `Map.new`, so a keyword list keeps a key's last too.
+  def spread_entries(ast) do
+    with pairs when is_list(pairs) <- root_pairs(ast),
+         true <- Enum.all?(pairs, &(match?({_key, _value}, &1) and Code.name(elem(&1, 0)) != nil)) do
+      for({key, value} <- Enum.reverse(pairs), do: {Code.name(key), value})
+      |> Enum.uniq_by(&elem(&1, 0))
+    else
+      _ -> nil
+    end
+  end
+
+  @doc """
+  Collects `key` from a root attribute that spreads a readable map or keyword
+  list onto the element: `{%{class: "p-4"}}`. Nil when the root is not one, or
+  does not set `key`.
   """
   @spec root(HeexLint.Element.value(), String.t(), map(), keyword()) :: t() | nil
   def root({:expr, code, position}, key, context, opts) do
     with {:ok, ast} <- Code.parse(code),
          pairs when is_list(pairs) <- root_pairs(ast),
-         {_key, value} <- Enum.find(pairs, fn {k, _v} -> Code.name(k) == key end) do
+         {_key, value} <- root_entry(ast, pairs, key) do
       context
       |> state(opts, expression_text(code, position, context), :template)
-      |> visit(value)
+      |> visit(bound(value, Keyword.get(opts, :bound, [])))
       |> result()
     else
       _ -> nil
@@ -117,6 +296,17 @@ defmodule HeexLint.Collector do
 
   def root(_value, _key, _context, _opts), do: nil
 
+  # A map keeps a key's last value, and a keyword list spread onto a tag its first.
+  defp root_entry(ast, pairs, key) do
+    pairs = if is_list(ast), do: pairs, else: Enum.reverse(pairs)
+
+    Enum.find(pairs, fn
+      {written, _value} -> Code.name(written) == key
+      _not_a_pair -> false
+    end)
+  end
+
+  defp root_pairs({:%{}, _, [{:|, _, [_map, pairs]}]}), do: pairs
   defp root_pairs({:%{}, _, pairs}), do: pairs
   defp root_pairs(list) when is_list(list), do: if(Keyword.keyword?(list), do: list)
   defp root_pairs(_), do: nil
@@ -132,36 +322,139 @@ defmodule HeexLint.Collector do
   end
 
   @doc """
-  The string keys of the maps a merge-function call in Elixir code reads, as
-  in `cn(["p-1", %{"bg-red-500" => on}])`. It follows the same branches,
-  variables and hops as `expression/3`. Only `scan_all_strings` asks for them:
-  no class site reads map keys yet.
+  Collects from the merge-function calls of some Elixir code, in source order. A call
+  one before it read is skipped, as in `template_calls/5`.
   """
-  @spec map_keys(Macro.t(), map(), keyword()) :: [string_value()]
-  def map_keys(ast, context, opts \\ []) do
-    state = %{state(context, opts, file_text(context), :body) | map_keys: []}
-    Enum.reverse(visit(state, ast).map_keys)
+  @spec calls([Macro.t()], map(), keyword()) :: [t()]
+  def calls(calls, context, opts \\ []) do
+    {collected, _read} =
+      Enum.flat_map_reduce(calls, MapSet.new(), fn {_callee, meta, _args} = call, read ->
+        if MapSet.member?(read, {meta[:line], meta[:column]}) do
+          {[], read}
+        else
+          collected = expression(call, context, opts)
+          {[collected], Enum.into(collected.calls, read)}
+        end
+      end)
+
+    collected
   end
 
   @doc """
-  The same keys for a merge-function call in a template expression. Only what
-  the call reads from Elixir code counts, with an assign followed through
+  The string keys of the maps merge-function calls in Elixir code read, as
+  in `cn(["p-1", %{"bg-red-500" => on}])`. It follows the same branches,
+  variables and hops as `expression/3`. A call one before it read is skipped, so a
+  caller lists one before those inside it. Only `scan_all_strings` asks for them:
+  no class site reads map keys yet.
+  """
+  @spec map_keys([Macro.t()], map(), keyword()) :: [string_value()]
+  def map_keys(calls, context, opts \\ []) do
+    unread_map_keys(calls, %{state(context, opts, file_text(context), :body) | map_keys: []})
+  end
+
+  @doc """
+  The same keys for the merge-function calls of a template expression. Only what
+  a call reads from Elixir code counts, with an assign followed through
   every function of the template's module, as `mount/3` sets what `render/1`
   reads: the keys are reported where the code writes them. A map written in
   the template itself stays unread, as does what a function returns.
   """
-  @spec template_map_keys(Macro.t(), HeexLint.Element.value(), map(), keyword()) ::
+  @spec template_map_keys([Macro.t()], HeexLint.Element.value(), map(), keyword()) ::
           [string_value()]
-  def template_map_keys(call, {:expr, code, position}, context, opts \\ []) do
+  def template_map_keys(calls, {:expr, code, position}, context, opts \\ []) do
     text = expression_text(code, position, context)
-    state = %{state(context, opts, text, :template) | map_keys: []}
-    Enum.reverse(visit(state, call).map_keys)
+    unread_map_keys(calls, %{state(context, opts, text, :template) | map_keys: []})
+  end
+
+  defp unread_map_keys(calls, state) do
+    {keys, _read} =
+      Enum.flat_map_reduce(calls, MapSet.new(), fn call, read ->
+        if MapSet.member?(read, call_position(state, call)) do
+          {[], read}
+        else
+          inner = visit(state, call)
+          {Enum.reverse(inner.map_keys), Enum.into(inner.calls, read)}
+        end
+      end)
+
+    keys
+  end
+
+  defp call_position(state, {:|>, _, [_left, {_callee, meta, _args}]}), do: locate(state, meta)
+  defp call_position(state, {_callee, meta, _args}), do: locate(state, meta)
+
+  @doc """
+  Where the value of a quoted literal in a template expression starts, past its quote.
+  """
+  @spec template_literal_start(keyword(), HeexLint.Element.value(), map()) ::
+          {pos_integer(), pos_integer()}
+  def template_literal_start(meta, {:expr, _code, position}, context) do
+    {line, column} =
+      locator(position, context.template.indentation).(meta[:line], meta[:column])
+
+    {line, column + 1}
+  end
+
+  @doc """
+  Collects from a piece of a template expression, such as one literal the caller
+  found by walking it, at its place in the template.
+  """
+  @spec template_expression(Macro.t(), HeexLint.Element.value(), map(), keyword()) :: t()
+  def template_expression(ast, {:expr, code, position}, context, opts \\ []) do
+    context
+    |> state(opts, expression_text(code, position, context), :template)
+    |> visit(ast)
+    |> result()
+  end
+
+  @doc """
+  Collects from the merge-function calls of a template expression, in source order,
+  at their place in the template. A call in `read`, the places of those a site has
+  read already, is skipped, and so is one a call before it read.
+  """
+  @spec template_calls([Macro.t()], HeexLint.Element.value(), MapSet.t(), map(), keyword()) ::
+          [t()]
+  def template_calls(calls, {:expr, code, position}, read, context, opts \\ []) do
+    text = expression_text(code, position, context)
+
+    {collected, _read} =
+      Enum.flat_map_reduce(calls, read, fn {_callee, meta, _args} = call, read ->
+        if MapSet.member?(read, text.locate.(meta[:line], meta[:column])) do
+          {[], read}
+        else
+          collected = context |> state(opts, text, :template) |> visit(call) |> result()
+          {[collected], Enum.into(collected.calls, read)}
+        end
+      end)
+
+    collected
   end
 
   # Positions inside a `{...}` expression, as they are in the template's file.
+  defp expression_text(code, position, context) when byte_size(code) < @long_expression,
+    do: new_expression_text(code, position, context)
+
+  # A caller reads an expression once per literal, and one this long is worth keeping.
   defp expression_text(code, position, context) do
+    key = {__MODULE__, :expression_text, context.template.file, position}
+
+    case Process.get(key) do
+      nil ->
+        text = new_expression_text(code, position, context)
+        Process.put(key, text)
+        text
+
+      text ->
+        text
+    end
+  end
+
+  defp new_expression_text(code, position, context) do
+    lines = code |> String.split("\n") |> List.to_tuple()
+
     %{
-      lines: code |> String.split("\n") |> List.to_tuple(),
+      lines: lines,
+      non_ascii: Source.non_ascii_lines(lines),
       locate: locator(position, context.template.indentation),
       file: context.template.file
     }
@@ -186,6 +479,7 @@ defmodule HeexLint.Collector do
 
     %{
       lines: source.lines,
+      non_ascii: source.non_ascii || Source.non_ascii_lines(source.lines),
       locate: fn line, column -> {line, column} end,
       file: source.path
     }
@@ -213,16 +507,28 @@ defmodule HeexLint.Collector do
       stops: 0,
       cuts: 0,
       rereads: 0,
+      recuts: 0,
+      cut_reads: %{},
+      touched: MapSet.new(),
+      pushed: MapSet.new(),
       strings: [],
       unresolved: [],
-      map_keys: nil
+      map_keys: nil,
+      in_merge: false,
+      in_values: false,
+      read: :value,
+      reads: @no_reads,
+      calls: [],
+      naming: nil
     }
   end
 
   defp result(state) do
     %__MODULE__{
       strings: Enum.reverse(state.strings),
-      unresolved: Enum.uniq(Enum.reverse(state.unresolved))
+      unresolved: Enum.uniq(Enum.reverse(state.unresolved)),
+      reads: state.reads,
+      calls: state.calls
     }
   end
 
@@ -255,7 +561,19 @@ defmodule HeexLint.Collector do
        when sigil in [:sigil_s, :sigil_S] do
     text = parts |> Enum.filter(&is_binary/1) |> Enum.join()
     {line, column} = locate(state, meta)
-    push(state, text, chars(text, {line, column + 3}, 0), nil)
+    exprs = for {:"::", _, [{{:., _, [Kernel, :to_string]}, _, [expr]}, _]} <- parts, do: expr
+
+    cond do
+      exprs == [] ->
+        push(state, text, chars(text, {line, column + 3}, 0), nil)
+
+      String.length(to_string(meta[:delimiter])) == 3 ->
+        state = if state.kind == :class, do: unresolved(state, meta), else: state
+        push(state, text, chars(text, {line, column + 3}, 0), nil)
+
+      true ->
+        template(state, sigil_items(state, parts, {line, column + 3}), exprs, meta)
+    end
   end
 
   defp visit(state, list) when is_list(list), do: Enum.reduce(list, state, &visit(&2, &1))
@@ -292,11 +610,19 @@ defmodule HeexLint.Collector do
   end
 
   defp visit(state, {:case, _, [_subject, [do: clauses]]}), do: visit_clauses(state, clauses)
-  defp visit(state, {:cond, _, [[do: clauses]]}), do: visit_clauses(state, clauses)
+
+  # The left of a `cond` clause is a condition, which binds nothing.
+  defp visit(state, {:cond, _, [[do: clauses]]}) do
+    Enum.reduce(List.wrap(clauses), state, fn
+      {:->, _, [_condition, body]}, acc -> visit(acc, body)
+      _, acc -> acc
+    end)
+  end
 
   defp visit(state, {:with, _, args}) when is_list(args) do
     opts = args |> List.last() |> Code.keyword()
-    state = visit(state, Keyword.get(opts, :do))
+    generators = for {:<-, _, [pattern, _from]} <- args, do: pattern
+    state = visit(state, scoped(generators, Keyword.get(opts, :do)))
     visit_clauses(state, Keyword.get(opts, :else, []))
   end
 
@@ -308,7 +634,7 @@ defmodule HeexLint.Collector do
   # @name: an assign in a template, a module attribute in code.
   defp visit(%{mode: :template} = state, {:@, meta, [{name, _, ctx}]})
        when is_atom(name) and is_atom(ctx),
-       do: assign(state, Atom.to_string(name), meta)
+       do: assign(state, Atom.to_string(name), meta, "@#{name}")
 
   defp visit(%{mode: :body} = state, {:@, meta, [{name, _, ctx}]})
        when is_atom(name) and is_atom(ctx),
@@ -317,11 +643,15 @@ defmodule HeexLint.Collector do
   # assigns.name, assigns[:name]
   defp visit(state, {{:., _, [{:assigns, _, ctx}, name]}, meta, []})
        when is_atom(ctx) and is_atom(name),
-       do: received(state, Atom.to_string(name), meta)
+       do: assigns_read(state, Atom.to_string(name), meta)
 
   defp visit(state, {{:., _, [Access, :get]}, meta, [{:assigns, _, ctx}, name]})
        when is_atom(ctx) and is_atom(name),
-       do: received(state, Atom.to_string(name), meta)
+       do: assigns_read(state, Atom.to_string(name), meta)
+
+  # A name a loop or a clause binds holds what is only known at runtime.
+  defp visit(state, {name, meta, :bound}) when is_atom(name),
+    do: unresolved(state, meta, Atom.to_string(name))
 
   # A variable.
   defp visit(state, {name, meta, ctx}) when is_atom(name) and is_atom(ctx),
@@ -342,7 +672,7 @@ defmodule HeexLint.Collector do
          {{:., _, [{:__aliases__, _, [:Map]}, fun]}, meta, [{:assigns, _, ctx}, key | rest]}
        )
        when fun in [:get, :fetch!] and is_atom(ctx) and is_atom(key) do
-    state = received(state, Atom.to_string(key), meta)
+    state = assigns_read(state, Atom.to_string(key), meta)
     if rest != [], do: visit(state, hd(rest)), else: state
   end
 
@@ -356,9 +686,37 @@ defmodule HeexLint.Collector do
   defp visit(%{map_keys: keys} = state, {:%{}, _, entries}) when is_list(keys),
     do: map_entries(state, entries)
 
+  defp visit(%{in_merge: true} = state, {:%{}, meta, entries}),
+    do: merge_map(state, entries, meta)
+
+  defp visit(%{in_merge: true} = state, {{:., _, [{:__aliases__, _, [:Map]}, :merge]}, _, args})
+       when is_list(args),
+       do: Enum.reduce(args, state, &visit(&2, &1))
+
+  defp visit(
+         %{in_merge: true} = state,
+         {{:., _, [{:__aliases__, _, [:Map]}, :put]}, meta, [map, key, _value]}
+       ),
+       do: state |> visit(map) |> merge_map([{key, nil}], meta)
+
+  # A variant config in a name has every value read, as nothing says which are names.
+  defp visit(%{in_values: true} = state, {:%{}, _, entries}),
+    do: Enum.reduce(entries, state, &visit_entry(&2, &1))
+
   defp visit(%{map_keys: keys} = state, {{:., _, [{:__aliases__, _, [:Map]}, :merge]}, _, args})
        when is_list(keys) and is_list(args),
        do: Enum.reduce(args, state, &visit(&2, &1))
+
+  # `Map.put` keeps the map's keys and adds its own, which a template leaves unread,
+  # as it does a map written there.
+  defp visit(
+         %{map_keys: keys} = state,
+         {{:., _, [{:__aliases__, _, [:Map]}, :put]}, _, [map, key, _value]}
+       )
+       when is_list(keys) do
+    state = visit(state, map)
+    if state.mode == :template, do: state, else: map_entries(state, [{key, nil}])
+  end
 
   defp visit(state, {_, _, args} = node) when is_list(args), do: call(state, node)
 
@@ -366,12 +724,47 @@ defmodule HeexLint.Collector do
 
   defp visit_clauses(state, clauses) when is_list(clauses) do
     Enum.reduce(clauses, state, fn
-      {:->, _, [_patterns, body]}, acc -> visit(acc, body)
+      {:->, _, [patterns, body]}, acc -> visit(acc, scoped(patterns, body))
       _, acc -> acc
     end)
   end
 
   defp visit_clauses(state, _), do: state
+
+  # `body` with the names `patterns` bind marked, so that they are not looked up in the
+  # enclosing function. One the body binds again is the function's to answer for.
+  defp scoped(patterns, body) do
+    case pattern_names(patterns) do
+      [] -> body
+      names -> bound(body, names -- Map.keys(bindings(body)))
+    end
+  end
+
+  defp pattern_names(patterns) do
+    {_, names} =
+      Macro.prewalk(patterns, [], fn
+        {op, _, _}, acc when op in [:^, :@] -> {nil, acc}
+        {:when, meta, args}, acc -> {{:__block__, meta, Enum.drop(args, -1)}, acc}
+        {:_, _, ctx} = node, acc when is_atom(ctx) -> {node, acc}
+        {name, _, ctx} = node, acc when is_atom(name) and is_atom(ctx) -> {node, [name | acc]}
+        node, acc -> {node, acc}
+      end)
+
+    names
+  end
+
+  defp bound(ast, []), do: ast
+  defp bound({:@, _, _} = node, _names), do: node
+
+  defp bound({name, meta, ctx} = node, names) when is_atom(name) and is_atom(ctx),
+    do: if(name in names, do: {name, meta, :bound}, else: node)
+
+  defp bound({form, meta, args}, names),
+    do: {bound(form, names), meta, bound(args, names)}
+
+  defp bound({left, right}, names), do: {bound(left, names), bound(right, names)}
+  defp bound(list, names) when is_list(list), do: Enum.map(list, &bound(&1, names))
+  defp bound(other, _names), do: other
 
   defp map_entries(state, [{:|, _, [map, entries]}]),
     do: state |> visit(map) |> map_entries(entries)
@@ -379,8 +772,13 @@ defmodule HeexLint.Collector do
   defp map_entries(state, entries) do
     Enum.reduce(entries, state, fn
       {{:__block__, meta, [key]}, _value}, acc when is_binary(key) ->
-        [string] = literal(%{acc | strings: []}, key, meta).strings
-        %{acc | map_keys: [string | acc.map_keys]}
+        case literal(%{acc | strings: []}, key, meta) do
+          %{strings: [string], pushed: pushed} ->
+            %{acc | map_keys: [string | acc.map_keys], pushed: pushed}
+
+          _pushed_already ->
+            acc
+        end
 
       _entry, acc ->
         acc
@@ -396,8 +794,7 @@ defmodule HeexLint.Collector do
         {line, column} = origin(state, meta)
         # Escapes move classes between source and value; such a string
         # gets no suggestion rather than a wrong one.
-        source_line = text_line(state.text, meta[:line])
-        escaped = String.contains?(String.slice(source_line, meta[:column]..-1//1), "\\")
+        escaped = state.text |> line_from(meta[:line], meta[:column] + 1) |> escaped?()
         fixable = raw_text(items) == text and not String.contains?(text, "\n") and not escaped
         literal = if fixable, do: %{file: state.text.file, from: {line, column + 1}, raw: text}
         push(state, text, strip_interp(items), literal)
@@ -432,10 +829,11 @@ defmodule HeexLint.Collector do
       positions
       |> Enum.zip(exprs)
       |> Enum.map_reduce(state, fn {position, expr}, acc ->
-        inner = visit(%{acc | strings: [], unresolved: [], kind: :hole}, expr)
+        inner =
+          visit(%{acc | strings: [], unresolved: [], pushed: MapSet.new(), kind: :hole}, expr)
 
         {{position, Enum.map(inner.strings, & &1.value)},
-         %{acc | stops: inner.stops, cuts: inner.cuts, rereads: inner.rereads}}
+         %{acc | stops: inner.stops, cuts: inner.cuts}}
       end)
 
     push(state, raw_text(items), items, nil, Map.new(holes))
@@ -463,38 +861,133 @@ defmodule HeexLint.Collector do
     Enum.reduce(kept, state, fn token, acc -> push(acc, raw_text(token), token, nil) end)
   end
 
+  # What a `~s` holds, with each hole where its `#{` is and the text after it where its
+  # `}` ends.
+  defp sigil_items(state, parts, position) do
+    {items, _position} =
+      Enum.flat_map_reduce(parts, position, fn
+        text, {line, column} = at when is_binary(text) ->
+          {chars(text, at, 0), {line, column + String.length(text)}}
+
+        {:"::", _, [{{:., _, [Kernel, :to_string]}, meta, _}, _]}, _at ->
+          {line, column} = locate(state, meta[:closing])
+          {[{:interp, locate(state, meta)}], {line, column + 1}}
+      end)
+
+    items
+  end
+
   defp nested(state, nil), do: state
   defp nested(state, expr), do: visit(state, expr)
 
   defp push(state, value, items, literal, holes \\ %{}) do
     string = %{value: value, items: items, literal: literal, holes: holes}
-    %{state | strings: [string | state.strings]}
+    string = if state.kind == :style, do: Map.put(string, :read, state.read), else: string
+
+    # What a site reads again says the same thing again, as @shadcn/lint's `push` has it.
+    if MapSet.member?(state.pushed, string),
+      do: state,
+      else: %{state | strings: [string | state.strings], pushed: MapSet.put(state.pushed, string)}
   end
 
-  defp unresolved(state, meta) do
+  # `written` is what the code calls the unreadable value, if it names it.
+  defp unresolved(state, meta, written \\ nil) do
     position = if meta, do: locate(state, meta), else: nil
-    if position, do: %{state | unresolved: [position | state.unresolved]}, else: state
+
+    if position,
+      do: reached(%{state | unresolved: [position | state.unresolved]}, position, written),
+      else: state
   end
+
+  ## What reads are called
+
+  defp reached(%{kind: :style, reads: reads} = state, position, written) do
+    entry = {state.read, written}
+    at = Map.update(reads.at, position, MapSet.new([entry]), &MapSet.put(&1, entry))
+    %{state | reads: %{reads | at: at}}
+  end
+
+  defp reached(state, _position, _written), do: state
+
+  # What the next read is called, as `allow_dynamic_identifiers` spells it. A value
+  # written out where it is bound can still be read, so no name exempts it, as
+  # @shadcn/lint still checks an object literal.
+  defp named(%{kind: :style} = state, written, values) do
+    %{state | naming: if(not written_out?(values), do: written)}
+  end
+
+  defp named(state, _written, _values), do: state
+
+  defp written_out?([{:__block__, _, [text]}]) when is_binary(text), do: true
+  defp written_out?([{:<<>>, _, parts}]) when is_list(parts), do: true
+  defp written_out?([{:<>, _, [_, _]}]), do: true
+  defp written_out?([{:%{}, _, entries}]) when is_list(entries), do: true
+  defp written_out?([{sigil, _, _}]) when sigil in [:sigil_s, :sigil_S, :sigil_w], do: true
+  defp written_out?([list]) when is_list(list), do: true
+  defp written_out?(_values), do: false
+
+  defp link(%{kind: :style, reads: reads} = state, read) do
+    route = {read, state.naming}
+    within = Map.update(reads.within, state.read, MapSet.new([route]), &MapSet.put(&1, route))
+    %{state | reads: %{reads | within: within}, naming: nil}
+  end
+
+  defp link(state, _read), do: state
+
+  # `styles.popper`, which `styles[:popper]` and `Map.get(styles, :popper)` also
+  # read. A path starts at a variable or `@name`, not at what a call returns.
+  defp path_name(map, key) when is_atom(key) and key not in [nil, true, false] do
+    if root = root_name(map), do: root <> "." <> Atom.to_string(key)
+  end
+
+  defp path_name(_map, _key), do: nil
+
+  defp root_name({:@, _, [{name, _, ctx}]}) when is_atom(name) and is_atom(ctx),
+    do: "@" <> Atom.to_string(name)
+
+  defp root_name({name, _, ctx}) when is_atom(name) and is_atom(ctx), do: Atom.to_string(name)
+  defp root_name({{:., _, [map, key]}, _, []}), do: path_name(map, key)
+  defp root_name({{:., _, [Access, :get]}, _, [map, key]}), do: path_name(map, key)
+
+  # With a default it could be either, so a path through it has no name.
+  defp root_name({{:., _, [{:__aliases__, _, [mod]}, fun]}, _, [map, key]})
+       when {mod, fun} in [{:Map, :get}, {:Map, :fetch!}, {:Keyword, :get}, {:Keyword, :fetch!}],
+       do: path_name(map, key)
+
+  defp root_name(_other), do: nil
+
+  # A function by its module as written. A local or imported call has no such name.
+  defp function_name(callee) when is_atom(callee), do: nil
+  defp function_name(callee), do: callee_name(callee)
 
   ## Names
 
-  defp assign(%{map_keys: keys} = state, name, meta) when is_list(keys),
+  defp assign(%{map_keys: keys} = state, name, meta, _written) when is_list(keys),
     do: assign_in_module(state, name, meta)
 
-  defp assign(state, name, meta) do
+  defp assign(state, name, meta, written) do
     key = {:assign, name}
 
     with false <- MapSet.member?(state.seen, key),
          [_ | _] = values <- assigned_values(state.clause, name) do
-      hop(state, key, meta, fn state ->
+      state
+      |> named(written, values)
+      |> hop(key, meta, fn state ->
         state = %{state | mode: :body, text: body_text(state, meta)}
         Enum.reduce(values, state, &visit(&2, &1))
       end)
     else
       true -> stop(state)
-      _ -> received(state, name, meta)
+      _ -> received(state, name, meta, written)
     end
   end
+
+  # `@name` by another spelling in a template. In code it is what came in, as code
+  # reads it to work out a new value: `assign(assigns, :class, [assigns.class, "p-2"])`.
+  defp assigns_read(%{mode: :template} = state, name, meta),
+    do: assign(state, name, meta, "assigns." <> name)
+
+  defp assigns_read(state, name, meta), do: received(state, name, meta, "assigns." <> name)
 
   # What any function of the module assigns to `name`, each value read in its
   # own clause, and the defaults its components declare for it.
@@ -503,22 +996,12 @@ defmodule HeexLint.Collector do
 
     with false <- MapSet.member?(state.seen, key),
          %ModuleInfo{} = module <- current_module(state) do
-      assigned =
-        for clauses <- Map.values(module.functions),
-            clause <- clauses,
-            value <- assigned_values(clause, name),
-            do: {clause, value}
-
-      defaults =
-        for component <- Map.values(module.components),
-            %{default: default} when default not in [:none, nil] <-
-              [Component.attr(component, name)],
-            do: {nil, default}
+      assigned = Map.get(module_assigns(module), name, [])
 
       hop(state, key, meta, fn state ->
         state = %{state | mode: :body, text: body_text(state, meta)}
 
-        Enum.reduce(assigned ++ defaults, state, fn {clause, value}, acc ->
+        Enum.reduce(assigned, state, fn {clause, value}, acc ->
           visit(%{acc | clause: clause}, value)
         end)
       end)
@@ -529,15 +1012,15 @@ defmodule HeexLint.Collector do
   end
 
   # A prop the component received from its caller.
-  defp received(%{map_keys: keys} = state, name, meta) when is_list(keys),
+  defp received(%{map_keys: keys} = state, name, meta, _written) when is_list(keys),
     do: assign_in_module(state, name, meta)
 
-  defp received(state, name, meta) do
+  defp received(state, name, meta, written) do
     template = state.context[:template]
 
     cond do
       template && template.kind == :render ->
-        unresolved(state, meta)
+        unresolved(state, meta, written)
 
       forwarded?(state, name) ->
         # The incoming prop stays opaque; its default is authored here.
@@ -547,7 +1030,7 @@ defmodule HeexLint.Collector do
         end
 
       true ->
-        unresolved(state, meta)
+        unresolved(state, meta, written)
     end
   end
 
@@ -582,21 +1065,24 @@ defmodule HeexLint.Collector do
 
   defp variable(state, name, meta) do
     key = variable_key(state, name)
+    written = Atom.to_string(name)
 
     cond do
       MapSet.member?(state.seen, key) ->
-        state |> stop() |> unresolved(meta)
+        state |> stop() |> unresolved(meta, written)
 
       prop = head_binding(state.clause, name) ->
-        received(state, prop, meta)
+        received(state, prop, meta, written)
 
       values = bound_values(state.clause, name) ->
-        hop(state, key, meta, fn state ->
+        state
+        |> named(written, values)
+        |> hop(key, meta, fn state ->
           Enum.reduce(values, leave_template(state, meta), &visit(&2, &1))
         end)
 
       true ->
-        unresolved(state, meta)
+        unresolved(state, meta, written)
     end
   end
 
@@ -619,10 +1105,12 @@ defmodule HeexLint.Collector do
     with false <- MapSet.member?(state.seen, key),
          %ModuleInfo{attributes: attributes} <- current_module(state),
          [_ | _] = values <- Map.get(attributes, name) do
-      hop(state, key, meta, fn state -> Enum.reduce(values, state, &visit(&2, &1)) end)
+      state
+      |> named("@" <> name, values)
+      |> hop(key, meta, fn state -> Enum.reduce(values, state, &visit(&2, &1)) end)
     else
-      true -> state |> stop() |> unresolved(meta)
-      _ -> unresolved(state, meta)
+      true -> state |> stop() |> unresolved(meta, "@" <> name)
+      _ -> unresolved(state, meta, "@" <> name)
     end
   end
 
@@ -634,40 +1122,92 @@ defmodule HeexLint.Collector do
   #
   # A read that stopped says nothing about the binding's whole value: it was cut
   # at the end of its route (`cuts`) or at a binding on it (`stops`). The same
-  # read is skipped only where it would stop the same way, at the same distance
-  # from the limit or on the same route, and skipping it passes that on to what
-  # is reading it. Without this, a branching chain that never finishes a read,
-  # because it runs past the limit or ends in a cycle, doubles with every link.
+  # read is skipped only where it would stop the same way: on the same route, or
+  # at the same distance from the limit with nothing it read on the route, and
+  # skipping it passes that on to what is reading it. Without this, a branching chain
+  # that never finishes a read, because it runs past the limit or ends in a cycle,
+  # doubles with every link. A hole keeps no positions, and its first reads have read
+  # all a later one could, so it never reads again. A prop's default takes no link:
+  # it is the prop's own value, which the last link has reached.
   defp hop(state, key, meta, how \\ nil, fun) do
     keys = List.wrap(key)
     this = {keys, how, clause_id(state.clause), state.kind}
     ended = Map.get(state.visited, this, MapSet.new())
-    again? = MapSet.size(ended) > 0
+    name = state.naming
+    state = link(state, this)
 
     cond do
-      past_limit?(state, 0) -> cut(state, meta)
-      MapSet.member?(ended, :whole) -> state
-      MapSet.member?(ended, state.depth) -> %{state | cuts: state.cuts + 1}
-      MapSet.member?(ended, state.seen) -> stop(state)
-      again? and state.rereads >= @max_rereads -> cut(state, meta)
-      again? -> read(%{state | rereads: state.rereads + 1}, this, keys, fun)
-      true -> read(state, this, keys, fun)
+      past_limit?(state, 0) and not match?({:default, _}, key) ->
+        cut(state, meta)
+
+      MapSet.member?(ended, :whole) ->
+        state
+
+      touched = same_cut(state, this) ->
+        %{state | cuts: state.cuts + 1, touched: MapSet.union(state.touched, touched)}
+
+      MapSet.member?(ended, state.seen) ->
+        stop(state)
+
+      MapSet.size(ended) == 0 ->
+        read(state, this, keys, fun)
+
+      state.kind == :hole ->
+        stop(state)
+
+      true ->
+        count = if MapSet.member?(ended, :cut), do: :recuts, else: :rereads
+
+        if Map.fetch!(state, count) >= @max_rereads,
+          do: cut(state, meta, name),
+          else: read(Map.update!(state, count, &(&1 + 1)), this, keys, fun)
     end
   end
 
+  # What a read cut at this distance from the limit went on to read, if none of it is
+  # on this route: it would be cut the same way.
+  defp same_cut(state, this) do
+    state.cut_reads
+    |> Map.get({this, state.depth}, [])
+    |> Enum.find(&MapSet.disjoint?(&1, state.seen))
+  end
+
   defp read(state, this, keys, fun) do
-    saved = Map.take(state, [:mode, :text, :clause, :seen, :depth])
-    inner = fun.(%{state | seen: Enum.into(keys, state.seen), depth: state.depth + length(keys)})
+    saved = Map.take(state, [:mode, :text, :clause, :seen, :depth, :read])
+
+    inner =
+      fun.(%{
+        state
+        | seen: Enum.into(keys, state.seen),
+          depth: state.depth + length(keys),
+          read: this,
+          touched: if(state.kind == :class, do: MapSet.new(keys), else: state.touched)
+      })
 
     ended =
       cond do
         inner.stops != state.stops -> state.seen
-        inner.cuts != state.cuts -> state.depth
+        inner.cuts != state.cuts -> :cut
         true -> :whole
       end
 
+    cut_reads =
+      if ended == :cut,
+        do:
+          Map.update(inner.cut_reads, {this, state.depth}, [inner.touched], &[inner.touched | &1]),
+        else: inner.cut_reads
+
+    # A read that finished can have nothing on any route that reaches it, or it would
+    # have stopped there, so what is reading it need not keep what it read.
+    touched =
+      if ended == :whole, do: state.touched, else: MapSet.union(state.touched, inner.touched)
+
     visited = Map.update(inner.visited, this, MapSet.new([ended]), &MapSet.put(&1, ended))
-    Map.merge(%{inner | visited: visited}, saved)
+
+    Map.merge(
+      %{inner | visited: visited, cut_reads: cut_reads, touched: touched},
+      saved
+    )
   end
 
   defp past_limit?(%{kind: :class} = state, links), do: state.depth + links >= @max_route
@@ -675,12 +1215,21 @@ defmodule HeexLint.Collector do
 
   defp stop(state), do: %{state | stops: state.stops + 1}
 
-  defp cut(state, meta), do: unresolved(%{state | cuts: state.cuts + 1}, meta)
+  defp cut(state, meta, written \\ nil),
+    do: unresolved(%{state | cuts: state.cuts + 1}, meta, written)
 
   defp current_module(state) do
     module = state.context[:module] || (state.context[:template] && state.context.template.module)
-    Project.module(state.context.project, module)
+    own_module(state.context[:source], Project.module(state.context.project, module))
   end
+
+  # A project has one module of a name, so of two files that define it, the other reads
+  # its own: its positions, variables and attributes are in that file.
+  defp own_module(%Source{path: path, modules: modules}, %ModuleInfo{file: file} = module)
+       when file != path,
+       do: Enum.find(modules, module, &(&1.name == module.name))
+
+  defp own_module(_source, module), do: module
 
   ## Calls
 
@@ -709,10 +1258,15 @@ defmodule HeexLint.Collector do
         end
 
       is_binary(name) and MapSet.member?(state.variant, name) ->
-        Enum.reduce(args, state, &visit_values(&2, &1))
+        outer = state.in_merge
+        inner = %{read_call(state, meta) | in_merge: false}
+        %{Enum.reduce(args, inner, &visit_variant_config(&2, &1)) | in_merge: outer}
 
       is_binary(name) and MapSet.member?(state.merge, name) ->
-        Enum.reduce(args, state, &visit(&2, &1))
+        outer = state.in_merge
+        values = state.in_values
+        inner = %{read_call(state, meta) | in_merge: true, in_values: false}
+        %{Enum.reduce(args, inner, &visit(&2, &1)) | in_merge: outer, in_values: values}
 
       is_atom(callee) and local_function?(state, Atom.to_string(callee), arity) ->
         if state.mode == :template and is_list(state.map_keys),
@@ -720,9 +1274,15 @@ defmodule HeexLint.Collector do
           else: local_call(state, Atom.to_string(callee), arity, meta)
 
       true ->
-        unresolved(state, meta_of(node))
+        unresolved(state, meta_of(node), function_name(callee))
     end
   end
+
+  # A call reached by a hop stays a site of its own, as in @shadcn/lint.
+  defp read_call(%{depth: 0} = state, meta),
+    do: %{state | calls: [locate(state, meta) | state.calls]}
+
+  defp read_call(state, _meta), do: state
 
   defp callee_name(callee) when is_atom(callee), do: Atom.to_string(callee)
 
@@ -760,8 +1320,76 @@ defmodule HeexLint.Collector do
   end
 
   # Variant configs carry classes as values: %{primary: "...", ghost: "..."}.
-  defp visit_values(state, {:%{}, _, pairs}),
-    do: Enum.reduce(pairs, state, fn {_k, v}, acc -> visit_values(acc, v) end)
+  # In a merge call a map's keys are the classes, as in `cn(%{"bg-pink-500" => @on})`.
+  # An atom key has no position of its own, so it is at the map's.
+  defp merge_map(state, [{:|, _, [map, updates]}], meta),
+    do: state |> visit(map) |> merge_map(List.wrap(updates), meta)
+
+  defp merge_map(state, entries, meta) do
+    Enum.reduce(entries, state, fn
+      {{:__block__, key_meta, [key]}, _value}, acc when is_binary(key) ->
+        literal(acc, key, key_meta)
+
+      {key, _value}, acc when is_atom(key) and key not in [nil, true, false] ->
+        text = Atom.to_string(key)
+        push(acc, text, chars(text, locate(acc, meta), 0), nil)
+
+      _computed, acc ->
+        unresolved(acc, meta)
+    end)
+  end
+
+  # In a variant config some keys hold classes. `default_variants` and what a compound
+  # variant selects on are names.
+  defp visit_variant_config(state, {:%{}, _, entries}), do: variant_entries(state, entries)
+
+  defp visit_variant_config(state, list) when is_list(list) do
+    if Keyword.keyword?(list),
+      do: variant_entries(state, list),
+      else: visit_values(state, list)
+  end
+
+  defp visit_variant_config(state, node) do
+    outer = state.in_values
+    %{visit_values(%{state | in_values: true}, node) | in_values: outer}
+  end
+
+  defp variant_entries(state, entries), do: Enum.reduce(entries, state, &variant_entry(&2, &1))
+
+  defp variant_entry(state, {:|, _, [base, updates]}),
+    do: state |> visit_variant_config(base) |> variant_entries(List.wrap(updates))
+
+  defp variant_entry(state, {key, value}) do
+    cond do
+      Code.name(key) in @variant_class_keys -> visit_values(state, value)
+      Code.name(key) in @variant_compound_keys -> compound_classes(state, value)
+      true -> state
+    end
+  end
+
+  defp variant_entry(state, entry), do: visit(state, entry)
+
+  defp compound_classes(state, list) when is_list(list),
+    do: Enum.reduce(list, state, &compound_class(&2, &1))
+
+  defp compound_classes(state, _value), do: state
+
+  defp compound_class(state, {:%{}, _, entries}), do: compound_class(state, entries)
+
+  defp compound_class(state, entries) when is_list(entries) do
+    Enum.reduce(entries, state, fn
+      {key, value}, acc ->
+        if Code.name(key) in @class_names, do: visit_values(acc, value), else: acc
+
+      _other, acc ->
+        acc
+    end)
+  end
+
+  defp compound_class(state, _other), do: state
+
+  defp visit_values(state, {:%{}, _, entries}),
+    do: Enum.reduce(entries, state, &visit_entry(&2, &1))
 
   defp visit_values(state, list) when is_list(list) do
     if Keyword.keyword?(list),
@@ -771,32 +1399,142 @@ defmodule HeexLint.Collector do
 
   defp visit_values(state, node), do: visit(state, node)
 
+  # %{base | a: "..."} has its entries and what is in its base. An entry that is
+  # neither that nor a pair, such as `unquote_splicing(entries)`, is only code.
+  defp visit_entry(state, {:|, _, [base, updates]}) do
+    updates
+    |> List.wrap()
+    |> Enum.reduce(visit_values(state, base), &visit_entry(&2, &1))
+  end
+
+  defp visit_entry(state, {_key, value}), do: visit_values(state, value)
+  defp visit_entry(state, entry), do: visit(state, entry)
+
   # A lookup reads the entry named by a literal key, or every entry when the
   # key is only known at runtime: the table is the set of classes it can pick.
+  # A default is a value of its own, whatever the table is and whatever its path
+  # is called, as both sides of `styles.popper ?? other` are in @shadcn/lint.
   defp lookup(state, map, key, default, meta) do
-    case table(state, map, []) do
-      nil ->
-        unresolved(state, meta)
+    written = path_name(map, key)
+    key = literal_key(key)
+    clause = state.clause
+    state = assigning_clause(state, map)
 
-      :stopped ->
-        state |> stop() |> unresolved(meta)
+    state =
+      case table(state, map, []) do
+        {:update, pairs, route, _base} when state.kind == :hole ->
+          entries(state, Enum.map(pairs, &elem(&1, 1)), route, key, meta)
 
-      :cut ->
-        cut(state, meta)
+        {:update, _pairs, _route, _base} = update ->
+          case update_entry(update, key) do
+            {value, route} ->
+              state |> named(written, [value]) |> entries([value], route, key, meta)
 
-      {pairs, route} ->
-        key = literal_key(key)
-
-        values =
-          case key && List.keyfind(pairs, key, 0) do
-            {_, value} -> [value]
-            _ -> Enum.map(pairs, &elem(&1, 1))
+            unread ->
+              unreadable(state, unread, meta, written)
           end
 
-        state = entries(state, values, route, key, meta)
-        if default, do: visit(state, default), else: state
+        # As in @shadcn/lint, a table reached through an assign answers only for a key
+        # it writes. A computed key, a missing one, or a computed write after it is
+        # unreadable and reads no entry.
+        {pairs, [{:assign, _name} | _] = route} when state.kind != :hole ->
+          case update_entry({pairs, route}, key) do
+            {value, route} ->
+              state |> named(written, [value]) |> entries([value], route, key, meta)
+
+            unread ->
+              unreadable(state, unread, meta, written)
+          end
+
+        # A hole reads every entry, whatever the key, as `carriesRawColor` does.
+        {pairs, route} when state.kind == :hole ->
+          entries(state, Enum.map(pairs, &elem(&1, 1)), route, key, meta)
+
+        {pairs, route} ->
+          entry = written_entry(pairs, key)
+
+          values =
+            case entry do
+              {_, value} -> [value]
+              _ -> Enum.map(pairs, &elem(&1, 1))
+            end
+
+          # A key the table does not have reads every entry, none of them its value.
+          # A key a computed write could replace has no value to read.
+          whole = if entry, do: values, else: []
+
+          if entry && match?({nil, _}, last_write(pairs, key)),
+            do: unreadable(state, nil, meta, written),
+            else: state |> named(written, whole) |> entries(values, route, key, meta)
+
+        unread ->
+          unreadable(state, unread, meta, written)
+      end
+
+    state = %{state | clause: clause}
+    if default && not empty_style?(state, default), do: visit(state, default), else: state
+  end
+
+  # What an assigned table holds is code of the function that assigns it. Map keys read
+  # an assign set anywhere in the module, and that may not be the function rendering it.
+  defp assigning_clause(%{mode: :template, map_keys: keys} = state, map) when is_list(keys) do
+    with name when is_binary(name) <- assign_read(map),
+         %ModuleInfo{} = module <- current_module(state),
+         [clause] <-
+           for({%{} = clause, _} <- Map.get(module_assigns(module), name, []), do: clause) do
+      %{state | clause: clause}
+    else
+      _ -> state
     end
   end
+
+  defp assigning_clause(state, _map), do: state
+
+  # A style of `%{}` sets nothing, as `t.a ?? {}` does in @shadcn/lint.
+  defp empty_style?(%{kind: :style}, {:%{}, _, []}), do: true
+  defp empty_style?(_state, _default), do: false
+
+  # A map keeps a key's last value, and `1` and `1.0` are two keys.
+  defp written_entry(_pairs, nil), do: nil
+
+  defp written_entry(pairs, key),
+    do: pairs |> Enum.reverse() |> Enum.find(fn {written, _} -> written === key end)
+
+  defp unreadable(state, nil, meta, written), do: unresolved(state, meta, written)
+
+  defp unreadable(state, :stopped, meta, written),
+    do: state |> stop() |> unresolved(meta, written)
+
+  defp unreadable(state, :cut, meta, written), do: cut(state, meta, written)
+
+  # `%{base | a: value}` is `{ ...base, a: value }` in @shadcn/lint. A key it writes has
+  # that value, whatever the base is. Any other is the base's to answer. When it cannot,
+  # because it is not a table or does not have the key, or the key is only known at
+  # runtime, the read is unreadable and reads no entry. So it is when a computed key
+  # is written after it, which could be the same key. An entry is read on the route to
+  # the map that wrote it, so `%{base | b: base.a}` is no cycle. A hole reads as
+  # `carriesRawColor` does: all the map itself writes, whatever the key, and no base.
+  defp update_entry(_table, nil), do: nil
+
+  defp update_entry({:update, pairs, route, base}, key) do
+    case last_write(pairs, key) do
+      {nil, _} -> nil
+      {_, value} -> {value, route}
+      nil -> update_entry(base, key)
+    end
+  end
+
+  defp update_entry({pairs, route}, key) do
+    case last_write(pairs, key) do
+      {^key, value} -> {value, route}
+      _ -> nil
+    end
+  end
+
+  defp update_entry(unread, _key), do: unread
+
+  defp last_write(pairs, key),
+    do: pairs |> Enum.reverse() |> Enum.find(fn {written, _} -> written in [key, nil] end)
 
   defp entries(state, values, [], _key, _meta), do: Enum.reduce(values, state, &visit(&2, &1))
 
@@ -809,12 +1547,21 @@ defmodule HeexLint.Collector do
   end
 
   # The entries of a table and the names followed to reach it, nil when it is
-  # not one, :stopped at a name already on the route, or :cut past its limit.
+  # not one, :stopped at a name already on the route, or :cut past its limit. A map
+  # update has its own entries and route, and what its base is by these same answers.
+  defp table(state, {:%{}, _, [{:|, _, [base, updates]}]}, route),
+    do: {:update, literal_pairs(updates), route, table(state, base, route)}
+
   defp table(_state, {:%{}, _, pairs}, route), do: {literal_pairs(pairs), route}
 
+  # A keyword list answers with a key's first value, where a map keeps its last.
   defp table(_state, list, route) when is_list(list) do
-    if Keyword.keyword?(list), do: {literal_pairs(list), route}, else: nil
+    if Keyword.keyword?(list),
+      do: {list |> Enum.uniq_by(&elem(&1, 0)) |> literal_pairs(), route},
+      else: nil
   end
+
+  defp table(_state, {_name, _, :bound}, _route), do: nil
 
   defp table(state, {name, _, ctx}, route) when is_atom(name) and is_atom(ctx) do
     case bound_values(state.clause, name) do
@@ -833,7 +1580,48 @@ defmodule HeexLint.Collector do
     end
   end
 
+  # `@styles.popper` and `assigns.styles.popper`. What the assign holds is code of
+  # the function that assigns it.
+  defp table(%{mode: :template} = state, node, route) do
+    with name when is_binary(name) <- assign_read(node),
+         [value] <- table_assigned(state, name) do
+      alias_of(%{state | mode: :body}, {:assign, name}, value, route)
+    else
+      _ -> nil
+    end
+  end
+
   defp table(_state, _other, _route), do: nil
+
+  # As an assign does, map keys read from every function of the module.
+  defp table_assigned(%{map_keys: nil} = state, name), do: assigned_values(state.clause, name)
+
+  defp table_assigned(state, name) do
+    case current_module(state) do
+      %ModuleInfo{} = module ->
+        for {%{}, value} <- Map.get(module_assigns(module), name, []), do: value
+
+      nil ->
+        []
+    end
+  end
+
+  defp assign_read({:@, _, [{name, _, ctx}]}) when is_atom(name) and is_atom(ctx),
+    do: Atom.to_string(name)
+
+  defp assign_read({{:., _, [{:assigns, _, ctx}, name]}, _, []})
+       when is_atom(ctx) and is_atom(name),
+       do: Atom.to_string(name)
+
+  defp assign_read({{:., _, [Access, :get]}, _, [{:assigns, _, ctx}, name]})
+       when is_atom(ctx) and is_atom(name),
+       do: Atom.to_string(name)
+
+  defp assign_read({{:., _, [{:__aliases__, _, [:Map]}, fun]}, _, [{:assigns, _, ctx}, name]})
+       when fun in [:get, :fetch!] and is_atom(ctx) and is_atom(name),
+       do: Atom.to_string(name)
+
+  defp assign_read(_other), do: nil
 
   defp alias_of(state, key, value, route) do
     cond do
@@ -850,9 +1638,23 @@ defmodule HeexLint.Collector do
     end)
   end
 
+  # What a key names, or nil for one only known at runtime. So `nil` as a key is wrapped,
+  # and a key such as `1`, `-1`, `Foo` or `{:x, 1}` is compared without its position.
+  defp literal_key(nil), do: {:literal, nil}
   defp literal_key(key) when is_atom(key), do: key
   defp literal_key({:__block__, _, [text]}) when is_binary(text), do: text
-  defp literal_key(_), do: nil
+
+  defp literal_key(key) do
+    key =
+      Macro.postwalk(key, fn
+        {:__block__, _, [inner]} -> inner
+        {:-, _, [number]} when is_number(number) -> -number
+        {:+, _, [number]} when is_number(number) -> number
+        node -> Macro.update_meta(node, fn _meta -> [] end)
+      end)
+
+    if Macro.quoted_literal?(key), do: {:literal, key}
+  end
 
   ## Bindings in a function clause
 
@@ -878,53 +1680,117 @@ defmodule HeexLint.Collector do
     found
   end
 
-  # `name = value` anywhere in the clause body, every one of them.
+  # `name = value` anywhere in the clause body, every one of them. A route reads these
+  # once per link and a function can be long, so each file's task indexes a clause
+  # once. The clause does not keep the index: the project is in :persistent_term, which
+  # copies without sharing, so a value there costs its size again, and once more for
+  # each `=` around it.
   defp bound_values(nil, _name), do: nil
-  defp bound_values(%{bindings: bindings}, name), do: Map.get(bindings, name)
 
-  # The values `assign(assigns, :name, value)` and friends give an assign.
-  defp assigned_values(nil, _name), do: []
+  defp bound_values(%{id: id, body: body}, name) do
+    index = memo({__MODULE__, :bindings, id}, fn -> bindings(body) end)
+    Map.get(index, name)
+  end
 
-  defp assigned_values(%{body: body}, name) do
-    atom = String.to_atom(name)
+  defp memo(key, fun) do
+    case Process.get(key) do
+      nil ->
+        value = fun.()
+        Process.put(key, value)
+        value
 
-    {_, values} =
-      Macro.prewalk(body, [], fn node, acc ->
-        {node, acc ++ assignment(node, atom)}
+      value ->
+        value
+    end
+  end
+
+  defp bindings(body) do
+    {_, found} =
+      Macro.prewalk(body, %{}, fn
+        {:=, _, [{name, _, ctx}, value]} = node, acc when is_atom(name) and is_atom(ctx) ->
+          {node, Map.update(acc, name, [value], &[value | &1])}
+
+        node, acc ->
+          {node, acc}
       end)
 
-    values
+    Map.new(found, fn {name, values} -> {name, Enum.reverse(values)} end)
   end
 
-  defp assignment({:|>, _, [_left, {fun, meta, args}]}, name) when is_list(args),
-    do: assignment({fun, meta, [:piped | args]}, name)
+  # The values `assign(assigns, :name, value)` and friends give an assign. A read of
+  # one in a template can come thousands of times in a module, so like the bindings
+  # above these are indexed once per task, by clause and by module.
+  defp assigned_values(nil, _name), do: []
 
-  defp assignment({fun, _, [_assigns, key, value]}, name)
-       when fun in [:assign, :assign_new, :update] do
-    cond do
-      key != name -> []
-      fun == :assign -> [value]
-      true -> fn_bodies(value)
-    end
+  defp assigned_values(clause, name), do: Map.get(clause_assigns(clause), name, [])
+
+  defp clause_assigns(%{id: id, body: body}),
+    do: memo({__MODULE__, :assigns, id}, fn -> assignments(body) end)
+
+  defp assignments(body) do
+    {_, found} =
+      Macro.prewalk(body, %{}, fn node, acc ->
+        {node,
+         node
+         |> assignment()
+         |> Enum.reduce(acc, fn {name, value}, acc ->
+           Map.update(acc, Atom.to_string(name), [value], &[value | &1])
+         end)}
+      end)
+
+    Map.new(found, fn {name, values} -> {name, Enum.reverse(values)} end)
   end
 
-  defp assignment({:assign, _, [_assigns, pairs]}, name) do
-    case pairs do
-      {:%{}, _, kv} -> kv |> Code.keyword() |> Keyword.get_values(name)
-      kv when is_list(kv) -> kv |> Code.keyword() |> Keyword.get_values(name)
-      _ -> []
-    end
+  # What any function of the module assigns to each name, each value with its clause,
+  # and the defaults its components declare, with no clause.
+  defp module_assigns(%ModuleInfo{} = module) do
+    memo({__MODULE__, :module_assigns, module.id}, fn ->
+      assigned =
+        for clauses <- Map.values(module.functions),
+            clause <- clauses,
+            {name, values} <- clause_assigns(clause),
+            value <- values,
+            do: {name, {clause, value}}
+
+      defaults =
+        for component <- Map.values(module.components),
+            %{name: name, default: default} <- Enum.uniq_by(component.attrs, & &1.name),
+            default not in [:none, nil],
+            do: {name, {nil, default}}
+
+      Enum.group_by(assigned ++ defaults, &elem(&1, 0), &elem(&1, 1))
+    end)
   end
 
-  defp assignment(
-         {{:., _, [{:__aliases__, _, [:Map]}, :put]}, _, [{:assigns, _, _}, name, value]},
-         name
-       ),
-       do: [value]
+  defp assignment({:|>, _, [_left, {fun, meta, args}]}) when is_list(args),
+    do: assignment({fun, meta, [:piped | args]})
 
-  defp assignment(_node, _name), do: []
+  defp assignment({{:., _, [{:__aliases__, _, [:Phoenix, :Component]}, fun]}, meta, args})
+       when is_list(args),
+       do: assignment({fun, meta, args})
 
-  defp fn_bodies({:fn, _, clauses}), do: for({:->, _, [_args, body]} <- clauses, do: body)
+  defp assignment({fun, _, [_assigns, key, value]})
+       when fun in [:assign, :assign_new, :update] and is_atom(key) do
+    if fun == :assign,
+      do: [{key, value}],
+      else: Enum.map(fn_bodies(value), &{key, &1})
+  end
+
+  defp assignment({:assign, _, [_assigns, {:%{}, _, pairs}]}), do: Code.keyword(pairs)
+  defp assignment({:assign, _, [_assigns, pairs]}) when is_list(pairs), do: Code.keyword(pairs)
+
+  defp assignment({:%{}, _, [{:|, _, [{:assigns, _, ctx}, pairs]}]}) when is_atom(ctx),
+    do: Code.keyword(pairs)
+
+  defp assignment({{:., _, [{:__aliases__, _, [:Map]}, :put]}, _, [{:assigns, _, _}, key, value]})
+       when is_atom(key),
+       do: [{key, value}]
+
+  defp assignment(_node), do: []
+
+  defp fn_bodies({:fn, _, clauses}),
+    do: for({:->, _, [args, body]} <- clauses, do: scoped(args, body))
+
   defp fn_bodies(_other), do: []
 
   defp concat_operands({:<>, _, [left, right]}),
@@ -969,19 +1835,40 @@ defmodule HeexLint.Collector do
   # Walks a double-quoted string's source from just after its opening quote,
   # so every character keeps its real position. Returns the items and the
   # position of the closing quote.
-  defp scan(text, line, column) do
-    stream =
-      Stream.unfold({line, column}, fn {l, c} ->
-        source = text_line(text, l)
+  defp scan(text, line, column), do: scan_string(text, cursor(text, line, column), [])
 
-        cond do
-          l > tuple_size(text.lines) -> nil
-          c > String.length(source) -> {{"\n", text.locate.(l, c)}, {l + 1, 1}}
-          true -> {{String.at(source, c - 1), text.locate.(l, c)}, {l, c + 1}}
-        end
-      end)
+  # Where a walk is: what is left of the line, and its position.
+  defp cursor(text, line, column), do: {line_from(text, line, column), line, column}
 
-    scan_string(stream, [])
+  # A line from a column on. Columns count graphemes, which on an ASCII line are bytes:
+  # a line of a thousand strings is read a thousand times.
+  defp line_from(text, line, column) do
+    source = text_line(text, line)
+
+    if MapSet.member?(text.non_ascii, line) do
+      String.slice(source, (column - 1)..-1//1)
+    else
+      size = byte_size(source)
+      skip = min(column - 1, size)
+      binary_part(source, skip, size - skip)
+    end
+  end
+
+  # Whether a string has an escape, from just after its opening quote.
+  defp escaped?(<<"\\", _rest::binary>>), do: true
+  defp escaped?(<<"\"", _rest::binary>>), do: false
+  defp escaped?(<<_byte, rest::binary>>), do: escaped?(rest)
+  defp escaped?(<<>>), do: false
+
+  # The character at a cursor, its position and the cursor after it.
+  defp next_char(%{lines: lines}, {_rest, line, _column}) when line > tuple_size(lines), do: nil
+
+  defp next_char(text, {"", line, column}),
+    do: {"\n", text.locate.(line, column), cursor(text, line + 1, 1)}
+
+  defp next_char(text, {rest, line, column}) do
+    {char, rest} = String.next_grapheme(rest)
+    {char, text.locate.(line, column), {rest, line, column + 1}}
   end
 
   defp text_line(%{lines: lines}, n) when n >= 1 and n <= tuple_size(lines),
@@ -989,44 +1876,62 @@ defmodule HeexLint.Collector do
 
   defp text_line(_text, _n), do: ""
 
-  defp scan_string(stream, acc) do
-    case Enum.take(stream, 2) do
-      [] ->
+  defp scan_string(text, cursor, acc) do
+    case next_char(text, cursor) do
+      nil ->
         {Enum.reverse(acc), nil}
 
-      [{"\"", position} | _] ->
+      {"\"", position, _rest} ->
         {Enum.reverse(acc), position}
 
-      [{"\\", _}, {char, position}] ->
-        scan_string(Stream.drop(stream, 2), [{:char, unescape(char), position} | acc])
+      {"\\", position, rest} ->
+        case next_char(text, rest) do
+          nil ->
+            scan_string(text, rest, [{:char, "\\", position} | acc])
 
-      [{"#", position}, {"{", _}] ->
-        rest = skip_interpolation(Stream.drop(stream, 2), 1)
-        scan_string(rest, [{:interp, position} | acc])
+          {char, position, rest} ->
+            scan_string(text, rest, [{:char, unescape(char), position} | acc])
+        end
 
-      [{char, position} | _] ->
-        scan_string(Stream.drop(stream, 1), [{:char, char, position} | acc])
+      {"#", position, rest} ->
+        case next_char(text, rest) do
+          {"{", _position, rest} ->
+            scan_string(text, skip_interpolation(text, rest, 1), [{:interp, position} | acc])
+
+          _ ->
+            scan_string(text, rest, [{:char, "#", position} | acc])
+        end
+
+      {char, position, rest} ->
+        scan_string(text, rest, [{:char, char, position} | acc])
     end
   end
 
-  defp skip_interpolation(stream, 0), do: stream
+  defp skip_interpolation(_text, cursor, 0), do: cursor
 
-  defp skip_interpolation(stream, depth) do
-    case Enum.take(stream, 1) do
-      [] -> stream
-      [{"{", _}] -> skip_interpolation(Stream.drop(stream, 1), depth + 1)
-      [{"}", _}] -> skip_interpolation(Stream.drop(stream, 1), depth - 1)
-      [{"\"", _}] -> stream |> Stream.drop(1) |> skip_quoted() |> skip_interpolation(depth)
-      _ -> skip_interpolation(Stream.drop(stream, 1), depth)
+  defp skip_interpolation(text, cursor, depth) do
+    case next_char(text, cursor) do
+      nil -> cursor
+      {"{", _position, rest} -> skip_interpolation(text, rest, depth + 1)
+      {"}", _position, rest} -> skip_interpolation(text, rest, depth - 1)
+      {"\"", _position, rest} -> skip_interpolation(text, skip_quoted(text, rest), depth)
+      {_char, _position, rest} -> skip_interpolation(text, rest, depth)
     end
   end
 
-  defp skip_quoted(stream) do
-    case Enum.take(stream, 2) do
-      [] -> stream
-      [{"\\", _}, _] -> skip_quoted(Stream.drop(stream, 2))
-      [{"\"", _} | _] -> Stream.drop(stream, 1)
-      _ -> skip_quoted(Stream.drop(stream, 1))
+  defp skip_quoted(text, cursor) do
+    case next_char(text, cursor) do
+      nil -> cursor
+      {"\"", _position, rest} -> rest
+      {"\\", _position, rest} -> skip_quoted(text, skip_escaped(text, rest))
+      {_char, _position, rest} -> skip_quoted(text, rest)
+    end
+  end
+
+  defp skip_escaped(text, cursor) do
+    case next_char(text, cursor) do
+      nil -> cursor
+      {_char, _position, rest} -> rest
     end
   end
 

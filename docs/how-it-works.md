@@ -44,8 +44,35 @@ matches by regex. `ignore_imports` excludes modules and takes precedence.
 **Wrappers.** A component outside the design system that forwards its
 received `class` — `class={["w-full", @class]}` — or its global attributes —
 `{@rest}` with `attr :rest, :global` — to a design-system component gets that
-component's contract and suggestions. Chains resolve across files, a few
-hops deep.
+component's contract and suggestions. Chains resolve across files, at any
+depth.
+
+Each class prop follows its own path. A wrapper that hands `title_class` to
+`card_title` gets `card_title`'s contract for it, while its `class` keeps
+`card`'s:
+
+```heex
+attr :class, :any, default: nil
+attr :title_class, :any, default: nil
+
+def panel(assigns) do
+  ~H"""
+  <.card class={@class}>
+    <.card_title class={@title_class}>{render_slot(@inner_block)}</.card_title>
+  </.card>
+  """
+end
+
+<%!-- Checked against card_title's contract, not card's. --%>
+<.panel title_class="px-6" />
+```
+
+Global attributes carry any prop the component does not declare, as they do
+when it renders. A class prop the wrapper does not hand to a design-system
+component is not checked. If a prop lands on several tags, the first that is,
+or wraps, a design-system component supplies the contract, reading a tag's
+children before the tag and sibling tags in order. Classes on a wrapper's slot
+use its `class` target, since a slot's attributes are not the wrapper's props.
 
 ## Theme tokens
 
@@ -57,7 +84,10 @@ app's tokens, and `no_unknown_classes` asks that app's Tailwind. Set `theme`
 to use one stylesheet everywhere. Its `@import`s are followed past symlinks;
 files under `node_modules` contribute `@utility` names, class selectors and
 `--animate-*` names from `@theme`, not tokens. A workspace package linked into
-`node_modules` really lives outside it, so it counts as your own.
+`node_modules` really lives outside it, so it counts as your own, and so does a
+stylesheet under `deps/`. A design system installed as a package counts once the
+[`theme_imports`](./design-systems.md#a-design-system-installed-as-a-package)
+setting names its import, with the stylesheets it imports from within the package.
 
 Color tokens are the `--color-*` declarations in `@theme`, with resets
 (`--color-*: initial`) applied in cascade order:
@@ -98,13 +128,16 @@ with the declared ones, so `rounded-lg` is unclassified until the theme declares
 it again, and `--*: initial` resets every scale but colors and fonts. Setting
 `--spacing` after a reset brings the numeric spacing scale back. Only `@theme`
 blocks count, from the same stylesheets as your tokens: installed packages
-contribute no scales, and a linked workspace package does.
+contribute no scales, and a linked workspace package or a package `theme_imports`
+names does.
 
 Suggestions use token values: variables resolve from `:root`, dark-mode
 blocks are skipped, and colors compare in OKLab. The radius and text scales
 (and `calc()`) are read too, so `rounded-[10px]` can suggest `rounded-lg`
 when that token is 10px, and `--spacing` sets the unit for exact spacing
-steps.
+steps. A value that would grow past 100,000 characters, counted in UTF-16 units as
+JavaScript counts them, such as one whose variables name each other many times over,
+stays unresolved, like one with no value.
 
 ## Tailwind classes
 
@@ -112,16 +145,71 @@ steps.
 generates CSS, with your theme's imports, custom utilities, variants and
 plugins:
 
-- **Node.** When `tailwindcss` resolves from the theme's directory, a Node
-  process loads the design system through `@tailwindcss/node` (the loader
-  Tailwind's own CLI and Vite plugin use) and suggests the nearest real class
-  or variant.
+- **Node.** When `tailwindcss` resolves from the theme's directory, or from the
+  directory of a stylesheet the theme imports that imports Tailwind, a Node process
+  loads the design system and suggests the nearest real class or variant. In a
+  workspace or an umbrella, that second place is where only a UI package depends on
+  Tailwind. Node follows a package's `style` condition to find it, so only Node can
+  say: it starts when any `node_modules` is in reach of those stylesheets, and moves
+  on without a word when none holds Tailwind. The same goes for a `node` that exits
+  before its first answer, such as a version manager's shim with no version set,
+  though what it prints still reaches the terminal. Plugins and configs load through
+  `@tailwindcss/node` when it is installed (the loader Tailwind's own CLI and Vite
+  plugin use), and otherwise through Node's own `import()`.
 - **Standalone CLI.** Otherwise, the binary the `tailwind` hex package
   installs in `_build/` (or `tailwind_bin`) builds your theme with the
-  candidates as `@source inline(...)`; a class is known when its selector is
-  in the output. No suggestions this way.
+  candidates as `@source inline(...)`; a class is known when its whole selector
+  is in the output. The output cannot say which rule a name came from, so a name
+  only another rule mentions, such as `qux` beside `[&_.qux]:flex`, counts as known.
+  No suggestions this way, so `no_raw_colors` keeps a typo such as `text-smal`
+  rather than handing it to this rule.
 - **Grammar.** Without either, the class grammar, `@utility` names and class
-  selectors answer; that checks less.
+  selectors answer, with no warning; that checks less.
+
+The other rules ask too, in three cases. `no_raw_colors` asks about a class it would
+report as an undeclared color, in case that is a typo of another utility. Every rule
+that checks contract entries asks about one nothing else knows, since a plugin's class
+is in no stylesheet, and a theme that loads an `@config` or `@plugin` has its own Tailwind
+answer for the `text-*` classes the grammar reads as colors, since one may be a font
+size. With no such question, Node does not start. The standalone binary answers the
+last from the rule it generates for the class under a variant that changes nothing,
+`[&]:text-body`: no stylesheet has a rule of that name, where one for `text-body` may be
+the theme's own. Since each question is a build there, the first such question also asks
+about the `text-*` classes the linted files and the contract entries name.
+
+Tailwind cannot outlive the linter or stall it. Through Node, the linter waits up to 60
+seconds for a stylesheet's first answer and 30 seconds for later ones. Through the
+standalone binary it waits up to 60 seconds for each question, however many builds that
+takes. Set `HEEX_LINT_TAILWIND_TIMEOUT` to a number of milliseconds to change all of
+these, and anything but a positive number is ignored. A process past that wait is
+killed, with whatever it started but a child a plugin detaches, and that stylesheet uses
+the grammar for the rest of
+the run, with a warning. Another stylesheet gets a new process, and two failures with no
+good answer between them turn Tailwind off for the run. The Node process also ends
+within moments of the linter going away, however it goes and whatever a plugin is doing,
+and the standalone binary is stopped the same way.
+
+A class longer than 10,000 characters or with more than 64 variants is not judged, since
+Tailwind can stall or overflow its stack on one. Neither is a class that makes a plugin
+throw: Node asks about it alone, and the standalone binary, where a throw fails the
+whole build, searches for it once a build fails and the theme builds without any
+classes. When the build reaches that class, through the stylesheet's own `@source` or
+through Tailwind's automatic detection from the stylesheet's directory, as for a theme at
+the project root or under `lib/`, the theme does not build without it either, so that
+stylesheet uses the grammar, with a warning. A build
+with `@import`s that reach more than 10,000 stylesheets is refused through Node, as
+those form a cycle with fan-out: Tailwind reads a file again wherever it is imported and
+stops only 100 levels down. The standalone binary is not tried after that. Without Node
+it has only the wait to stop such a theme, and can use several gigabytes by then.
+
+Under `@import "tailwindcss" prefix(tw)`, only `tw:flex` is a Tailwind class.
+`no_raw_colors` judges the class behind the prefix and leaves an unprefixed one
+alone, and `no_unknown_classes` reports the unprefixed one, a color like `text-muted`
+as much as `flex`. The prefix is read from the project's own stylesheets, the first
+one read winning, and from the stylesheet Tailwind builds when `theme` names a partial.
+An installed package does not declare it, even one `theme_imports` names.
+The grammar knows no prefix, so without a Tailwind to ask an unprefixed class passes
+`no_unknown_classes`.
 
 ## Values
 
@@ -131,41 +219,74 @@ A class value is read through:
 - interpolation and `<>`, where text glued to a runtime value
   (`"bg-#{@tone}"`) is no class of its own and the value is unreadable, while
   a value standing alone (`"px-2 #{@extra}"`) is read on its own;
-- in a template, `@name` follows `assign(assigns, :name, ...)`,
-  `assign_new` and `update` in the rendering function;
+- in a template, `@name` and `assigns.name` follow `assign(assigns, :name, ...)`,
+  `assign_new` and `update` in the rendering function, and so does a lookup on them
+  (`@name.key`);
 - in a function component, the received `class` (and any `*_class`) is the
   component's own input: accepted as-is, with its `attr` default checked;
 - further along a chain, up to 64 bindings: variables bound in the function,
   module attributes, same-module functions (each clause's result), map and
-  keyword lookups (`Map.fetch!(@variants, @variant)` reads every entry), and
-  merge functions.
+  keyword lookups (on a variable or a module attribute, `Map.fetch!(@variants, @variant)`
+  reads every entry; on `%{base | a: value}` or a table assigned with `assign/3`, the key
+  it writes, or its base's, and any other is unreadable), and merge functions.
 
-Each binding is read once per attribute, so a class reached through both
-branches of `if on, do: a, else: a` is one class. What cannot be read — a socket assign
+Each binding, and each function an embedded template calls, is read once per attribute, so
+a class reached through both branches of `if on, do: a, else: a` is one class. What cannot be read — a socket assign
 in a LiveView, an unknown call, a variable that reads itself, a chain longer
 than 64 bindings — is reported by `require_static_classes` when used on a
 design-system component. A `style` has no such limit: `no_inline_styles` reads its
-value however many bindings away, and reports what it cannot read as dynamic. A
-hole in one, as in `"--tone: #{v}"`, is not reported for being unreadable either:
-it is only looked through for raw colors.
+value however many bindings away, and reports what it cannot read as dynamic, unless
+[`allow_dynamic_identifiers`](rules.md#dynamic-style-identifiers) names it or a value
+it was read through. A hole in one, as in `"--tone: #{v}"`, is not reported for being
+unreadable either: it is only looked through for raw colors.
 
 ## Where it looks
 
-- `class` and other class attributes (`input_class`, `classes`...) on HTML
+- `class` and other class attributes (`input_class`, `classNames`...) on HTML
   tags, components and slots.
 - `style` attributes and `<style>` elements; SVG color attributes `fill`,
-  `stroke`, `color`, `stop-color`, `flood-color` and `lighting-color`.
-- Merge-function calls anywhere in a module, and `attr :class` defaults.
-- Every string literal, except plain map keys, when `scan_all_strings` is enabled on `no_raw_colors`
-  or `no_arbitrary_values`.
+  `stroke`, `color`, `stop-color`, `flood-color` and `lighting-color`, quoted or as a
+  literal in braces, `fill={"red"}`.
+- `attr :class` defaults.
+- Merge-function calls anywhere a file's code is read. In Elixir code, that is in a function,
+  its `rescue` and the like included, or out of one, such as a module attribute or a default
+  argument. In a template, it is in a `{...}`,
+  `<%= ... %>`, `:if` or `:for`, whatever surrounds the call. A call a class attribute reads
+  is that attribute's, so a component's contract decides it. Any other call, as in
+  `title={cn("bg-pink-500")}` or `class={foo(cn("bg-pink-500"))}`, is checked on no
+  component: no contract reaches it, and `no_restyle` and `require_static_classes` say
+  nothing about it.
+- With `scan_all_strings` on `no_raw_colors` or `no_arbitrary_values`, every string literal
+  with a hyphen: in Elixir code, in quoted attribute values, and in a template's `{...}` and
+  `<%= ... %>`, `:if` and `:for` included. Plain map keys are skipped. Text between tags, an
+  interpolated string and a sigil are not literals here, though a class site reads the last
+  two. A `@doc` string is one.
+
+Files come from `inputs`, without any path that has a directory named `deps` in it.
 
 ## What it cannot see
 
 - **Parent selectors.** `no_restyle` does not trace `[&_button]:bg-primary` to
   a child component. Token rules still check the class.
-- **Unknown attribute maps.** `<.button {@attrs}>` is left alone.
+- **Unknown attribute maps.** `<.button {@attrs}>` is left alone, and a wrapper
+  passing `{assigns}` or `{assigns_to_attributes(assigns)}` is not followed.
 - **Other modules' values.** Values are followed within a module, not across
-  modules; wrapper tracing only follows `class` forwarding.
+  modules; wrapper tracing only follows class props, in the tag that reads them.
+  A prop renamed in the function body, as in `assign(assigns, :merged_class, ...)`
+  reading `assigns.class`, is not followed to `@merged_class`, and a wrapper's
+  `<:title class={@title_class}>` inside a component is not followed either.
+- **Keyword lists in a merge call.** A map's keys are read as classes, as in
+  `cn(%{"bg-pink-500" => @on})`. `cn(rounded: @on)` is not, since a keyword list is how
+  Elixir passes options.
+- **Templates with no function around them.** A `~H` in a module attribute, a `quote` outside
+  a `def` or a `def` inside an `if` is read, but what it does not hold itself cannot be
+  followed, so a variable in it is dynamic. A `~H` directly in a `defimpl`, or a module
+  inside an `if` or a `quote`, is not read by any rule. A module inside a `defimpl` is read
+  as any other module is.
+- **EEx tags a block splits.** `<% end) |> cn() %>` does not parse once its `end` is taken
+  off, so no rule reads what is in it. `<% end, cn("bg-pink-500")) %>` is read, and so is
+  `<%= Enum.map(cn("bg-pink-500"), fn x -> %>`.
+- **Patterns.** `%{a: s} = %{a: "color: red"}` does not read `s`, which is dynamic.
 - **Plain CSS.** Stylesheets and `@apply` are outside these rules.
 - **Locally rebuilt components** are not the design system; token rules still
   apply to their classes.

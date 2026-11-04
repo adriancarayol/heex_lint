@@ -19,10 +19,21 @@ const cases = fs
 const themeFile = path.join(fixture, "app/globals.css")
 fs.mkdirSync(path.dirname(themeFile), { recursive: true })
 if (process.env.THEME) fs.copyFileSync(process.env.THEME, themeFile)
-const kinds = ["div", "Button", "CardTitle"]
+const kinds: Record<string, string> = {
+  div: `<div className="$" />`,
+  Button: `<Button className="$">x</Button>`,
+  CardTitle: `<CardTitle className="$">x</CardTitle>`,
+  Panel: `<Panel className="$" />`,
+  PanelTitle: `<Panel titleClassName="$" />`,
+  PanelFooter: `<Panel footerClassName="$" />`,
+  PassedPanel: `<PassedPanel className="$" />`,
+  PassedTitle: `<PassedPanel titleClassName="$" />`,
+  PassedOther: `<PassedPanel otherClassName="$" />`,
+}
 const header = [
   `import { Button } from "@/components/ui/button"`,
   `import { CardTitle } from "@/components/ui/card"`,
+  `import { Panel, PassedPanel } from "@/components/panel"`,
   `export function Page() {`,
   `  return (`,
   `    <>`,
@@ -30,13 +41,9 @@ const header = [
 const lines = [...header]
 const where: Record<number, [string, string]> = {}
 cases.forEach((token) => {
-  kinds.forEach((kind) => {
+  Object.entries(kinds).forEach(([kind, tag]) => {
     where[lines.length + 1] = [token, kind]
-    lines.push(
-      kind === "div"
-        ? `      <div className="${token}" />`
-        : `      <${kind} className="${token}">x</${kind}>`
-    )
+    lines.push(`      ${tag.replace("$", token)}`)
   })
 })
 lines.push(`    </>`, `  )`, `}`)
@@ -49,6 +56,7 @@ const config: any = [
     files: ["**/*.tsx"],
     languageOptions: { parser, parserOptions: { ecmaFeatures: { jsx: true } } },
     plugins: { shadcn: plugin },
+    settings: { shadcn: { themeImports: ["^parity-installed-kit/theme", "^parity-installed-bare/"] } },
     rules:
       process.env.CONFIG === "3"
         ? {
@@ -62,7 +70,7 @@ const config: any = [
               {
                 allow: ["layout"],
                 deny: ["w-*"],
-                message: { spacing: "S {{className}} {{sizes|nosize}} {{around}}" },
+                message: { spacing: "S {{className}} {{sizes|nosize}} {{around}} P[{{prop}}]" },
                 contracts: [
                   {
                     pattern: "^CardTitle$",

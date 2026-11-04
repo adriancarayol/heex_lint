@@ -1,0 +1,4 @@
+/* A package with no package.json. */
+@theme inline {
+  --color-kit-bare: oklch(0.5 0.1 320);
+}
