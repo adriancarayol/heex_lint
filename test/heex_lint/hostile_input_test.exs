@@ -22,12 +22,12 @@ defmodule HeexLint.HostileInputTest do
   @n 200_000
   @limit_ms 8_000
 
-  defp quick(fun) do
+  defp quick(fun, limit_ms \\ @limit_ms) do
     task = Task.async(fun)
 
-    case Task.yield(task, @limit_ms) || Task.shutdown(task, :brutal_kill) do
+    case Task.yield(task, limit_ms) || Task.shutdown(task, :brutal_kill) do
       {:ok, result} -> result
-      nil -> flunk("took more than #{@limit_ms} ms")
+      nil -> flunk("took more than #{limit_ms} ms")
     end
   end
 
@@ -997,6 +997,22 @@ defmodule HeexLint.HostileInputTest do
       refute Map.has_key?(Map.new(Theme.scale(theme, :radius)), "fan")
       assert Map.new(Theme.scale(theme, :radius))["ok"] == 9.0
       assert theme.spacing == nil
+    end
+  end
+
+  describe "imports that find nothing" do
+    # A URL with a package.json beside it, so the time goes to the list and not the disk:
+    # 5 s here, past 60 s when each miss copied the list. CI can take three times that.
+    test "are kept in order, in one pass", %{tmp_dir: dir} do
+      write(dir, "package.json", "{}")
+      imports = 150_000
+      css = Enum.map_join(1..imports, "\n", &~s|@import "data:m#{&1}";|)
+
+      theme = quick(fn -> load(dir, css) end, 30_000)
+
+      assert length(theme.missing_imports) == imports
+      assert hd(theme.missing_imports) == "data:m1"
+      assert List.last(theme.missing_imports) == "data:m#{imports}"
     end
   end
 

@@ -412,7 +412,7 @@ defmodule HeexLint.Theme do
 
         case resolve_stylesheet(dir, spec) do
           nil ->
-            {%{acc | missing_imports: acc.missing_imports ++ [spec]}, seen}
+            {%{acc | missing_imports: [spec | acc.missing_imports]}, seen}
 
           target when spec == "tailwindcss" ->
             read_tailwind_entry(target, seen, acc)
@@ -497,7 +497,15 @@ defmodule HeexLint.Theme do
 
   defp finalize(%__MODULE__{} = theme) do
     {tokens, scoped} = apply_token_declarations(theme.declarations, MapSet.new(), %{})
-    theme = %{theme | tokens: tokens, scoped: scoped, files: Enum.uniq(theme.files)}
+
+    theme = %{
+      theme
+      | tokens: tokens,
+        scoped: scoped,
+        files: Enum.uniq(theme.files),
+        # Newest first while reading: a stylesheet can miss tens of thousands of them.
+        missing_imports: Enum.reverse(theme.missing_imports)
+    }
 
     %{
       theme
