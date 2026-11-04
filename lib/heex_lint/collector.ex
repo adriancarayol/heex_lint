@@ -944,8 +944,16 @@ defmodule HeexLint.Collector do
 
   defp current_module(state) do
     module = state.context[:module] || (state.context[:template] && state.context.template.module)
-    Project.module(state.context.project, module)
+    own_module(state.context[:source], Project.module(state.context.project, module))
   end
+
+  # A project has one module of a name, so of two files that define it, the other reads
+  # its own: its positions, variables and attributes are in that file.
+  defp own_module(%Source{path: path, modules: modules}, %ModuleInfo{file: file} = module)
+       when file != path,
+       do: Enum.find(modules, module, &(&1.name == module.name))
+
+  defp own_module(_source, module), do: module
 
   ## Calls
 

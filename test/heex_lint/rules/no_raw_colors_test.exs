@@ -657,6 +657,55 @@ defmodule HeexLint.Rules.NoRawColorsTest do
     assert [_, _] = lint(dir, files, rules: [no_raw_colors: {:error, scan_all_strings: true}])
   end
 
+  describe "a defimpl" do
+    test "a merge call's variable is followed, under plain rules", %{tmp_dir: dir} do
+      module = ~S"""
+      defimpl String.Chars, for: Foo do
+        @tone "text-pink-500"
+
+        def to_string(_) do
+          x = "bg-pink-500"
+          cn([x, @tone, tone()])
+        end
+
+        defp tone, do: "border-pink-500"
+      end
+      """
+
+      findings = lint(dir, %{"lib/app_web/foo.ex" => module}, rules: [no_raw_colors: :error])
+
+      assert findings |> Enum.map(&{&1.line, hd(String.split(&1.message, " "))}) |> Enum.sort() ==
+               [
+                 {2, ~s("text-pink-500")},
+                 {5, ~s("bg-pink-500")},
+                 {9, ~s("border-pink-500")}
+               ]
+    end
+
+    test "a direct call is one finding, and a one-line defimpl is read too", %{tmp_dir: dir} do
+      module = ~S"""
+      defimpl String.Chars, for: Foo, do: def(to_string(_), do: cn("bg-pink-500"))
+
+      defimpl Enumerable, for: Foo do
+        def count(_), do: cn("text-pink-500")
+      end
+      """
+
+      assert [_, _] = lint(dir, %{"lib/app_web/foo.ex" => module}, rules: [no_raw_colors: :error])
+    end
+
+    test "a template stays unread, as it was", %{tmp_dir: dir} do
+      module = ~S"""
+      defimpl String.Chars, for: Foo do
+        use Phoenix.Component
+        def to_string(assigns), do: ~H"<div class='bg-pink-500' />"
+      end
+      """
+
+      assert lint(dir, %{"lib/app_web/foo.ex" => module}, rules: [no_raw_colors: :error]) == []
+    end
+  end
+
   describe "scan_all_strings and map keys" do
     defp scanned(dir, body, options \\ [no_raw_colors: {:error, scan_all_strings: true}]) do
       module = """
@@ -844,6 +893,62 @@ defmodule HeexLint.Rules.NoRawColorsTest do
 
       assert [finding] = templated(dir, body)
       assert finding.message =~ "bg-pink-500"
+    end
+
+    test "a variable in a defimpl is followed", %{tmp_dir: dir} do
+      for module <- [
+            ~S"""
+            defimpl String.Chars, for: Foo do
+              def to_string(on) do
+                tones = %{"bg-pink-500" => on}
+                cn(tones)
+              end
+            end
+            """,
+            ~S"""
+            defmodule AppWeb.Foo do
+              defimpl String.Chars do
+                def to_string(on) do
+                  tones = %{"bg-pink-500" => on}
+                  cn(tones)
+                end
+              end
+            end
+            """
+          ] do
+        assert [finding] =
+                 lint(dir, %{"lib/app_web/foo.ex" => module},
+                   rules: [no_raw_colors: {:error, scan_all_strings: true}]
+                 )
+
+        assert finding.message =~ "bg-pink-500"
+      end
+    end
+
+    test "a module two files define follows the variables of each", %{tmp_dir: dir} do
+      module = fn body -> "defmodule AppWeb.Dup do\n  def cn(x), do: x\n#{body}\nend\n" end
+
+      files = %{
+        "lib/a.ex" => module.(~S|def a(on), do: {@first, on}|),
+        "lib/b.ex" =>
+          module.(~S"""
+          @tones %{"text-pink-500" => true}
+
+          def b(on) do
+            tones = %{"bg-pink-500" => on}
+            cn(tones)
+          end
+
+          def c, do: cn(@tones)
+          """)
+      }
+
+      messages =
+        dir
+        |> lint(files, rules: [no_raw_colors: {:error, scan_all_strings: true}])
+        |> Enum.map(&{Path.basename(&1.file), &1.line, hd(String.split(&1.message, " "))})
+
+      assert messages == [{"b.ex", 3, ~s("text-pink-500")}, {"b.ex", 6, ~s("bg-pink-500")}]
     end
 
     test "no_arbitrary_values reads class map keys too", %{tmp_dir: dir} do

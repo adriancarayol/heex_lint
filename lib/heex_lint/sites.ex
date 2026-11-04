@@ -281,7 +281,7 @@ defmodule HeexLint.Sites do
   end
 
   # Code without what is read on its own: the `do` of `functions`, and the modules
-  # in it. What is left is a module attribute, a default argument, a module's or a
+  # and implementations in it. What is left is a module attribute, a default argument, a module's or a
   # script's body, a function's `rescue` and the like, and a function a block
   # defines. A head is a pattern, as in `def cn(value)`, and no call, but for its
   # defaults.
@@ -294,7 +294,7 @@ defmodule HeexLint.Sites do
 
     ast
     |> Code.statements()
-    |> Enum.reject(&match?({:defmodule, _, _}, &1))
+    |> Enum.reject(&match?({kind, _, _} when kind in [:defmodule, :defimpl], &1))
     |> Macro.prewalk(fn
       {kind, meta, [head | body]} when kind in @def_kinds ->
         body = if {meta[:line], meta[:column]} in read, do: other_sections(body), else: body

@@ -90,9 +90,10 @@ defmodule HeexLint.Project.Source do
   defp format_error(message), do: message
 
   defp modules(ast, parent, path, acc) do
-    each_module(ast, parent, acc, fn name, line, body, acc ->
+    each_module(ast, parent, acc, fn kind, name, line, body, acc ->
       id = System.unique_integer([:positive])
-      [read_module(%ModuleInfo{name: name, file: path, line: line, id: id}, body) | acc]
+      module = read_module(%ModuleInfo{name: name, file: path, line: line, id: id}, body)
+      [if(kind == :defimpl, do: %{module | templates: [], components: %{}}, else: module) | acc]
     end)
   end
 
@@ -103,9 +104,10 @@ defmodule HeexLint.Project.Source do
   """
   @spec module_bodies(Macro.t()) :: [Macro.t()]
   def module_bodies(ast),
-    do: each_module(ast, nil, [], fn _name, _line, body, acc -> [body | acc] end)
+    do: each_module(ast, nil, [], fn _kind, _name, _line, body, acc -> [body | acc] end)
 
-  # Every defmodule, nested ones with their full names.
+  # Every defmodule, nested ones with their full names, and every defimpl: its functions
+  # are read as a module's are, but no template or component in it is.
   defp each_module({:defmodule, meta, [name_ast, [{_do, body}]]}, parent, acc, fun) do
     case Code.alias_name(name_ast) do
       nil ->
@@ -116,8 +118,18 @@ defmodule HeexLint.Project.Source do
 
         body
         |> Code.statements()
-        |> Enum.reduce(fun.(name, meta[:line], body, acc), &each_module(&1, name, &2, fun))
+        |> Enum.reduce(
+          fun.(:defmodule, name, meta[:line], body, acc),
+          &each_module(&1, name, &2, fun)
+        )
     end
+  end
+
+  defp each_module({:defimpl, meta, [protocol | rest]}, parent, acc, fun) do
+    options = Enum.flat_map(rest, &Code.keyword/1)
+    target = if for = options[:for], do: Macro.to_string(for), else: parent
+    name = "#{Macro.to_string(protocol)}.#{target}"
+    fun.(:defimpl, name, meta[:line], Keyword.get(options, :do), acc)
   end
 
   defp each_module({:__block__, _, statements}, parent, acc, fun),

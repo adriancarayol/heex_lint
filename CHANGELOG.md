@@ -61,6 +61,9 @@ Each of these reports something that passed before.
 - **Assigns set another way.** `Phoenix.Component.assign` and `%{assigns | tones: ...}` are
   followed as `assign(assigns, :tones, ...)` is, so what they set reaches every rule, where
   it was dynamic or, in `cn(@tones)` under `scan_all_strings`, unread.
+- **Merge calls in a `defimpl`.** Its functions are read as a module's are, so `cn(x)` there
+  follows `x`, its attributes and its functions. A template in one stays unread. A file that
+  defines a module another file also defines now does the same, with its own positions.
 - **Variables read directly.** `<.button class={v}>` is read where the function binds `v`,
   with reports and fixes there. Its classes were dropped. `@name` in that value is a module
   attribute, not an assign.
