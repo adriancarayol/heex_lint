@@ -994,8 +994,8 @@ defmodule HeexLint.Collector do
   end
 
   # Variant configs carry classes as values: %{primary: "...", ghost: "..."}.
-  defp visit_values(state, {:%{}, _, pairs}),
-    do: Enum.reduce(pairs, state, fn {_k, v}, acc -> visit_values(acc, v) end)
+  defp visit_values(state, {:%{}, _, entries}),
+    do: Enum.reduce(entries, state, &visit_entry(&2, &1))
 
   defp visit_values(state, list) when is_list(list) do
     if Keyword.keyword?(list),
@@ -1004,6 +1004,14 @@ defmodule HeexLint.Collector do
   end
 
   defp visit_values(state, node), do: visit(state, node)
+
+  # %{base | a: "..."} has its entries and what is in its base. An entry that is
+  # neither that nor a pair, such as `unquote_splicing(entries)`, is only code.
+  defp visit_entry(state, {:|, _, [base, updates]}),
+    do: state |> visit_values(base) |> visit_values(updates)
+
+  defp visit_entry(state, {_key, value}), do: visit_values(state, value)
+  defp visit_entry(state, entry), do: visit(state, entry)
 
   # A lookup reads the entry named by a literal key, or every entry when the
   # key is only known at runtime: the table is the set of classes it can pick.

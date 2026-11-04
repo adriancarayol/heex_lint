@@ -36,7 +36,7 @@ defmodule HeexLint.Sites do
 
   @type t :: %__MODULE__{}
 
-  # class, className, input_class, classes, class:list... but a data-* or
+  # class, className, input_class, classNames, class:list... but a data-* or
   # aria-* attribute is never a class list: `data-class` is a selector hook.
   @class_attribute ~r/^(class:list|(?!data-|aria-)[^:]*class(name)?s?)$/i
 
@@ -236,6 +236,7 @@ defmodule HeexLint.Sites do
     helpers = helpers(opts)
     site = fn call, context -> code_site(source, Collector.expression(call, context, opts)) end
     file = %{project: project, source: source}
+    bodies = Source.module_bodies(source.ast)
 
     modules =
       Enum.flat_map(source.modules, fn module ->
@@ -249,7 +250,7 @@ defmodule HeexLint.Sites do
               do: site.(call, Map.put(context, :clause, clause))
 
         outside_sites =
-          for call <- helper_calls(outside_functions(module.body, module.functions), helpers),
+          for call <- helpers_outside(bodies[{module.name, module.line}], module, helpers),
               do: site.(call, context)
 
         default_sites =
@@ -269,16 +270,20 @@ defmodule HeexLint.Sites do
     modules ++ outside_modules
   end
 
+  defp helpers_outside(body, module, helpers),
+    do: body |> outside_functions(module.functions) |> helper_calls(helpers)
+
   defp helpers(opts) do
     merge = MapSet.new(Keyword.get(opts, :merge_functions, []))
     variant = MapSet.new(Keyword.get(opts, :variant_functions, []))
     MapSet.union(merge, variant)
   end
 
-  # Code without what is read on its own: `functions`, and the modules in it. What
-  # is left is a module attribute, a default argument, a module's or a script's
-  # body, and a function a block defines. A head is a pattern, as in
-  # `def cn(value)`, and no call, but for its defaults.
+  # Code without what is read on its own: the `do` of `functions`, and the modules
+  # in it. What is left is a module attribute, a default argument, a module's or a
+  # script's body, a function's `rescue` and the like, and a function a block
+  # defines. A head is a pattern, as in `def cn(value)`, and no call, but for its
+  # defaults.
   defp outside_functions(ast, functions) do
     read =
       for clauses <- Map.values(functions),
@@ -291,12 +296,19 @@ defmodule HeexLint.Sites do
     |> Enum.reject(&match?({:defmodule, _, _}, &1))
     |> Macro.prewalk(fn
       {kind, meta, [head | body]} when kind in @def_kinds ->
-        body = if {meta[:line], meta[:column]} in read, do: [], else: body
+        body = if {meta[:line], meta[:column]} in read, do: other_sections(body), else: body
         {kind, meta, [head_defaults(head) | body]}
 
       node ->
         node
     end)
+  end
+
+  # A clause's body is its `do`. Its `rescue`, `catch`, `else` and `after` are not.
+  defp other_sections(body) do
+    for sections <- body, is_list(sections) do
+      Enum.reject(sections, &match?({:do, _}, &1))
+    end
   end
 
   defp head_defaults({:when, _, [head | _guard]}), do: head_defaults(head)
@@ -326,6 +338,10 @@ defmodule HeexLint.Sites do
         # "a" |> cn() is cn("a").
         {:|>, _, [left, {callee, meta, args}]}, acc when is_list(args) ->
           helper_call({callee, meta, [left | args]}, helpers, acc)
+
+        # `@cn "a"` sets an attribute of that name, and what it holds can be a call.
+        {:@, meta, [{name, _, args}]}, acc when is_atom(name) and is_list(args) ->
+          {{:__block__, meta, args}, acc}
 
         {_callee, _, args} = node, acc when is_list(args) ->
           helper_call(node, helpers, acc)

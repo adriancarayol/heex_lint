@@ -443,6 +443,44 @@ defmodule HeexLint.Rules.NoRawColorsTest do
                )
     end
 
+    for {name, template} <- [
+          {"a class attribute", ~S|<div class={tv(%{@base \| a: "bg-pink-500"})} />|},
+          {"another attribute", ~S|<div title={tv(%{@base \| a: "bg-pink-500"})} />|},
+          {":if", ~S|<div :if={tv(%{@base \| a: "bg-pink-500"})} />|},
+          {"a body", ~S|<div>{tv(%{@base \| a: "bg-pink-500"})}</div>|}
+        ] do
+      test "a map update in #{name} has its entries read", %{tmp_dir: dir} do
+        assert [finding] = colors(dir, unquote(template), variant_functions: ["tv"])
+        assert finding.message =~ ~s("bg-pink-500")
+      end
+    end
+
+    test "a map update in code has its entries read", %{tmp_dir: dir} do
+      for code <- [
+            ~S|@x tv(%{@y \| a: "bg-pink-500"})|,
+            ~S|def a(b \\ tv(%{y() \| a: "bg-pink-500"})), do: b|,
+            ~S|tv(%{y() \| a: "bg-pink-500"})|
+          ] do
+        module = "defmodule AppWeb.Code do\n#{code}\nend\n"
+        rules = [no_raw_colors: {:error, variant_functions: ["tv"]}]
+        assert [_] = lint(dir, %{"lib/app_web/code.ex" => module}, rules: rules), code
+      end
+    end
+
+    test "a variant config's base and any other entry end nothing", %{tmp_dir: dir} do
+      for template <- [
+            ~S|<div title={tv(%{unquote_splicing(@y)})} />|,
+            ~S|<div title={tv(%{@a \| "k" => @b})} />|
+          ] do
+        assert colors(dir, template, variant_functions: ["tv"]) == [], template
+      end
+
+      assert [_] =
+               colors(dir, ~S|<div title={tv(%{%{a: "bg-pink-500"} \| b: "p-1"})} />|,
+                 variant_functions: ["tv"]
+               )
+    end
+
     test "reach the other class rules, and none about a component", %{tmp_dir: dir} do
       template = ~S|<.button title={cn("bg-(--nope) p-[13px] foo()")}>x</.button>|
       files = %{"lib/app_web/live/page_live.ex" => live(template)}
@@ -505,6 +543,31 @@ defmodule HeexLint.Rules.NoRawColorsTest do
         assert [finding] = in_code(dir, code), code
         assert finding.message =~ ~s("bg-pink-500"), code
       end
+    end
+
+    test "in a function's other sections too", %{tmp_dir: dir} do
+      for section <- ["rescue\n  _ -> ", "catch\n  _ -> ", "else\n  _ -> ", "after\n  "] do
+        code = ~s|def a do\n  :ok\n#{section}cn("bg-pink-500")\nend|
+        assert [_] = in_code(dir, code), code
+      end
+    end
+
+    test "an attribute named like one is no call", %{tmp_dir: dir} do
+      assert in_code(dir, ~S|@cn "bg-pink-500"|) == []
+
+      module = """
+      defmodule AppWeb.Named do
+        @classes "bg-pink-500"
+        def a, do: @classes
+      end
+      """
+
+      rules = [no_raw_colors: {:error, merge_functions: ["classes"]}]
+      assert lint(dir, %{"lib/app_web/named.ex" => module}, rules: rules) == []
+    end
+
+    test "but what it holds can be", %{tmp_dir: dir} do
+      assert [_] = in_code(dir, ~S|@cn cn("bg-pink-500")|)
     end
 
     test "outside a function they read the module's attributes", %{tmp_dir: dir} do

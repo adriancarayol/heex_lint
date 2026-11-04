@@ -11,6 +11,7 @@ defmodule HeexLint.HostileInputTest do
   import HeexLint.TestProject
 
   alias HeexLint.Grammar.{Classes, Classifier, Colors, Lengths, Validators}
+  alias HeexLint.Project.Source
   alias HeexLint.Rules.NoArbitraryValues
   alias HeexLint.{Collector, Element, Suggest, Template, Theme}
 
@@ -969,6 +970,41 @@ defmodule HeexLint.HostileInputTest do
       refute Map.has_key?(Map.new(Theme.scale(theme, :radius)), "fan")
       assert Map.new(Theme.scale(theme, :radius))["ok"] == 9.0
       assert theme.spacing == nil
+    end
+  end
+
+  describe "the code a project keeps" do
+    # :persistent_term copies without sharing, so a term kept twice costs twice, and
+    # the VM aborts on a project at about 1 GB.
+    test "holds a module's code once beside its functions" do
+      functions =
+        Enum.map_join(1..200, "\n", fn n ->
+          "def f#{n}(a), do: {Enum.map(a.items, & &1.id), %{b: \"#{n}\"}, a.other}"
+        end)
+
+      source = Source.parse("a.ex", "defmodule A do\n#{functions}\nend\n")
+
+      assert :erts_debug.flat_size(source.modules) < 1.5 * :erts_debug.flat_size(source.ast)
+    end
+
+    test "still answers for each module of a file" do
+      ast =
+        Source.parse("a.ex", """
+        defmodule A do
+          @a 1
+
+          defmodule B do
+            @b 2
+          end
+        end
+
+        defmodule C do
+          @c 3
+        end
+        """).ast
+
+      assert %{{"A", 1} => _, {"A.B", 4} => _, {"C", 9} => _} = bodies = Source.module_bodies(ast)
+      assert map_size(bodies) == 3
     end
   end
 

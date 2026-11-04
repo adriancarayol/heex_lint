@@ -64,27 +64,43 @@ defmodule HeexLint.Project.Source do
   defp format_error({prefix, suffix}), do: "#{prefix}#{suffix}"
   defp format_error(message), do: message
 
+  defp modules(ast, parent, path, acc) do
+    each_module(ast, parent, acc, fn name, line, body, acc ->
+      [read_module(%ModuleInfo{name: name, file: path, line: line}, body) | acc]
+    end)
+  end
+
+  @doc """
+  The body of each `defmodule` in `ast`, by name and line. A project keeps `ast`,
+  and each copy of a term in it costs what the term does, so a module does not keep
+  its body too.
+  """
+  @spec module_bodies(Macro.t()) :: %{{String.t(), pos_integer()} => Macro.t()}
+  def module_bodies(ast) do
+    each_module(ast, nil, %{}, fn name, line, body, acc ->
+      Map.put(acc, {name, line}, body)
+    end)
+  end
+
   # Every defmodule, nested ones with their full names.
-  defp modules({:defmodule, meta, [name_ast, [{_do, body}]]}, parent, path, acc) do
+  defp each_module({:defmodule, meta, [name_ast, [{_do, body}]]}, parent, acc, fun) do
     case Code.alias_name(name_ast) do
       nil ->
         acc
 
       name ->
         name = if parent, do: "#{parent}.#{name}", else: name
-        info = %ModuleInfo{name: name, file: path, line: meta[:line], body: body}
-        module = read_module(info, body)
 
         body
         |> Code.statements()
-        |> Enum.reduce([module | acc], &modules(&1, name, path, &2))
+        |> Enum.reduce(fun.(name, meta[:line], body, acc), &each_module(&1, name, &2, fun))
     end
   end
 
-  defp modules({:__block__, _, statements}, parent, path, acc),
-    do: Enum.reduce(statements, acc, &modules(&1, parent, path, &2))
+  defp each_module({:__block__, _, statements}, parent, acc, fun),
+    do: Enum.reduce(statements, acc, &each_module(&1, parent, &2, fun))
 
-  defp modules(_other, _parent, _path, acc), do: acc
+  defp each_module(_other, _parent, acc, _fun), do: acc
 
   defp read_module(module, body) do
     {module, _pending} =
