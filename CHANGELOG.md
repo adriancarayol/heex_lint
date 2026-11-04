@@ -311,8 +311,9 @@ Each of these reports something that passed before.
   its imports, as in @shadcn/lint; `var()` naming `var()` many times over, which took 15
   seconds on a kilobyte;
   a long `var()` fallback named again and again, which is now read once per variable; a
-  repeated `@import "tailwindcss"`, which read Tailwind's stylesheets each time. No
-  findings change, except as listed above.
+  repeated `@import "tailwindcss"`, which read Tailwind's stylesheets each time; a
+  stylesheet of escaped quotes, which took 16 seconds on 80 KB. No findings change, except
+  as listed above.
 - The standalone binary takes one build for the classes a run's files and contract entries
   name, rather than one per `text-*` class, on a theme with an `@config` or `@plugin`.
 - `no_raw_colors` no longer runs a standalone Tailwind build for each undeclared color. Only

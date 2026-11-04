@@ -1205,6 +1205,33 @@ defmodule HeexLint.HostileInputTest do
     end
   end
 
+  describe "strings in a stylesheet" do
+    test "of escaped quotes that never close cost one pass", %{tmp_dir: dir} do
+      for text <- [~S(\"), ~S(\'), ~S(\"\')] do
+        theme = quick(fn -> load(dir, repeat(text, 100_000) <> " .after {}") end)
+
+        assert MapSet.member?(theme.classes, "after"), inspect(text)
+      end
+    end
+
+    @string ~r/"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'/
+
+    test "are blanked as the regex @shadcn/lint uses reads them" do
+      pieces = [~S("), ~S('), "\\", "\n", "\r", "a", " ", ".b", "{", <<0xE9>>]
+
+      # Every text of up to five pieces.
+      texts =
+        Enum.reduce(1..5, [[]], fn _, texts ->
+          texts ++ for(text <- texts, length(text) < 5, piece <- pieces, do: [piece | text])
+        end)
+        |> Enum.uniq()
+
+      for text <- texts, css = IO.iodata_to_binary(text) do
+        assert Theme.blank_strings(css) == String.replace(css, @string, ~s("")), inspect(css)
+      end
+    end
+  end
+
   describe "@utility bodies left open or nested" do
     test "a file of them takes a few passes", %{tmp_dir: dir} do
       theme = quick(fn -> load(dir, each("@utility u# { b: c;", 40_000)) end)

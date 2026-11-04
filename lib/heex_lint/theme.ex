@@ -749,16 +749,59 @@ defmodule HeexLint.Theme do
   # A class that exists in CSS (.legacy-card) is not an unknown class. A
   # "dist/*.js" in a string is a glob, not a .js selector.
   def parse_class_selectors(css) do
-    stripped =
-      css
-      |> strip_comments()
-      |> String.replace(~r/"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'/, ~s(""))
+    stripped = css |> strip_comments() |> blank_strings()
 
     ~r/\.(-?[_a-zA-Z][\w-]*)/
     |> Regex.scan(stripped, capture: :all_but_first)
     |> List.flatten()
     |> MapSet.new()
   end
+
+  @doc false
+  # Replaces what `"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'` matches with `""`, in one pass. That
+  # regex retries from each quote of a string that never closes, so `\"` repeated is
+  # quadratic. A retry cannot do better: a quote like it before the point the read stopped
+  # was escaped, or it would have closed the string, so reading on from it stops there too.
+  def blank_strings(css), do: blank_strings(css, 0, 0, {0, 0}, [])
+
+  defp blank_strings(css, from, at, stops, acc) do
+    case :binary.match(css, ["\"", "'"], scope: {at, byte_size(css) - at}) do
+      :nomatch ->
+        [binary_part(css, from, byte_size(css) - from) | acc]
+        |> Enum.reverse()
+        |> IO.iodata_to_binary()
+
+      {open, 1} ->
+        quote = :binary.at(css, open)
+        rest = binary_part(css, open + 1, byte_size(css) - open - 1)
+
+        case open >= stop_for(stops, quote) && string_close(rest, quote, open + 1) do
+          false ->
+            blank_strings(css, from, open + 1, stops, acc)
+
+          {:closed, close} ->
+            acc = [~s(""), binary_part(css, from, open - from) | acc]
+            blank_strings(css, close + 1, close + 1, stops, acc)
+
+          {:open, stop} ->
+            blank_strings(css, from, open + 1, put_stop(stops, quote, stop), acc)
+        end
+    end
+  end
+
+  defp stop_for({double, _single}, ?"), do: double
+  defp stop_for({_double, single}, ?'), do: single
+
+  defp put_stop({_double, single}, ?", stop), do: {stop, single}
+  defp put_stop({double, _single}, ?', stop), do: {double, stop}
+
+  # `.` takes no newline, so a backslash before one, or before nothing, ends the read.
+  defp string_close(<<quote, _::binary>>, quote, at), do: {:closed, at}
+  defp string_close(<<?\\, ?\n, _::binary>>, _quote, at), do: {:open, at}
+  defp string_close(<<?\\, _, rest::binary>>, quote, at), do: string_close(rest, quote, at + 2)
+  defp string_close(<<?\\>>, _quote, at), do: {:open, at}
+  defp string_close(<<_, rest::binary>>, quote, at), do: string_close(rest, quote, at + 1)
+  defp string_close(<<>>, _quote, at), do: {:open, at}
 
   defp all_variable_names(css) do
     ~r/(?<![\w-])--([\w-]+)\s*:/
