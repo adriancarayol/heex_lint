@@ -802,6 +802,57 @@ defmodule HeexLint.Rules.NoRawColorsTest do
       end
     end
 
+    test "an assigned table's variable is the assigning function's", %{tmp_dir: dir} do
+      helper = "defmodule AppWeb.Cn do\n  def cn(value), do: value\nend\n"
+
+      module = fn render ->
+        """
+        defmodule AppWeb.Tabled do
+          use AppWeb, :html
+          import AppWeb.Cn
+
+          def mount(_, _, socket) do
+            t = %{a: %{"bg-pink-500" => 1}}
+            {:ok, assign(socket, :t, t)}
+          end
+
+          def render(assigns) do
+            #{render}
+            ~H"<div class={cn(@t.a)} />"
+          end
+        end
+        """
+      end
+
+      for render <- [~S|t = %{a: %{"bg-red-500" => 1}}|, "x = 1"] do
+        assert [finding] =
+                 lint(
+                   dir,
+                   %{"lib/app_web/tabled.ex" => module.(render), "lib/app_web/cn.ex" => helper},
+                   rules: [no_raw_colors: {:error, scan_all_strings: true}]
+                 )
+
+        assert finding.message =~ "bg-pink-500"
+      end
+    end
+
+    test "a module inside a defimpl keeps its merge calls", %{tmp_dir: dir} do
+      module = """
+      defimpl R, for: Foo do
+        defmodule Inner do
+          def f(_x), do: cn("bg-pink-500")
+        end
+      end
+      """
+
+      helper = "defmodule AppWeb.Cn do\n  def cn(value), do: value\nend\n"
+
+      assert [_finding] =
+               lint(dir, %{"lib/app_web/impl.ex" => module, "lib/app_web/cn.ex" => helper},
+                 rules: [no_raw_colors: :error]
+               )
+    end
+
     test "a plain map key names a field", %{tmp_dir: dir} do
       assert scanned(dir, ~S|%{"bg-pink-500" => tone, "text-pink-500" => on}|) == []
       assert scanned(dir, ~S(%{map | "bg-pink-500" => tone})) == []

@@ -182,7 +182,8 @@ seconds for a stylesheet's first answer and 30 seconds for later ones. Through t
 standalone binary it waits up to 60 seconds for each question, however many builds that
 takes. Set `HEEX_LINT_TAILWIND_TIMEOUT` to a number of milliseconds to change all of
 these, and anything but a positive number is ignored. A process past that wait is
-killed, with whatever it started but a child a plugin detaches, and that stylesheet uses the grammar for the rest of
+killed, with whatever it started but a child a plugin detaches, and that stylesheet uses
+the grammar for the rest of
 the run, with a warning. Another stylesheet gets a new process, and two failures with no
 good answer between them turn Tailwind off for the run. The Node process also ends
 within moments of the linter going away, however it goes and whatever a plugin is doing,
@@ -230,8 +231,7 @@ A class value is read through:
   it writes, or its base's, and any other is unreadable), and merge functions.
 
 Each binding, and each function an embedded template calls, is read once per attribute, so
-a class reached through both
-branches of `if on, do: a, else: a` is one class. What cannot be read — a socket assign
+a class reached through both branches of `if on, do: a, else: a` is one class. What cannot be read — a socket assign
 in a LiveView, an unknown call, a variable that reads itself, a chain longer
 than 64 bindings — is reported by `require_static_classes` when used on a
 design-system component. A `style` has no such limit: `no_inline_styles` reads its
@@ -289,3 +289,4 @@ Files come from `inputs`, without any path that has a directory named `deps` in 
 - **Locally rebuilt components** are not the design system; token rules still
   apply to their classes.
 - **New tokens and suppressions.** New `@theme` declarations are allowed by
+  design, and `heex-lint-disable` comments bypass rules. Review those changes.

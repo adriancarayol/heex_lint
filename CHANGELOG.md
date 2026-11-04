@@ -339,14 +339,16 @@ Each of these reports something that passed before.
   8,000 times took 4.6 seconds, and 4,000 took 4.4 under `scan_all_strings`. No findings change.
 - **Bindings that all read each other** no longer take gigabytes: what a site reads again is
   not pushed again. A hole does not read them again at all, so a cycle in one is no longer
-  a false dynamic `style`, and the reads spent on a cycle no longer lose a class further
-  along. A read past the limit that ended in a cycle on another route keeps its finding,
+  a false dynamic `style`. Reads spent on a cycle have a count of their own, so a class
+  further along is lost only past 4,096 of them, and on a cycle near the route's limit a few
+  classes can still go unread. A read past the limit that ended in a cycle on another route keeps its finding,
   whichever order the two are read in, and a chain of exactly 63 links ending in a prop
   with a default is no longer reported as dynamic.
 - The standalone binary takes one build for the classes a run's files and contract entries
   name, rather than one per `text-*` class, on a theme with an `@config` or `@plugin`.
 - `no_raw_colors` no longer runs a standalone Tailwind build for each undeclared color. Only
   Node's answers can change that finding, so through the binary such a class costs no build.
+  A theme that cannot build then warns only when a rule has a real question for Tailwind.
 
 - Two linters at once no longer share a build directory, where one could read the other's
   answer, and a VM that exits during a build leaves no directory behind.

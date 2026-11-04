@@ -196,19 +196,27 @@ defmodule HeexLint.Collector do
   end
 
   defp binder_names(%{name: name, value: {:expr, code, _position}}, names) do
-    # A `:for` can have several generators, which only a list holds.
-    with true <- name in names,
-         {:ok, ast} <- Code.parse("[" <> code <> "]") do
-      Enum.flat_map(ast, fn
-        {:<-, _, [pattern, _from]} -> pattern_names(pattern)
-        pattern -> if name == ":let", do: pattern_names(pattern), else: []
-      end)
-    else
-      _ -> []
-    end
+    if name in names,
+      do: memo({__MODULE__, :binder_names, name, code}, fn -> binders(name, code) end),
+      else: []
   end
 
   defp binder_names(_attribute, _names), do: []
+
+  # A `:for` can have several generators, which only a list holds. Every element inside
+  # one asks, so it is parsed once.
+  defp binders(name, code) do
+    case Code.parse("[" <> code <> "]") do
+      {:ok, ast} ->
+        Enum.flat_map(ast, fn
+          {:<-, _, [pattern, _from]} -> pattern_names(pattern)
+          pattern -> if name == ":let", do: pattern_names(pattern), else: []
+        end)
+
+      _ ->
+        []
+    end
+  end
 
   @doc """
   The keys a root attribute sets when it spreads a readable map or keyword list
@@ -1247,6 +1255,8 @@ defmodule HeexLint.Collector do
   defp lookup(state, map, key, default, meta) do
     written = path_name(map, key)
     key = literal_key(key)
+    clause = state.clause
+    state = assigning_clause(state, map)
 
     state =
       case table(state, map, []) do
@@ -1299,8 +1309,23 @@ defmodule HeexLint.Collector do
           unreadable(state, unread, meta, written)
       end
 
+    state = %{state | clause: clause}
     if default && not empty_style?(state, default), do: visit(state, default), else: state
   end
+
+  # What an assigned table holds is code of the function that assigns it. Map keys read
+  # an assign set anywhere in the module, and that may not be the function rendering it.
+  defp assigning_clause(%{mode: :template, map_keys: keys} = state, map) when is_list(keys) do
+    with name when is_binary(name) <- assign_read(map),
+         %ModuleInfo{} = module <- current_module(state),
+         [{%{} = clause, _value}] <- Map.get(module_assigns(module), name, []) do
+      %{state | clause: clause}
+    else
+      _ -> state
+    end
+  end
+
+  defp assigning_clause(state, _map), do: state
 
   # A style of `%{}` sets nothing, as `t.a ?? {}` does in @shadcn/lint.
   defp empty_style?(%{kind: :style}, {:%{}, _, []}), do: true

@@ -313,6 +313,14 @@ defmodule HeexLint.HostileInputTest do
     end
 
     # The value would differ from the source, and a fix writes to the source.
+    test "a long :for is read once for what is inside it", %{tmp_dir: dir} do
+      items = Enum.map_join(1..20_000, ", ", &~s("item-#{&1}"))
+      children = String.duplicate(~S(<div class={@c}></div>), 2_000)
+      template = ~s(<section :for={x <- [#{items}]}>#{children}</section>)
+
+      quick(fn -> lint(dir, page(template), rules: [no_raw_colors: :error]) end)
+    end
+
     test "one line of many literals costs its length", %{tmp_dir: dir} do
       literals = Enum.map_join(1..60_000, ", ", &~s("p-#{&1}"))
       code = "defmodule AppWeb.Long do\n  def x, do: [#{literals}]\nend\n"

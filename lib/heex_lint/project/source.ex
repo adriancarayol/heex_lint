@@ -129,7 +129,11 @@ defmodule HeexLint.Project.Source do
     options = Enum.flat_map(rest, &Code.keyword/1)
     target = if for = options[:for], do: Macro.to_string(for), else: parent
     name = "#{Macro.to_string(protocol)}.#{target}"
-    fun.(:defimpl, name, meta[:line], Keyword.get(options, :do), acc)
+    body = Keyword.get(options, :do)
+
+    body
+    |> Code.statements()
+    |> Enum.reduce(fun.(:defimpl, name, meta[:line], body, acc), &each_module(&1, name, &2, fun))
   end
 
   defp each_module({:__block__, _, statements}, parent, acc, fun),

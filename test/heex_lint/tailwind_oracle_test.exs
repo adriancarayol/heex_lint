@@ -880,6 +880,8 @@ defmodule HeexLint.TailwindOracleTest do
       deadline(5_000)
       assert [warning] = Tailwind.warnings(oracle)
       assert warning =~ "did not answer"
+      # Two waits of five seconds, and not the one the message used to name.
+      assert warning =~ ~r/timed out after (9|1\d) s/
       assert warning =~ "rules checked a file with the class grammar"
       Tailwind.stop(oracle)
     end

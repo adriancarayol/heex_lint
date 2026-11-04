@@ -181,13 +181,14 @@ defmodule HeexLint.GrammarTest do
   end
 
   test "two long names cost their length" do
-    a = String.duplicate("a", 200_000)
-    b = String.duplicate("a", 199_999) <> "b"
-    c = String.duplicate("c", 200_000)
+    # Small enough that the whole table fails this on time, and not by filling the memory.
+    a = String.duplicate("a", 2_000)
+    b = String.duplicate("a", 1_999) <> "b"
+    c = String.duplicate("c", 2_000)
 
     {time, answer} = :timer.tc(fn -> Similar.did_you_mean(a, [b, c]) end)
 
     assert answer == b
-    assert time < 2_000_000
+    assert time < 500_000
   end
 end

@@ -182,13 +182,19 @@ defmodule HeexLint.Tailwind do
   # oracle that cannot answer, which costs the caller's file its project classes and
   # not the run.
   defp ask(pid, request) do
-    pending = :gen_server.send_request(pid, request)
-    await(pid, pending, nil)
-  catch
-    :exit, reason -> gave_up(pid, reason)
+    started = System.monotonic_time(:millisecond)
+
+    try do
+      await(pid, :gen_server.send_request(pid, request), nil, started)
+    catch
+      :exit, {:timeout, _call} -> gave_up(pid, {:timeout, waited(started)})
+      :exit, reason -> gave_up(pid, reason)
+    end
   end
 
-  defp await(pid, pending, seen) do
+  # Nothing is known of the count before the first wait, so a question that gets no
+  # answer waits twice.
+  defp await(pid, pending, seen, started) do
     case :gen_server.wait_response(pending, call_timeout()) do
       {:reply, answer} ->
         answer
@@ -198,15 +204,17 @@ defmodule HeexLint.Tailwind do
 
       :timeout ->
         case answered_count(pid) do
-          count when count != seen ->
-            await(pid, pending, count)
+          count when seen == nil or count != seen ->
+            await(pid, pending, count, started)
 
           _ ->
             :gen_server.receive_response(pending, 0)
-            gave_up(pid, {:timeout, :ask})
+            gave_up(pid, {:timeout, waited(started)})
         end
     end
   end
+
+  defp waited(started), do: System.monotonic_time(:millisecond) - started
 
   defp answered_count(pid), do: GenServer.call(pid, :answered, @call_margin)
 
@@ -220,7 +228,7 @@ defmodule HeexLint.Tailwind do
     nil
   end
 
-  defp exit_reason({:timeout, _call}), do: "timed out after #{seconds(call_timeout())} s"
+  defp exit_reason({:timeout, waited}), do: "timed out after #{round(waited / 1000)} s"
   defp exit_reason({reason, _call}), do: inspect(reason)
   defp exit_reason(reason), do: inspect(reason)
 
