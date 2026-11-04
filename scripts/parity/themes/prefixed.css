@@ -1,0 +1,12 @@
+/* Under a prefix, only tw: classes are Tailwind's. */
+@import "tailwindcss" prefix(tw);
+
+@theme {
+  --color-primary: #171717;
+  --color-muted: #f5f5f5;
+  --radius-card: 12px;
+}
+
+@utility tap-target {
+  min-height: 44px;
+}

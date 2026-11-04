@@ -1,0 +1,11 @@
+/* The shapes of package a named import reaches through its resolver. */
+@import "tailwindcss";
+@import "parity-installed-kit/theme-conditions.css";
+@import "parity-installed-kit/theme-array.css";
+@import "parity-installed-kit/theme-imports.css";
+@import "parity-installed-bare/theme.css";
+
+/* One color of the app's own. */
+@theme inline {
+  --color-spotlight: oklch(0.92 0 0);
+}

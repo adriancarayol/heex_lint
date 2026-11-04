@@ -20,6 +20,31 @@ defmodule HeexLint.Rules.NoInlineStylesTest do
     assert {color.line, color.column} == {6, 17}
   end
 
+  test "a map update spread onto a tag has its entries read", %{tmp_dir: dir} do
+    assert [finding] =
+             styles(dir, ~S"""
+             <div {%{assigns.param | style: "color: red"}} />
+             """)
+
+    assert finding.message =~ "Inline style sets color."
+
+    assert [finding] =
+             styles(dir, ~S"""
+             <div {%{assigns.param | style: Lib.compute()}} />
+             """)
+
+    assert finding.message =~ "cannot be checked"
+
+    assert styles(dir, ~S"""
+           <div {%{assigns.param | id: "color: red"}} />
+           """) == []
+  end
+
+  test "a ~s hole in a style is read as a string's is", %{tmp_dir: dir} do
+    assert [finding] = styles(dir, ~S|<div style={~s(color: #{@c}; --x: 1)} />|)
+    assert finding.message =~ "Inline style sets color."
+  end
+
   test "custom properties pass unless they hardcode a color", %{tmp_dir: dir} do
     template = """
     <div class="w-(--panel-width)" style={"--panel-width: \#{@width}px"} />
@@ -58,6 +83,26 @@ defmodule HeexLint.Rules.NoInlineStylesTest do
       lint(dir, %{"lib/app_web/live/tone_live.ex" => module}, rules: [no_inline_styles: :error])
 
     assert finding.message =~ "Custom property --tone hardcodes a color."
+  end
+
+  test "custom properties over one theme variable pass, also through holes", %{tmp_dir: dir} do
+    template = """
+    <div style="--tone: oklch(var(--ct-oklch)); --edge: oklch(var(--x) / 0.2)" />
+    <div style={"--tone: \#{"oklch(var(--ct-oklch) / 0.2)"}"} />
+    """
+
+    assert styles(dir, template) == []
+
+    # A fallback hardcodes the color, written directly or through a hole.
+    [direct] = styles(dir, ~s|<div style="--edge: oklch(var(--x, 0.5 0.1 200))" />|)
+    assert direct.message =~ "Custom property --edge hardcodes a color"
+
+    [hole] = styles(dir, ~S|<div style={"--edge: #{"oklch(var(--x, 0.5 0.1 200))"}"} />|)
+    assert hole.message =~ "Custom property --edge hardcodes a color"
+
+    # A hole is not a variable: nothing says what it holds.
+    [channel] = styles(dir, ~S|<div style={"--edge: oklch(#{@channels} / 0.2)"} />|)
+    assert channel.message =~ "Custom property --edge hardcodes a color"
   end
 
   test "style values that cannot be read are reported", %{tmp_dir: dir} do
