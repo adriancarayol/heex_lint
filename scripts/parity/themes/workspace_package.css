@@ -1,0 +1,3 @@
+/* A workspace package linked into node_modules counts as the project's own. */
+@import "tailwindcss";
+@import "parity-workspace-kit/theme.css";

@@ -13,7 +13,12 @@ defmodule HeexLint.Grammar.Classes do
   # text-shadow-primary is a text-shadow color, not text "shadow-primary".
   @color_prefix "^(?:text-shadow|inset-shadow|inset-ring|drop-shadow|scrollbar-(?:thumb|track)|ring-offset|border(?:-[trblxyse]|-[bi][se])?|divide(?:-[xy])?|mask-(?:linear|radial|conic|[trblxy])-(?:from|to)|bg|text|ring|outline|fill|stroke|from|via|to|accent|caret|decoration|placeholder|shadow)-"
 
-  @opacity_modifier "\\/(?:[\\w.%]+|\\[[^\\]]*\\]|\\([^)]*\\))$"
+  # A bracket or paren holds no other: each match attempt then stops at the next
+  # one, so /[/[/[ is not searched once per slash.
+  @opacity_modifier "\\/(?:[\\w.%]+|\\[[^\\[\\]]*\\]|\\([^()]*\\))$"
+
+  # What `\s` reads in a class string.
+  @whitespace [" ", "\t", "\n", "\v", "\f", "\r"]
 
   # Marker classes style nothing and have no group; they count as layout.
   @markers MapSet.new(~w(group peer dark light))
@@ -97,9 +102,40 @@ defmodule HeexLint.Grammar.Classes do
   def arbitrary_value?(token) do
     if String.contains?(token, "[") do
       {_, base} = split_variants(token)
-      Regex.match?(~r/-\[[^\]]*\]/, base) or Regex.match?(~r/^\[[^\]]+:[^\]]+\]$/, base)
+      arbitrary_utility?(base) or arbitrary_property?(base)
     else
       false
+    end
+  end
+
+  # Searched for rather than matched, so a token of a thousand unclosed brackets
+  # costs one pass, not one per bracket. When no `]` follows the first `-[`, none
+  # follows a later one.
+  defp arbitrary_utility?(base) do
+    case index_from(base, "-[", 0) do
+      nil -> false
+      open -> index_from(base, "]", open + 2) != nil
+    end
+  end
+
+  # `[property:value]`: no other `]`, and a colon with something on each side.
+  defp arbitrary_property?(base) do
+    size = byte_size(base)
+
+    size > 2 and :binary.first(base) == ?[ and :binary.last(base) == ?] and
+      index_from(binary_part(base, 0, size - 1), "]", 0) == nil and
+      index_from(binary_part(base, 0, size - 2), ":", 2) != nil
+  end
+
+  @doc false
+  # JavaScript's `indexOf`: where `pattern` first starts at or after `from`, or nil.
+  @spec index_from(String.t(), String.t(), non_neg_integer()) :: non_neg_integer() | nil
+  def index_from(text, _pattern, from) when from >= byte_size(text), do: nil
+
+  def index_from(text, pattern, from) do
+    case :binary.match(text, pattern, scope: {from, byte_size(text) - from}) do
+      {at, _length} -> at
+      :nomatch -> nil
     end
   end
 
@@ -137,12 +173,41 @@ defmodule HeexLint.Grammar.Classes do
 
   @doc """
   Replaces the first whole occurrence of `token` in the class string `value`.
+  Read as plain text, since a token past about 32 KB is too long to be a regex.
+
+      iex> HeexLint.Grammar.Classes.replace_class("x-p-1 p-1 p-1x", "p-1", "2xl:p-2")
+      "x-p-1 2xl:p-2 p-1x"
   """
   @spec replace_class(String.t(), String.t(), String.t()) :: String.t()
+  def replace_class(value, "", _replacement), do: value
+
   def replace_class(value, token, replacement) do
-    pattern = Regex.compile!("(^|\\s)" <> Regex.escape(token) <> "(?=\\s|$)")
-    Regex.replace(pattern, value, "\\1" <> escape_replacement(replacement), global: false)
+    case whole_occurrence(value, token, 0) do
+      nil ->
+        value
+
+      at ->
+        after_token = at + byte_size(token)
+
+        binary_part(value, 0, at) <>
+          replacement <> binary_part(value, after_token, byte_size(value) - after_token)
+    end
   end
 
-  defp escape_replacement(text), do: String.replace(text, "\\", "\\\\")
+  defp whole_occurrence(value, token, from) do
+    with at when at != nil <- index_from(value, token, from) do
+      if class_edge?(value, at - 1) and class_edge?(value, at + byte_size(token)) do
+        at
+      else
+        # Nothing later in this word starts a whole one.
+        case :binary.match(value, @whitespace, scope: {at, byte_size(value) - at}) do
+          {space, 1} -> whole_occurrence(value, token, space + 1)
+          :nomatch -> nil
+        end
+      end
+    end
+  end
+
+  defp class_edge?(value, at) when at < 0 or at >= byte_size(value), do: true
+  defp class_edge?(value, at), do: <<:binary.at(value, at)>> in @whitespace
 end
