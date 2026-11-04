@@ -23,7 +23,8 @@ defmodule HeexLint.Collector do
   that reads it. Each binding is read once per site, so a class reached through
   both branches of `if on, do: a, else: a` is one class and a chain of such
   branches stays linear. A read that stopped on its route is remembered with that
-  route, since it could read more from another one. A style has no such limit: its
+  route, since it could read more from another one, and what is read again is pushed
+  once. A style has no such limit: its
   value is read however far away it is, and what a hole in it can hold is looked
   at for raw colors the same way.
 
@@ -92,8 +93,9 @@ defmodule HeexLint.Collector do
 
   # How many times a site may read a binding it has already read. Only reads
   # that stopped on their route are read again, and bindings that all read each
-  # other can do that on every route there is. First reads do not count, so this
-  # never limits how much a site reads.
+  # other can do that on every route there is. First reads do not count. A read cut
+  # at the limit has a count of its own, as reading it again can find a class, so a
+  # site's cycles do not cost it one; past its own count, one can still be lost.
   @max_rereads 4096
 
   @doc """
@@ -382,6 +384,10 @@ defmodule HeexLint.Collector do
       stops: 0,
       cuts: 0,
       rereads: 0,
+      recuts: 0,
+      cut_reads: %{},
+      touched: MapSet.new(),
+      pushed: MapSet.new(),
       strings: [],
       unresolved: [],
       map_keys: nil,
@@ -565,8 +571,13 @@ defmodule HeexLint.Collector do
   defp map_entries(state, entries) do
     Enum.reduce(entries, state, fn
       {{:__block__, meta, [key]}, _value}, acc when is_binary(key) ->
-        [string] = literal(%{acc | strings: []}, key, meta).strings
-        %{acc | map_keys: [string | acc.map_keys]}
+        case literal(%{acc | strings: []}, key, meta) do
+          %{strings: [string], pushed: pushed} ->
+            %{acc | map_keys: [string | acc.map_keys], pushed: pushed}
+
+          _pushed_already ->
+            acc
+        end
 
       _entry, acc ->
         acc
@@ -617,10 +628,11 @@ defmodule HeexLint.Collector do
       positions
       |> Enum.zip(exprs)
       |> Enum.map_reduce(state, fn {position, expr}, acc ->
-        inner = visit(%{acc | strings: [], unresolved: [], kind: :hole}, expr)
+        inner =
+          visit(%{acc | strings: [], unresolved: [], pushed: MapSet.new(), kind: :hole}, expr)
 
         {{position, Enum.map(inner.strings, & &1.value)},
-         %{acc | stops: inner.stops, cuts: inner.cuts, rereads: inner.rereads}}
+         %{acc | stops: inner.stops, cuts: inner.cuts}}
       end)
 
     push(state, raw_text(items), items, nil, Map.new(holes))
@@ -654,7 +666,11 @@ defmodule HeexLint.Collector do
   defp push(state, value, items, literal, holes \\ %{}) do
     string = %{value: value, items: items, literal: literal, holes: holes}
     string = if state.kind == :style, do: Map.put(string, :read, state.read), else: string
-    %{state | strings: [string | state.strings]}
+
+    # What a site reads again says the same thing again, as @shadcn/lint's `push` has it.
+    if MapSet.member?(state.pushed, string),
+      do: state,
+      else: %{state | strings: [string | state.strings], pushed: MapSet.put(state.pushed, string)}
   end
 
   # `written` is what the code calls the unreadable value, if it names it.
@@ -889,27 +905,54 @@ defmodule HeexLint.Collector do
   #
   # A read that stopped says nothing about the binding's whole value: it was cut
   # at the end of its route (`cuts`) or at a binding on it (`stops`). The same
-  # read is skipped only where it would stop the same way, at the same distance
-  # from the limit or on the same route, and skipping it passes that on to what
-  # is reading it. Without this, a branching chain that never finishes a read,
-  # because it runs past the limit or ends in a cycle, doubles with every link.
+  # read is skipped only where it would stop the same way: on the same route, or
+  # at the same distance from the limit with nothing it read on the route, and
+  # skipping it passes that on to what is reading it. Without this, a branching chain
+  # that never finishes a read, because it runs past the limit or ends in a cycle,
+  # doubles with every link. A hole keeps no positions, and its first reads have read
+  # all a later one could, so it never reads again. A prop's default takes no link:
+  # it is the prop's own value, which the last link has reached.
   defp hop(state, key, meta, how \\ nil, fun) do
     keys = List.wrap(key)
     this = {keys, how, clause_id(state.clause), state.kind}
     ended = Map.get(state.visited, this, MapSet.new())
-    again? = MapSet.size(ended) > 0
     name = state.naming
     state = link(state, this)
 
     cond do
-      past_limit?(state, 0) -> cut(state, meta)
-      MapSet.member?(ended, :whole) -> state
-      MapSet.member?(ended, state.depth) -> %{state | cuts: state.cuts + 1}
-      MapSet.member?(ended, state.seen) -> stop(state)
-      again? and state.rereads >= @max_rereads -> cut(state, meta, name)
-      again? -> read(%{state | rereads: state.rereads + 1}, this, keys, fun)
-      true -> read(state, this, keys, fun)
+      past_limit?(state, 0) and not match?({:default, _}, key) ->
+        cut(state, meta)
+
+      MapSet.member?(ended, :whole) ->
+        state
+
+      touched = same_cut(state, this) ->
+        %{state | cuts: state.cuts + 1, touched: MapSet.union(state.touched, touched)}
+
+      MapSet.member?(ended, state.seen) ->
+        stop(state)
+
+      MapSet.size(ended) == 0 ->
+        read(state, this, keys, fun)
+
+      state.kind == :hole ->
+        stop(state)
+
+      true ->
+        count = if MapSet.member?(ended, :cut), do: :recuts, else: :rereads
+
+        if Map.fetch!(state, count) >= @max_rereads,
+          do: cut(state, meta, name),
+          else: read(Map.update!(state, count, &(&1 + 1)), this, keys, fun)
     end
+  end
+
+  # What a read cut at this distance from the limit went on to read, if none of it is
+  # on this route: it would be cut the same way.
+  defp same_cut(state, this) do
+    state.cut_reads
+    |> Map.get({this, state.depth}, [])
+    |> Enum.find(&MapSet.disjoint?(&1, state.seen))
   end
 
   defp read(state, this, keys, fun) do
@@ -920,18 +963,34 @@ defmodule HeexLint.Collector do
         state
         | seen: Enum.into(keys, state.seen),
           depth: state.depth + length(keys),
-          read: this
+          read: this,
+          touched: if(state.kind == :class, do: MapSet.new(keys), else: state.touched)
       })
 
     ended =
       cond do
         inner.stops != state.stops -> state.seen
-        inner.cuts != state.cuts -> state.depth
+        inner.cuts != state.cuts -> :cut
         true -> :whole
       end
 
+    cut_reads =
+      if ended == :cut,
+        do:
+          Map.update(inner.cut_reads, {this, state.depth}, [inner.touched], &[inner.touched | &1]),
+        else: inner.cut_reads
+
+    # A read that finished can have nothing on any route that reaches it, or it would
+    # have stopped there, so what is reading it need not keep what it read.
+    touched =
+      if ended == :whole, do: state.touched, else: MapSet.union(state.touched, inner.touched)
+
     visited = Map.update(inner.visited, this, MapSet.new([ended]), &MapSet.put(&1, ended))
-    Map.merge(%{inner | visited: visited}, saved)
+
+    Map.merge(
+      %{inner | visited: visited, cut_reads: cut_reads, touched: touched},
+      saved
+    )
   end
 
   defp past_limit?(%{kind: :class} = state, links), do: state.depth + links >= @max_route

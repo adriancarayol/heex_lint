@@ -1123,6 +1123,41 @@ defmodule HeexLint.HostileInputTest do
   end
 
   describe "a read repeated across a module" do
+    # 20 bindings that all read each other are read again thousands of times. Each read
+    # pushed its 200 literals again, which took past 4 GB in this test's rules.
+    test "what a site reads again is not pushed again", %{tmp_dir: dir} do
+      bindings =
+        Enum.map_join(1..20, "\n", fn i ->
+          others = for j <- 1..20, j != i, do: "b#{j}"
+          literals = for k <- 1..200, do: ~s("p-#{i}#{k}")
+          "b#{i} = [#{Enum.join(others ++ literals, ", ")}]"
+        end)
+
+      files = %{
+        "lib/app_web/fan.ex" => """
+        defmodule AppWeb.Fan do
+          use AppWeb, :html
+
+          def page(assigns) do
+            #{bindings}
+            ~H"<.button class={b1}>x</.button>"
+          end
+        end
+        """
+      }
+
+      rules = [
+        no_restyle: {:error, allow: ["layout"]},
+        no_raw_colors: :error,
+        no_arbitrary_values: :error,
+        no_inline_styles: :error,
+        require_static_classes: :error,
+        no_unknown_classes: :error
+      ]
+
+      assert [_ | _] = quick(fn -> lint(dir, files, rules: rules) end)
+    end
+
     # 6,400 components took 29 s when each read of an assign walked every clause.
     test "an assign is read once from the module's index", %{tmp_dir: dir} do
       components =

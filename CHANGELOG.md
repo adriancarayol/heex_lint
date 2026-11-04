@@ -324,6 +324,12 @@ Each of these reports something that passed before.
   findings change, except as listed above.
 - **Slow input read once per task:** assigns read in a module of thousands of components, as
   `cn(@tones)` under `scan_all_strings` walked every clause on each read. No findings change.
+- **Bindings that all read each other** no longer take gigabytes: what a site reads again is
+  not pushed again. A hole does not read them again at all, so a cycle in one is no longer
+  a false dynamic `style`, and the reads spent on a cycle no longer lose a class further
+  along. A read past the limit that ended in a cycle on another route keeps its finding,
+  whichever order the two are read in, and a chain of exactly 63 links ending in a prop
+  with a default is no longer reported as dynamic.
 - The standalone binary takes one build for the classes a run's files and contract entries
   name, rather than one per `text-*` class, on a theme with an `@config` or `@plugin`.
 - `no_raw_colors` no longer runs a standalone Tailwind build for each undeclared color. Only
