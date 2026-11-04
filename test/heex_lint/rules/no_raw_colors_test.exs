@@ -462,10 +462,10 @@ defmodule HeexLint.Rules.NoRawColorsTest do
     end
 
     for {name, template} <- [
-          {"a class attribute", ~S[<div class={tv(%{@base | a: "bg-pink-500"})} />]},
-          {"another attribute", ~S[<div title={tv(%{@base | a: "bg-pink-500"})} />]},
-          {":if", ~S[<div :if={tv(%{@base | a: "bg-pink-500"})} />]},
-          {"a body", ~S[<div>{tv(%{@base | a: "bg-pink-500"})}</div>]}
+          {"a class attribute", ~S[<div class={tv(%{@base | base: "bg-pink-500"})} />]},
+          {"another attribute", ~S[<div title={tv(%{@base | base: "bg-pink-500"})} />]},
+          {":if", ~S[<div :if={tv(%{@base | base: "bg-pink-500"})} />]},
+          {"a body", ~S[<div>{tv(%{@base | base: "bg-pink-500"})}</div>]}
         ] do
       test "a map update in #{name} has its entries read", %{tmp_dir: dir} do
         assert [finding] = colors(dir, unquote(template), variant_functions: ["tv"])
@@ -475,9 +475,9 @@ defmodule HeexLint.Rules.NoRawColorsTest do
 
     test "a map update in code has its entries read", %{tmp_dir: dir} do
       for code <- [
-            ~S[@x tv(%{@y | a: "bg-pink-500"})],
-            ~S[def a(b \\ tv(%{y() | a: "bg-pink-500"})), do: b],
-            ~S[tv(%{y() | a: "bg-pink-500"})]
+            ~S[@x tv(%{@y | base: "bg-pink-500"})],
+            ~S[def a(b \\ tv(%{y() | base: "bg-pink-500"})), do: b],
+            ~S[tv(%{y() | base: "bg-pink-500"})]
           ] do
         module = "defmodule AppWeb.Code do\n#{code}\nend\n"
         rules = [no_raw_colors: {:error, variant_functions: ["tv"]}]
@@ -488,13 +488,375 @@ defmodule HeexLint.Rules.NoRawColorsTest do
     test "a map update's string keys have their values read too", %{tmp_dir: dir} do
       for {update, count} <- [
             {~S["base" => "bg-pink-500"], 1},
-            {~S[:base => "bg-pink-500", "x" => "bg-red-500"], 2},
+            {~S[:base => "bg-pink-500", "class" => "bg-red-500"], 2},
             {~S["variants" => %{"s" => %{"x" => "bg-pink-500"}}], 1}
           ] do
         template = "<div class={tv(%{@a | #{update}})} />"
         findings = colors(dir, template, variant_functions: ["tv"])
         assert length(findings) == count, template
       end
+    end
+
+    test "a template anywhere in a module is read", %{tmp_dir: dir} do
+      helper = ~S|~H"<div class=\"bg-pink-500\" />"|
+
+      for code <- [
+            "def a(assigns) do\n  :ok\nrescue\n  _ -> #{helper}\nend",
+            "def a(assigns) do\n  :ok\ncatch\n  _ -> #{helper}\nend",
+            "def a(assigns) do\n  :ok\nelse\n  _ -> #{helper}\nend",
+            "defmacro a(assigns), do: #{helper}",
+            "defmacro __using__(_) do\n  quote do\n    def b(assigns), do: #{helper}\n  end\nend",
+            "quote do\n  def b(assigns), do: #{helper}\nend",
+            "@tag #{helper}",
+            "if true do\n  def a(assigns), do: #{helper}\nend"
+          ] do
+        module = "defmodule AppWeb.Anywhere do\n  use AppWeb, :html\n#{code}\nend\n"
+
+        assert [finding] =
+                 lint(dir, %{"lib/app_web/anywhere.ex" => module}, rules: [no_raw_colors: :error]),
+               code
+
+        assert finding.message =~ "bg-pink-500"
+      end
+    end
+
+    test "a nested module keeps its own template, once", %{tmp_dir: dir} do
+      module = """
+      defmodule AppWeb.Outer do
+        use AppWeb, :html
+
+        defmodule Inner do
+          use AppWeb, :html
+          def a(assigns), do: ~H"<div class='bg-pink-500' />"
+        end
+      end
+      """
+
+      assert [_] = lint(dir, %{"lib/app_web/outer.ex" => module}, rules: [no_raw_colors: :error])
+    end
+
+    test "a ~H in a template's expression is read where it stands", %{tmp_dir: dir} do
+      for {template, position} <- [
+            {~S'<div>{if @on, do: ~H|<b class="bg-pink-500" />|}</div>', {6, 36}},
+            {~S'<.button title={~H|<b class="bg-pink-500" />|}>x</.button>', {6, 34}},
+            {~S'<%= if @on do %><%= ~H|<b class="bg-pink-500" />| %><% end %>', {6, 38}}
+          ] do
+        assert [finding] = colors(dir, template), template
+        assert finding.message =~ "bg-pink-500"
+        assert {finding.line, finding.column} == position, template
+      end
+    end
+
+    test "a ~H nested twice is read", %{tmp_dir: dir} do
+      template = ~S'<div>{~H|{~H(<b class="bg-pink-500" />)}|}</div>'
+      assert [_] = colors(dir, template)
+    end
+
+    test "a ~H in a .heex file's expression is read", %{tmp_dir: dir} do
+      files = %{
+        "lib/app_web/page.ex" => """
+        defmodule AppWeb.Page do
+          use Phoenix.Component
+          embed_templates "page/*"
+        end
+        """,
+        "lib/app_web/page/index.html.heex" =>
+          ~S'<div>{~H|<b class="bg-pink-500" />|}</div>' <> "\n"
+      }
+
+      assert [finding] = lint(dir, files, rules: [no_raw_colors: :error])
+      assert {finding.line, finding.column} == {1, 20}
+    end
+
+    test "EEx tags a block splits are read", %{tmp_dir: dir} do
+      for {template, class} <- [
+            {~S'<%= Enum.map(cn("bg-pink-500"), fn x -> %><i /><% end) %>', "bg-pink-500"},
+            {~S'<%= Enum.map(@list, fn x -> %><i /><% end, cn("bg-lime-400")) %>', "bg-lime-400"},
+            {~S'<%= foo(fn x -> %><i /><% end, opt: cn("bg-pink-500")) %>', "bg-pink-500"},
+            {~S'<%= [cn("bg-pink-500") | for x <- @l do %><i /><% end] %>', "bg-pink-500"}
+          ] do
+        assert [finding] = colors(dir, template), template
+        assert finding.message =~ class
+      end
+
+      assert colors(dir, ~S'<%= Enum.map(@list, fn x -> %><i /><% end) %>') == []
+      assert colors(dir, ~S'<%= if @on do %><i /><% end %>') == []
+    end
+
+    test "a tag whose words only look like blocks keeps its class", %{tmp_dir: dir} do
+      for template <- [
+            ~S'<%= if Keyword.has_key?(cn("bg-pink-500"), :do) do %>x<% end %>',
+            ~S'<%= if f(cn("bg-pink-500"), :fn) do %>x<% end %>',
+            ~S'<%= if f(@x.do, cn("bg-pink-500")) do %>x<% end %>',
+            ~S'<%= if do?(cn("bg-pink-500")) do %>x<% end %>',
+            ~S'<%= if f(~s[(], cn("bg-pink-500")) do %>x<% end %>',
+            ~S'<%= if f(?(, cn("bg-pink-500")) do %>x<% end %>',
+            ~S'<%= if f("(", cn("bg-pink-500")) do %>x<% end %>',
+            ~S'<%= if f(do: 1, a: cn("bg-pink-500")) do %>x<% end %>',
+            ~S'<%= Enum.map(f(:do, "(", ?(, ~s[(], cn("bg-pink-500")), fn x -> %>x<% end) %>',
+            ~S'<%= f(fn x -> %>x<% end, :end, cn("bg-pink-500")) %>',
+            ~S'<%= f(fn x -> %>x<% end, end: 1, b: cn("bg-pink-500")) %>',
+            ~S'<%= f(fn x -> %>x<% end, ~s[)], cn("bg-pink-500")) %>',
+            ~S'<%= f(fn x -> %>x<% end, ?), cn("bg-pink-500")) %>'
+          ] do
+        assert [_] = colors(dir, template), template
+      end
+    end
+
+    test "a nested ~H on a later line of a heredoc is where it stands", %{tmp_dir: dir} do
+      module = ~S'''
+      defmodule AppWeb.Page do
+        use AppWeb, :html
+        def page(assigns) do
+          ~H"""
+          {if @on do
+            ~H|<b class="bg-pink-500" />|
+          end}
+          """
+        end
+      end
+      '''
+
+      assert [finding] =
+               lint(dir, %{"lib/app_web/page.ex" => module}, rules: [no_raw_colors: :error])
+
+      assert {finding.line, finding.column} == {6, 20}
+    end
+
+    test "a section after a function's body reads its own variables", %{tmp_dir: dir} do
+      for section <- ["rescue", "catch", "else", "after"] do
+        arrow = if section == "after", do: "", else: "_ ->"
+
+        module = """
+        defmodule AppWeb.Page do
+          use AppWeb, :html
+          def page(assigns) do
+            c = "bg-pink-500"
+            foo(c)
+          #{section}
+            #{arrow}
+              c = "bg-red-500"
+              ~H|<b class={c} />|
+          end
+        end
+        """
+
+        assert [finding] =
+                 lint(dir, %{"lib/app_web/page.ex" => module}, rules: [no_raw_colors: :error]),
+               section
+
+        assert finding.message =~ "bg-red-500"
+      end
+    end
+
+    test "a variable in a quote is not the macro's", %{tmp_dir: dir} do
+      module = """
+      defmodule AppWeb.Page do
+        use AppWeb, :html
+        defmacro m do
+          c = "bg-pink-500"
+          quote do
+            def r(assigns, c), do: ~H|<b class={c} />|
+          end
+        end
+      end
+      """
+
+      assert lint(dir, %{"lib/app_web/page.ex" => module}, rules: [no_raw_colors: :error]) == []
+    end
+
+    test "a module inside another is read once, in its own right" do
+      source =
+        HeexLint.Project.Source.parse("lib/a.ex", """
+        defmodule A do
+          defmodule B do
+            def b(assigns), do: ~H"<i />"
+          end
+        end
+        """)
+
+      assert [%{module: "A.B"}] = source.templates
+    end
+
+    test "a variant config in a name has every value read", %{tmp_dir: dir} do
+      module = fn read ->
+        """
+        defmodule AppWeb.Code do
+          @c %{base: "bg-pink-500"}
+          def a do
+            x = %{meta: "bg-pink-500"}
+            _ = x
+            tv(#{read})
+          end
+        end
+        """
+      end
+
+      for read <- ["x", "@c"] do
+        assert [_] =
+                 lint(dir, %{"lib/app_web/code.ex" => module.(read)},
+                   rules: [no_raw_colors: {:error, variant_functions: ["tv"]}]
+                 ),
+               read
+      end
+    end
+
+    test "a merge call's map survives what is around it", %{tmp_dir: dir} do
+      opts = [variant_functions: ["tv"]]
+
+      # Its keys are read after a call inside it ends, and not inside a variant call.
+      assert [_] = colors(dir, ~S|<div title={cn(cn("p-1"), %{"bg-pink-500" => 1})} />|, opts)
+
+      assert [_] =
+               colors(
+                 dir,
+                 ~S|<div title={cn(tv(%{base: "p-1"}), %{"bg-pink-500" => 1})} />|,
+                 opts
+               )
+
+      assert colors(dir, ~S|<div title={cn(tv(%{base: %{"bg-pink-500" => "p-1"}}))} />|, opts) ==
+               []
+
+      # And not after the merge call ends.
+      assert colors(dir, ~S|<div class={[cn("p-1"), %{"bg-pink-500" => 1}]} />|) == []
+      # An update has its base's keys, and Map.merge and Map.put hand them on.
+      assert [_] = colors(dir, ~S[<div title={cn(%{%{"bg-pink-500" => 1} | "p-1" => 2})} />])
+      assert [_] = colors(dir, ~S|<div title={cn(Map.merge(%{"bg-pink-500" => 1}, %{}))} />|)
+      assert [_] = colors(dir, ~S|<div title={cn(Map.put(%{}, "bg-pink-500", 1))} />|)
+    end
+
+    test "a variant call in a merge call does not read a name's keys", %{tmp_dir: dir} do
+      module = """
+      defmodule AppWeb.Code do
+        def a do
+          x = %{"bg-pink-500" => 1}
+          cn(tv(%{base: x}))
+        end
+      end
+      """
+
+      assert lint(dir, %{"lib/app_web/code.ex" => module},
+               rules: [no_raw_colors: {:error, variant_functions: ["tv"]}]
+             ) == []
+    end
+
+    test "a ~s heredoc's text is read and its holes are dynamic", %{tmp_dir: dir} do
+      template = ~s(<.button class={~s'''\n  bg-pink-500 \#{@x}\n  '''}>x</.button>)
+      assert [_] = colors(dir, template)
+
+      assert [_] =
+               lint(dir, %{"lib/app_web/live/page_live.ex" => live(template)},
+                 rules: [require_static_classes: :error]
+               )
+    end
+
+    test "a split tag's class is where it stands", %{tmp_dir: dir} do
+      assert [finding] = colors(dir, ~S'<%= f(fn x -> %><i /><% end, cn("bg-pink-500")) %>')
+      assert {finding.line, finding.column} == {6, 38}
+    end
+
+    test "a variant config reads only what holds classes", %{tmp_dir: dir} do
+      for config <- [
+            ~S|%{meta: "bg-pink-500"}|,
+            ~S|%{default_variants: %{size: "bg-pink-500"}}|,
+            ~S|%{compound_variants: [%{size: "bg-pink-500", class: "p-1"}]}|,
+            ~S|[meta: "bg-pink-500"]|
+          ] do
+        assert colors(dir, "<div title={tv(#{config})} />", variant_functions: ["tv"]) == [],
+               config
+      end
+
+      for config <- [
+            ~S|%{base: "bg-pink-500"}|,
+            ~S|%{"base" => "bg-pink-500"}|,
+            ~S|%{class: "bg-pink-500"}|,
+            ~S|%{slots: %{title: "bg-pink-500"}}|,
+            ~S|%{variants: %{size: %{sm: "bg-pink-500"}}}|,
+            ~S|%{compound_variants: [%{size: "sm", class: "bg-pink-500"}]}|,
+            ~S|%{compound_slots: [[slots: ["title"], class_name: "bg-pink-500"]]}|,
+            ~S|[base: "bg-pink-500"]|
+          ] do
+        assert [finding] = colors(dir, "<div title={tv(#{config})} />", variant_functions: ["tv"]),
+               config
+
+        assert finding.message =~ ~s("bg-pink-500")
+      end
+    end
+
+    test "a merge call reads a map's keys and not its values", %{tmp_dir: dir} do
+      assert [finding] = colors(dir, ~S|<div class={cn(%{"bg-pink-500" => @on})} />|)
+      assert finding.message =~ ~s("bg-pink-500")
+      assert {finding.line, finding.column} == {6, 23}
+
+      assert [finding] =
+               colors(
+                 dir,
+                 ~S|<div class={cn(["p-1", %{"p-2" => "bg-pink-500"}, %{"bg-lime-400" => 1}])} />|
+               )
+
+      assert finding.message =~ ~s("bg-lime-400")
+
+      assert [_] = colors(dir, ~S[<div title={cn(%{@a | "bg-pink-500" => @on})} />])
+    end
+
+    test "an atom key is a class at its map, and a keyword list holds options", %{tmp_dir: dir} do
+      assert [finding] = colors(dir, ~S|<div class={cn(%{"bg-pink-500": @on})} />|)
+      assert {finding.line, finding.column} == {6, 20}
+
+      assert colors(dir, ~S|<div class={cn("p-1", "bg-pink-500": @on)} />|) == []
+    end
+
+    test "a map outside a merge call has no class keys", %{tmp_dir: dir} do
+      assert colors(dir, ~S|<div data-x={%{"bg-pink-500" => @on}} />|) == []
+    end
+
+    test "a variant call inside a merge call keeps its rule", %{tmp_dir: dir} do
+      assert colors(dir, ~S|<div title={cn(tv(%{meta: 1, "bg-pink-500" => 1}))} />|,
+               variant_functions: ["tv"]
+             ) == []
+    end
+
+    test "a ~s hole is read as a string's is", %{tmp_dir: dir} do
+      assert [finding] = colors(dir, ~S|<div class={~s(p-2 #{"bg-pink-500"})} />|)
+      assert finding.message =~ ~s("bg-pink-500")
+
+      assert [finding] = colors(dir, ~S|<div class={~s(bg-pink-500 #{@x} p-1)} />|)
+      assert {finding.line, finding.column} == {6, 20}
+
+      assert [finding] = colors(dir, ~S|<div class={~s(#{@x} bg-pink-500)} />|)
+      assert {finding.line, finding.column} == {6, 26}
+    end
+
+    test "a ~s hole on an assigned table reads it", %{tmp_dir: dir} do
+      module = fn read ->
+        """
+        defmodule AppWeb.Tabled do
+          use AppWeb, :html
+
+          def render(assigns) do
+            assigns = assign(assigns, :t, %{a: "bg-pink-500"})
+            ~H"<.button class={~s(p-2 \#{#{read}})}>x</.button>"
+          end
+        end
+        """
+      end
+
+      for read <- ["@t.a", "@t[:a]"] do
+        assert [finding] =
+                 lint(dir, %{"lib/app_web/tabled.ex" => module.(read)},
+                   rules: [no_raw_colors: :error]
+                 ),
+               read
+
+        assert finding.message =~ "bg-pink-500"
+      end
+
+      assert [finding] =
+               lint(dir, %{"lib/app_web/tabled.ex" => module.("@t[@v]")},
+                 rules: [require_static_classes: :error]
+               )
+
+      assert finding.message =~ "cannot be checked"
     end
 
     test "two modules on one line keep their own code", %{tmp_dir: dir} do
@@ -530,7 +892,7 @@ defmodule HeexLint.Rules.NoRawColorsTest do
       end
 
       assert [_] =
-               colors(dir, ~S[<div title={tv(%{%{a: "bg-pink-500"} | b: "p-1"})} />],
+               colors(dir, ~S[<div title={tv(%{%{base: "bg-pink-500"} | class: "p-1"})} />],
                  variant_functions: ["tv"]
                )
     end
@@ -571,11 +933,6 @@ defmodule HeexLint.Rules.NoRawColorsTest do
     test "do not add to a template that does not parse, or code that does not", %{tmp_dir: dir} do
       assert colors(dir, ~S|<div title={cn("bg-pink-500"} />|) == []
       assert colors(dir, ~S|<div title={cn(} />|) == []
-    end
-
-    test "a tag a block leaves open does not parse alone, so it is unread", %{tmp_dir: dir} do
-      assert colors(dir, ~S|<%= Enum.map(cn("bg-pink-500"), fn x -> %><b /><% end) %>|) == []
-      assert colors(dir, ~S|<%= Enum.map(@a, fn x -> %><b /><% end, cn("bg-pink-500")) %>|) == []
     end
 
     test "are checked anywhere in Elixir code", %{tmp_dir: dir} do
@@ -1304,22 +1661,24 @@ defmodule HeexLint.Rules.NoRawColorsTest do
       end
     end
 
-    test "a template's merge call stays unread where it was", %{tmp_dir: dir} do
-      assert templated(
-               dir,
-               ~S|def a(assigns), do: ~H"<div class={cn(%{\"bg-pink-500\" => @on})} />"|
-             ) ==
-               []
+    test "a template's merge call reads a map's keys", %{tmp_dir: dir} do
+      assert [_] =
+               templated(
+                 dir,
+                 ~S|def a(assigns), do: ~H"<div class={cn(%{\"bg-pink-500\" => @on})} />"|
+               )
 
-      assert templated(dir, ~S"""
-             def a(assigns), do: ~H"<div class={cn(tones())} />"
+      assert [_] =
+               templated(dir, ~S"""
+               def a(assigns), do: ~H"<div class={cn(tones())} />"
 
-             defp tones, do: %{"bg-pink-500" => true}
-             """) == []
+               defp tones, do: %{"bg-pink-500" => true}
+               """)
     end
 
-    test "class map keys stay out of the default scan", %{tmp_dir: dir} do
-      assert scanned(dir, ~S|cn(["p-1", %{"bg-pink-500" => on}])|, no_raw_colors: :error) == []
+    test "class map keys are in the default scan, each once", %{tmp_dir: dir} do
+      assert [_] = scanned(dir, ~S|cn(["p-1", %{"bg-pink-500" => on}])|, no_raw_colors: :error)
+      assert [_] = scanned(dir, ~S|cn(["p-1", %{"bg-pink-500" => on}])|)
     end
   end
 

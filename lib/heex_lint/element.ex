@@ -135,10 +135,18 @@ defmodule HeexLint.Element do
         for {:expr, marker, code, meta} <- eex,
             do: {:expr, List.to_string(code), eex_code_start(marker, meta)}
 
-      # <%= if cn(@tones) do %> needs its end to parse.
+      # <%= if cn(@tones) do %> needs its end to parse, and
+      # <%= Enum.map(cn(@tones), fn x -> %> what else it leaves open.
       opening =
-        for {:start_expr, marker, code, meta} <- eex,
-            do: {:expr, List.to_string(code) <> "\nend", eex_code_start(marker, meta)}
+        for {:start_expr, marker, code, meta} <- eex do
+          {:expr, closed(List.to_string(code)), eex_code_start(marker, meta)}
+        end
+
+      # <% end, cn(@tones)) %> goes on after the block it closes.
+      closing =
+        for {:end_expr, marker, code, meta} <- eex,
+            expression = after_end(List.to_string(code), eex_code_start(marker, meta)),
+            do: expression
 
       # <% "a" -> %> needs a function around it, placed so that its code stays
       # where it is. <% else %> does not parse that way, and has nothing to read.
@@ -148,12 +156,78 @@ defmodule HeexLint.Element do
           {:expr, "fn " <> List.to_string(code) <> "\nnil\nend", {line, column - 3}}
         end
 
-      attributes ++ text ++ embedded ++ opening ++ clauses
+      attributes ++ text ++ embedded ++ opening ++ clauses ++ closing
     else
       {:error, _message} -> []
     end
   rescue
     _ in [Tokenizer.ParseError, EEx.SyntaxError] -> []
+  end
+
+  # What opens or closes something, past strings, sigils, char literals and the likes of
+  # `:do`, `@x.fn` and `end?`.
+  @nesting ~r/"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|~[a-zA-Z]+(?:\((?:\\.|[^)\\])*\)|\[(?:\\.|[^\]\\])*\]|\{(?:\\.|[^}\\])*\}|<(?:\\.|[^>\\])*>|\/(?:\\.|[^\/\\])*\/|\|(?:\\.|[^|\\])*\|)|(?<!\w)\?\\?.|(?<![:.\w?!@])(?:do|fn|end)(?![\w?!:])|<<|>>|[(\[{)\]}]/
+
+  defp nesting(code), do: @nesting |> Regex.scan(code, return: :index) |> List.flatten()
+
+  defp closed(code) do
+    with_end = code <> "\nend"
+    if match?({:ok, _}, HeexLint.Code.parse(with_end)), do: with_end, else: code <> closers(code)
+  end
+
+  defp closers(code) do
+    stack =
+      code
+      |> nesting()
+      |> Enum.reduce([], fn {start, length}, stack ->
+        case binary_part(code, start, length) do
+          token when token in ["end", ")", "]", "}", ">>"] -> Enum.drop(stack, 1)
+          token when token in ["do", "fn", "(", "[", "{", "<<"] -> [token | stack]
+          _string -> stack
+        end
+      end)
+
+    Enum.map_join(stack, fn
+      "do" -> "\nend"
+      "fn" -> "\nnil\nend"
+      "(" -> ")"
+      "[" -> "]"
+      "{" -> "}"
+      "<<" -> ">>"
+    end)
+  end
+
+  # What a tag's code holds after the `end` it starts with, up to what closes something
+  # the block's opening tag left open, as a list placed so that its code stays where it is.
+  defp after_end(code, {line, column}) do
+    with [closed] <- Regex.run(~r/^[ \t]*end\b[ \t,)\]}]*/, code),
+         rest = binary_part(code, byte_size(closed), byte_size(code) - byte_size(closed)),
+         kept when kept != "" <- rest |> balanced() |> String.trim_trailing() do
+      {:expr, "[" <> kept <> "]", {line, column + byte_size(closed) - 1}}
+    else
+      _ -> nil
+    end
+  end
+
+  defp balanced(code) do
+    code
+    |> nesting()
+    |> Enum.reduce_while(0, fn {start, length}, depth ->
+      case binary_part(code, start, length) do
+        token when token in ["do", "fn", "(", "[", "{", "<<"] ->
+          {:cont, depth + 1}
+
+        token when token in ["end", ")", "]", "}", ">>"] ->
+          if depth == 0, do: {:halt, {:cut, start}}, else: {:cont, depth - 1}
+
+        _string ->
+          {:cont, depth}
+      end
+    end)
+    |> case do
+      {:cut, at} -> binary_part(code, 0, at)
+      _depth -> code
+    end
   end
 
   # EEx places its tokens at their `<%`.

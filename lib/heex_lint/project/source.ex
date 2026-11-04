@@ -3,7 +3,7 @@ defmodule HeexLint.Project.Source do
   One parsed source file: its modules, function components and templates.
   """
 
-  alias HeexLint.{Code, Template}
+  alias HeexLint.{Code, Element, Template}
   alias HeexLint.Project.{Component, ModuleInfo}
 
   defstruct [
@@ -64,7 +64,9 @@ defmodule HeexLint.Project.Source do
         %{source | error: "#{path}: not valid UTF-8"}
 
       ext == ".heex" ->
-        %{source | templates: [%Template{file: path, source: contents}]}
+        template = %Template{file: path, source: contents}
+        nested = nested_templates(template, %{file: path, name: nil}, nil, nil)
+        %{source | templates: [template | nested]}
 
       ext in [".ex", ".exs"] ->
         parse_elixir(source)
@@ -187,7 +189,7 @@ defmodule HeexLint.Project.Source do
 
   defp statement({:@, _, [{name, _, [value]}]}, {module, pending}) when is_atom(name) do
     attributes = Map.update(module.attributes, Atom.to_string(name), [value], &(&1 ++ [value]))
-    {%{module | attributes: attributes}, pending}
+    {loose_templates(%{module | attributes: attributes}, value), pending}
   end
 
   defp statement({:attr, meta, [name | rest]}, {module, pending}) do
@@ -249,7 +251,12 @@ defmodule HeexLint.Project.Source do
         module = %{module | functions: functions}
 
         module =
-          if kind in [:def, :defp], do: component(module, name, clause, pending), else: module
+          if kind in [:def, :defp],
+            do: component(module, name, clause, rest, pending),
+            else: %{
+              module
+              | templates: module.templates ++ block_templates(rest, module, name, clause)
+            }
 
         {module, []}
 
@@ -258,7 +265,19 @@ defmodule HeexLint.Project.Source do
     end
   end
 
-  defp statement(_other, acc), do: acc
+  defp statement(other, {module, pending}), do: {loose_templates(module, other), pending}
+
+  # A template in a quote or a module attribute, or in a `def` inside an `if`, has no
+  # function to follow its variables through. A module inside one of those is not read.
+  defp loose_templates(module, ast) do
+    ast
+    |> Macro.prewalk(fn
+      {kind, _, _} when kind in [:defmodule, :defimpl, :defprotocol] -> nil
+      node -> node
+    end)
+    |> sigils(module, nil, nil)
+    |> then(&%{module | templates: module.templates ++ &1})
+  end
 
   defp add_aliases(module, {{:., _, [base, :{}]}, _, children}, _opts) do
     case Code.alias_name(base) do
@@ -315,9 +334,9 @@ defmodule HeexLint.Project.Source do
 
   # A def is a function component when attrs or slots precede it or its
   # body renders ~H. Every ~H in its body becomes a template.
-  defp component(module, name, clause, pending) do
+  defp component(module, name, clause, blocks, pending) do
     arity = length(clause.args)
-    templates = if clause.body, do: sigils(clause.body, module, name, clause), else: []
+    templates = block_templates(blocks, module, name, clause)
 
     existing = Map.get(module.components, name)
 
@@ -343,9 +362,28 @@ defmodule HeexLint.Project.Source do
     end
   end
 
+  # The body and any `rescue`, `catch`, `else` and `after`. What the body binds is not in
+  # scope in those, so each is read as a body of its own.
+  defp block_templates(blocks, module, name, clause) do
+    blocks
+    |> Enum.flat_map(&Code.keyword/1)
+    |> Enum.flat_map(fn
+      {:do, body} ->
+        sigils(body, module, name, clause)
+
+      {_section, body} ->
+        own = %{clause | body: body, id: System.unique_integer([:positive])}
+        sigils(body, module, name, own)
+    end)
+  end
+
   defp sigils(body, module, name, clause) do
     {_, templates} =
       Macro.prewalk(body, [], fn
+        # A variable in a quote is not the one the function around it binds.
+        {:quote, _, args}, acc when is_list(args) and clause != nil ->
+          {nil, Enum.reverse(sigils(args, module, name, nil)) ++ acc}
+
         {:sigil_H, meta, [{:<<>>, string_meta, [text]}, _modifiers]} = node, acc
         when is_binary(text) ->
           template = %{
@@ -355,13 +393,31 @@ defmodule HeexLint.Project.Source do
               clause: clause
           }
 
-          {node, [template | acc]}
+          nested = nested_templates(template, module, name, clause)
+          {node, Enum.reverse([template | nested]) ++ acc}
 
         node, acc ->
           {node, acc}
       end)
 
     Enum.reverse(templates)
+  end
+
+  # A `~H` in a template's `{...}`. Parsed where it stands, its own positions are the file's.
+  defp nested_templates(template, module, name, clause) do
+    if String.contains?(template.source, "~H") do
+      # A heredoc's lines have lost their indentation, which is where they stand in the file.
+      # Elixir 1.18 adds a `:column` to every line, so the first is placed with spaces too.
+      indent = "\n" <> String.duplicate(" ", template.indentation)
+
+      for {:expr, code, {line, column}} <- Element.expressions(template),
+          code = String.duplicate(" ", max(column - 1, 0)) <> String.replace(code, "\n", indent),
+          {:ok, ast} <- [Code.parse(code, line: line)],
+          nested <- sigils(ast, module, name, clause),
+          do: nested
+    else
+      []
+    end
   end
 
   @doc "The text of line `n` (1-based), or an empty string."

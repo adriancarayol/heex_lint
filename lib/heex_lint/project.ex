@@ -11,7 +11,7 @@ defmodule HeexLint.Project do
   `ignore_imports` excludes.
   """
 
-  alias HeexLint.{Code, Template, Theme}
+  alias HeexLint.{Code, Collector, Element, Template, Theme}
   alias HeexLint.Project.{Component, ModuleInfo, Source}
 
   defstruct root: nil,
@@ -807,7 +807,13 @@ defmodule HeexLint.Project do
           handoff = handoff(attribute, component),
           do: {resolve(project, template.module, element.type, element.name), handoff}
 
-    read = for {_target, {_lands, reads}} <- handoffs, prop <- reads, do: prop
+    # A prop read anywhere in a template is named, so a spread does not carry it past a
+    # tag it reaches nothing through.
+    read =
+      for template <- component.templates,
+          {:expr, code, _position} <- Element.expressions(template),
+          prop <- class_props_read(code, component),
+          do: prop
 
     declared =
       for %{name: name, global: false} <- component.attrs,
@@ -845,40 +851,84 @@ defmodule HeexLint.Project do
   # attribute hands on the assigns its value reads under its own name, and a map
   # spread onto the tag under theirs.
   defp lands_as(:spread, prop, component), do: if(!Component.attr(component, prop), do: prop)
+
+  defp lands_as({:keys, entries}, prop, _component) do
+    Enum.find_value(entries, fn {key, reads} -> if prop in reads, do: key end)
+  end
+
   defp lands_as({lands, reads}, prop, _component), do: if(prop in reads, do: lands || prop)
 
   # What an attribute hands on: `:spread` for `{@rest}` with `attr :rest, :global`,
-  # `{name, assigns}` for `class={["w-full", @class]}`, `{nil, assigns}` for
-  # `{%{class: @class}}`.
+  # `{name, assigns}` for `class={["w-full", @class]}`, `{:keys, [{key, assigns}]}` for
+  # `{%{class: @title_class}}`, which lands under the key, and `{nil, assigns}` for a
+  # spread nothing can read the keys of.
   defp handoff(%{name: :root, value: {:expr, code, _}}, component) do
     with [_, name] <- Regex.run(~r/^\s*@(\w+)\s*$/, code),
          %{global: true} <- Component.attr(component, name) do
       :spread
     else
-      _ -> {nil, class_props_read(code)}
+      _ -> spread_handoff(code, component)
     end
   end
 
-  defp handoff(%{name: name, value: {:expr, code, _}}, _component) when is_binary(name) do
-    if HeexLint.Sites.class_attribute?(name), do: {name, class_props_read(code)}
+  defp handoff(%{name: name, value: {:expr, code, _}}, component) when is_binary(name) do
+    if HeexLint.Sites.class_attribute?(name), do: {name, class_props_read(code, component)}
   end
 
   defp handoff(_attribute, _component), do: nil
 
-  # The class props an expression reads: `@name`, `assigns.name`, `assigns[:name]`,
-  # `Map.get(assigns, :name)` and `Map.fetch!(assigns, :name)`.
-  defp class_props_read(code) do
-    case Code.parse(code) do
-      {:ok, ast} ->
-        ast
-        |> Macro.prewalk([], fn node, acc -> {node, assign_read(node) ++ acc} end)
-        |> elem(1)
-        |> Enum.filter(&HeexLint.Sites.class_attribute?/1)
-
-      {:error, _} ->
-        []
+  defp spread_handoff(code, component) do
+    with {:ok, ast} <- Code.parse(code),
+         entries when is_list(entries) <- Collector.spread_entries(ast) do
+      {:keys,
+       for {key, value} <- entries, HeexLint.Sites.class_attribute?(key) do
+         {key, ast_class_props(value, component)}
+       end}
+    else
+      _ -> {nil, class_props_read(code, component)}
     end
   end
+
+  # The class props an expression reads: `@name`, `assigns.name`, `assigns[:name]`,
+  # `Map.get(assigns, :name)` and `Map.fetch!(assigns, :name)`, and what it reads out of
+  # global attributes, as `@rest[:class]`.
+  defp class_props_read(code, component) do
+    case Code.parse(code) do
+      {:ok, ast} -> ast_class_props(ast, component)
+      {:error, _} -> []
+    end
+  end
+
+  defp ast_class_props(ast, component) do
+    ast
+    |> Macro.prewalk([], fn node, acc ->
+      {node, assign_read(node) ++ global_read(node, component) ++ acc}
+    end)
+    |> elem(1)
+    |> Enum.filter(&HeexLint.Sites.class_attribute?/1)
+  end
+
+  defp global_read({{:., _, [Access, :get]}, _, [map, key]}, component),
+    do: global_member(map, key, component)
+
+  defp global_read({{:., _, [{:__aliases__, _, [:Map]}, fun]}, _, [map, key | _]}, component)
+       when fun in [:get, :fetch!],
+       do: global_member(map, key, component)
+
+  defp global_read({{:., _, [map, key]}, _, []}, component) when is_atom(key),
+    do: global_member(map, key, component)
+
+  defp global_read(_node, _component), do: []
+
+  defp global_member({:@, _, [{name, _, context}]}, key, component)
+       when is_atom(name) and is_atom(context) do
+    case {Component.attr(component, Atom.to_string(name)), Code.name(key)} do
+      {%{global: true}, member} when is_binary(member) -> [member]
+      _ -> []
+    end
+  end
+
+  defp global_member(_map, _key, _component), do: []
 
   defp assign_read({:@, _, [{name, _, context}]}) when is_atom(name) and is_atom(context),
     do: [Atom.to_string(name)]

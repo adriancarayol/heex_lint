@@ -314,12 +314,27 @@ defmodule HeexLint.HostileInputTest do
 
     # The value would differ from the source, and a fix writes to the source.
     test "a long :for is read once for what is inside it", %{tmp_dir: dir} do
-      # Long enough that hashing the :for for each element inside it takes over the limit.
-      items = Enum.map_join(1..170_000, ", ", &~s("item-#{&1}"))
-      children = String.duplicate(~S(<div class={@c}></div>), 16_000)
+      items = Enum.map_join(1..20_000, ", ", &~s("item-#{&1}"))
+      children = String.duplicate(~S(<div class={@c}></div>), 2_000)
       template = ~s(<section :for={x <- [#{items}]}>#{children}</section>)
 
       quick(fn -> lint(dir, page(template), rules: [no_raw_colors: :error]) end)
+    end
+
+    # Hashing the code on each question costs seconds here, and a lint this long is
+    # too slow on a loaded machine to tell apart by time.
+    test "asking what a long :for binds does not cost its length" do
+      code = ~s(x <- ["#{repeat("a", 2_000_000)}"])
+      parent = %HeexLint.Element{attributes: [%{name: ":for", value: {:expr, code, {1, 1}}}]}
+      child = %HeexLint.Element{attributes: []}
+
+      quick(
+        fn ->
+          assert Collector.bound_names(child, [parent]) == [:x]
+          for _ <- 1..16_000, do: Collector.bound_names(child, [parent])
+        end,
+        2_000
+      )
     end
 
     test "one line of many literals costs its length", %{tmp_dir: dir} do

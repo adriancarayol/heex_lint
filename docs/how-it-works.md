@@ -275,16 +275,17 @@ Files come from `inputs`, without any path that has a directory named `deps` in 
   A prop renamed in the function body, as in `assign(assigns, :merged_class, ...)`
   reading `assigns.class`, is not followed to `@merged_class`, and a wrapper's
   `<:title class={@title_class}>` inside a component is not followed either.
-- **Class map keys.** `cn(%{"bg-pink-500" => @on})` is read only under
-  `scan_all_strings`, and there not when the map is written in a template.
-- **Templates outside a `def`'s body.** Only the `def` and `defp` statements of a module
-  collect templates. A `~H` in a template's `{...}`, as in
-  `{if @on, do: ~H|<b class="bg-pink-500" />|}`, is not read by any rule, and nor is one in a
-  module attribute, a `defmacro`, a `def` inside an `if`, a `quote` outside a `def` or a
-  `def`'s `rescue`, nor directly in a `defimpl`. A module inside a `defimpl` is read as any
-  other module is.
-- **EEx tags a block splits.** `<%= Enum.map(cn("bg-pink-500"), fn x -> %>` and
-  `<% end, cn("bg-pink-500")) %>` do not parse alone, so no rule reads what is in them.
+- **Keyword lists in a merge call.** A map's keys are read as classes, as in
+  `cn(%{"bg-pink-500" => @on})`. `cn(rounded: @on)` is not, since a keyword list is how
+  Elixir passes options.
+- **Templates with no function around them.** A `~H` in a module attribute, a `quote` outside
+  a `def` or a `def` inside an `if` is read, but what it does not hold itself cannot be
+  followed, so a variable in it is dynamic. A `~H` directly in a `defimpl`, or a module
+  inside an `if` or a `quote`, is not read by any rule. A module inside a `defimpl` is read
+  as any other module is.
+- **EEx tags a block splits.** `<% end) |> cn() %>` does not parse once its `end` is taken
+  off, so no rule reads what is in it. `<% end, cn("bg-pink-500")) %>` is read, and so is
+  `<%= Enum.map(cn("bg-pink-500"), fn x -> %>`.
 - **Patterns.** `%{a: s} = %{a: "color: red"}` does not read `s`, which is dynamic.
 - **Plain CSS.** Stylesheets and `@apply` are outside these rules.
 - **Locally rebuilt components** are not the design system; token rules still

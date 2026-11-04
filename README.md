@@ -204,7 +204,7 @@ options set before it.
 | `ignore_imports`    | Regexes on module names that never are. Takes precedence.                  |
 | `theme_imports`     | Regexes on `@import` specifiers whose stylesheets count as your theme, for a [design system installed as a package](docs/design-systems.md#a-design-system-installed-as-a-package). |
 | `merge_functions`   | Functions whose arguments contain classes, such as `"classes"`.            |
-| `variant_functions` | Functions whose map values contain classes.                                |
+| `variant_functions` | Functions whose config holds classes, under `base`, `variants` and the like. |
 | `note`              | Appended to every rule's message.                                          |
 | `tailwind_bin`      | The standalone Tailwind binary, when it is not in `_build/`.               |
 

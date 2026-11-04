@@ -63,7 +63,7 @@ defmodule HeexLint.Policy do
         built = entries_built(lists, theme, generated)
 
         Enum.flat_map(lists, fn entries ->
-          check_allow_entries(entries, theme, rule)
+          if rule != "no_restyle", do: check_allow_entries(entries, theme, rule)
           check_entries(entries, theme, built)
         end)
       end
