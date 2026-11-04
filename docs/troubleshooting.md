@@ -70,8 +70,9 @@ If that happens, look for one of the two above.
 A warning means Tailwind was found and could not answer: the theme does not build, or
 `node` exited with no binary to fall back on. That stylesheet then uses the grammar too.
 Fix the warning before relying on a clean result. Through the standalone binary, a class
-that makes a plugin throw takes the stylesheet there when its own `@source` reaches the
-class, since Tailwind cannot build it at all; the project's real build fails the same way.
+that makes a plugin throw takes the stylesheet there when the build reaches the class,
+through its own `@source` or through Tailwind's automatic detection from its directory, since
+Tailwind cannot build it at all; the project's real build fails the same way.
 
 If the warning says the Tailwind process did not answer within so many seconds, the
 theme's build took longer than the wait: 60 seconds for a stylesheet's first answer through Node and 30 for later
@@ -93,12 +94,13 @@ a cycle of `@import`s does this. On a machine that is only slow, raise the wait 
   directory itself, `lib`, which is expanded.
 - **`literal_alloc: Cannot allocate ... bytes`.** The VM ran out of room for the project it
   keeps while linting, at about 1 GB. Generated code gets there first: an ordinary project
-  needs over about 20 MB of source, and a file binding a value through a very long
+  needs about 20 MB of source, more or less by how it is written, and a file binding a value
+  through a very long
   `a = b = c = ...` gets there alone. Take the generated files out of `inputs`.
-- **An exception from a class or value** is a bug: please report it. Two shapes that still
-  stop a run are a number of 1 MB or more in hexadecimal, octal or binary, such as
-  `p-0xfff...`, and a map update passed to a function in `variant_functions`, as in
-  `tv(%{assigns.base | a: "..."})`. In `allow_dynamic_identifiers`, so does an improper list
+- **An exception from a class or value** is a bug: please report it. One shape that still
+  stops a run is a number past the VM's integer limit, which is about 1 MB of hexadecimal,
+  1.4 million octal digits or 4.2 million binary ones, such as `p-0xfff...`. In
+  `allow_dynamic_identifiers`, so does an improper list
   or a string that is not valid UTF-8.
 
 ## A class is reported unknown but has CSS
@@ -118,7 +120,7 @@ Under `@import "tailwindcss" prefix(tw)`, a class generates CSS only with the
 prefix first: `tw:hover:flex`, not `flex` or `hover:tw:flex`.
 
 A class longer than 10,000 characters, with more than 64 variants, or that makes a
-plugin throw is not checked at all.
+plugin throw is not judged by `no_unknown_classes`. The other rules still read it.
 
 ## Findings in a value the linter cannot read
 

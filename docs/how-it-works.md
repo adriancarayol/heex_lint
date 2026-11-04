@@ -192,8 +192,10 @@ A class longer than 10,000 characters or with more than 64 variants is not judge
 Tailwind can stall or overflow its stack on one. Neither is a class that makes a plugin
 throw: Node asks about it alone, and the standalone binary, where a throw fails the
 whole build, searches for it once a build fails and the theme builds without any
-classes. When the stylesheet's own `@source` reaches that class, the theme does not
-build without it either, so that stylesheet uses the grammar, with a warning. A build
+classes. When the build reaches that class, through the stylesheet's own `@source` or
+through Tailwind's automatic detection from the stylesheet's directory, as for a theme at
+the project root or under `lib/`, the theme does not build without it either, so that
+stylesheet uses the grammar, with a warning. A build
 with `@import`s that reach more than 10,000 stylesheets is refused through Node, as
 those form a cycle with fan-out: Tailwind reads a file again wherever it is imported and
 stops only 100 levels down. The standalone binary is not tried after that. Without Node
@@ -239,13 +241,15 @@ unreadable either: it is only looked through for raw colors.
 
 ## Where it looks
 
-- `class` and other class attributes (`input_class`, `classes`...) on HTML
+- `class` and other class attributes (`input_class`, `classNames`...) on HTML
   tags, components and slots.
 - `style` attributes and `<style>` elements; SVG color attributes `fill`,
-  `stroke`, `color`, `stop-color`, `flood-color` and `lighting-color`.
+  `stroke`, `color`, `stop-color`, `flood-color` and `lighting-color`, quoted or as a
+  literal in braces, `fill={"red"}`.
 - `attr :class` defaults.
-- Merge-function calls anywhere in a file. In Elixir code, that is in a function or out of
-  one, such as a module attribute or a default argument. In a template, it is in a `{...}`,
+- Merge-function calls anywhere a file's code is read. In Elixir code, that is in a function,
+  its `rescue` and the like included, or out of one, such as a module attribute or a default
+  argument. In a template, it is in a `{...}`,
   `<%= ... %>`, `:if` or `:for`, whatever surrounds the call. A call a class attribute reads
   is that attribute's, so a component's contract decides it. Any other call, as in
   `title={cn("bg-pink-500")}` or `class={foo(cn("bg-pink-500"))}`, is checked on no
@@ -255,7 +259,7 @@ unreadable either: it is only looked through for raw colors.
   with a hyphen: in Elixir code, in quoted attribute values, and in a template's `{...}` and
   `<%= ... %>`, `:if` and `:for` included. Plain map keys are skipped. Text between tags, an
   interpolated string and a sigil are not literals here, though a class site reads the last
-  two.
+  two. A `@doc` string is one.
 
 Files come from `inputs`, without any path that has a directory named `deps` in it.
 
@@ -272,8 +276,11 @@ Files come from `inputs`, without any path that has a directory named `deps` in 
   `<:title class={@title_class}>` inside a component is not followed either.
 - **Class map keys.** `cn(%{"bg-pink-500" => @on})` is read only under
   `scan_all_strings`, and there not when the map is written in a template.
-- **Templates inside expressions.** A `~H` in a template's `{...}`, as in
-  `{if @on, do: ~H|<b class="bg-pink-500" />|}`, is not read by any rule.
+- **Templates outside a `def`'s body.** Only the `def` and `defp` statements of a module
+  collect templates. A `~H` in a template's `{...}`, as in
+  `{if @on, do: ~H|<b class="bg-pink-500" />|}`, is not read by any rule, and nor is one in a
+  module attribute, a `defmacro`, a `def` inside an `if`, a `defimpl`, a `quote` or a `def`'s
+  `rescue`.
 - **EEx tags a block splits.** `<%= Enum.map(cn("bg-pink-500"), fn x -> %>` and
   `<% end, cn("bg-pink-500")) %>` do not parse alone, so no rule reads what is in them.
 - **Patterns.** `%{a: s} = %{a: "color: red"}` does not read `s`, which is dynamic.

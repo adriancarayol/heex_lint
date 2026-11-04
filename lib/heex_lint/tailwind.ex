@@ -18,9 +18,10 @@ defmodule HeexLint.Tailwind do
   When neither works, `unknown/2` returns nil and rules fall back to the
   class grammar. Answers are cached for the run, per stylesheet.
 
-  Neither process can outlive the linter or take longer than a deadline: 60
-  seconds for a stylesheet's first answer and 30 for later ones, and
-  `HEEX_LINT_TAILWIND_TIMEOUT`, a number of milliseconds, replaces both. A
+  Neither process can outlive the linter or take longer than a deadline: through
+  Node, 60 seconds for a stylesheet's first answer and 30 for later ones, and through
+  the standalone binary 60 for each question. `HEEX_LINT_TAILWIND_TIMEOUT`, a number of
+  milliseconds, replaces these. A
   process past its deadline is killed and that stylesheet uses the grammar for
   the rest of the run, with a warning. Two such failures in a row turn the
   oracle off. Node only starts once a question needs it.

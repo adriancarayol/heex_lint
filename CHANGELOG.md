@@ -45,8 +45,8 @@ Each of these reports something that passed before.
   `<div>{cn("bg-pink-500")}</div>`, `{render_slot(@a, cn("bg-pink-500"))}`, `<%= %>`, `<% %>`,
   `:if`, `:for`, the condition of `class={if cn("bg-pink-500"), do: "p-1"}`, and a call nothing
   follows, as in `class={foo(cn("bg-pink-500"))}`. In Elixir code it is a module attribute, a
-  default argument, a module's body and a script. A piped value is read as well, as in
-  `"bg-pink-500" |> cn()`. Such a class is on no component, so a contract does not exempt it,
+  default argument, a module's body, a function's `rescue` and the like, and a script. A piped
+  value is read as well, as in `"bg-pink-500" |> cn()`. Such a class is on no component, so a contract does not exempt it,
   and `no_restyle` and `require_static_classes` say nothing about it. A call a class attribute
   reads stays that attribute's.
 - **Classes further away.** A class is followed through 64 bindings instead of 4: variables,
@@ -84,9 +84,15 @@ Each of these reports something that passed before.
   reaches. Chains of wrappers resolve at any depth, where one past a few hops was unchecked.
   A tag spreading `{%{class: @class}}` forwards it, and a readable map's other class keys,
   as in `{%{title_class: "p-4"}}`, are read as attributes on any element.
+- **SVG color attributes in braces.** `fill={"#ec4899"}` and `stroke={"red"}` are read as
+  `fill="#ec4899"` and `stroke="red"` always were. Nothing else in braces is.
+- **Wrappers reading a class prop through `Map`.** A wrapper with `class={Map.get(assigns,
+  :class)}` or `Map.fetch!(assigns, :class)` is followed like `assigns[:class]`, so its class
+  prop is judged against the component it reaches, as `<.w class="bg-pink-500">` now is.
 - **Theme resets.** The grammar reads the scales your `@theme` declares. `--radius-*:
   initial` makes `rounded-lg` unrecognized until the theme declares it again, and `--*:
-  initial` does this to every scale but colors and fonts. A `shadow-lg` or `text-lg` after
+  initial` does this to every scale but colors and fonts, though `--spacing` set after it
+  keeps the numeric spacing scale. A `shadow-lg` or `text-lg` after
   such a reset reads as a color, so `no_raw_colors` reports it as undeclared. After
   `--animate-*: initial`, `animate-spin` is unrecognized under `@import "tailwindcss"`, and
   stays a motion class when the theme imports `tailwindcss/theme.css` or
@@ -109,8 +115,9 @@ Each of these reports something that passed before.
   `no_unknown_classes` reports what Tailwind cannot generate and offers suggestions.
 - **Themes with a plugin that throws.** A class that makes a plugin throw costs only its own
   answer, so the other classes of that theme are judged by Tailwind again rather than the
-  grammar. Through the standalone binary this holds unless the stylesheet's own `@source`
-  reaches that class, since Tailwind then cannot build the theme at all.
+  grammar. Through the standalone binary this holds unless the build reaches that class,
+  through the stylesheet's own `@source` or Tailwind's automatic detection from its
+  directory, since Tailwind then cannot build the theme at all.
 - **Standalone binary, names that only start a selector.** A class is known only when its
   whole selector is in the build: `fle` beside `flex`, or `hover` beside `hover:flex`, read
   as known. This applies with or without a prefix.
@@ -167,9 +174,8 @@ Each of these reports something that passed before.
   `no_raw_colors` and `no_arbitrary_values`. Map values are still checked, and so are the
   keys of a map that reaches a merge function, directly or through a list, branch, pipe,
   variable, module attribute, same-module function or an assign set anywhere in the module.
-  **Some real class keys go unread with them:** a map written in a template, as in `<div
-  class={cn(%{"bg-red-500" => @on})} />`, a map a function returns, as in `cn(tones())` in a
-  template, a map piped through another call first, as in `%{...} |> Map.put(...) |> cn()`,
+  **Some real class keys go unread with them:** a map a function returns, as in `cn(tones())`
+  in a template, a map piped through another call first, as in `%{...} |> Map.put(...) |> cn()`,
   and a map reaching `cn(@tones)` as a component's prop or a `:for` variable.
 - `scan_all_strings` leaves a class a tag's class site reads to that site, so a component's
   contract decides it: `<.button class="bg-pink-500">` under a contract allowing that class
@@ -185,13 +191,19 @@ Each of these reports something that passed before.
   ["shape"]`; `animate-in` passes `allow: ["motion"]`.
 - `--text-primary` beside `--color-primary` makes `text-primary` a font size, which
   `no_raw_colors` does not check. On a theme with an `@config` or `@plugin`, so does a
-  `fontSize` of `body` for `text-body`.
+  `fontSize` of `body` for `text-body`. **This also adds a finding:** a contract about
+  typography now reaches the class, so `<.button class="text-primary">` under `allow:
+  ["color"]` is reported. A rule in the theme's own CSS, such as `.card .text-primary {
+  font-size: 1rem }`, does not make a class a font size.
 - Under `prefix(tw)`, `no_raw_colors` leaves an unprefixed class alone, where it called
   `text-muted` an undeclared color. A project that runs only one of `no_raw_colors` and
-  `no_unknown_classes` sees only one half of this change.
-- With `theme_imports`, the package's colors stop being reported as undeclared. A named
-  package of a shape that could not be read before, such as an array target, the `imports`
-  map or no `package.json`, gets the same.
+  `no_unknown_classes` sees only one half of this change. The prefix is read from your own
+  stylesheets and not from an installed package.
+- With `theme_imports`, the package's colors stop being reported as undeclared, and its
+  tokens count when choosing which stylesheet is the theme. A named package of a shape that
+  could not be read before, such as an array target, the `imports` map or no `package.json`,
+  gets the same. A target that leaves the package is refused, and a package's `style` and
+  `main` fields count only when a bare import finds no other file.
 - A class longer than 10,000 characters, with more than 64 variants, or that makes a plugin
   throw is not judged by `no_unknown_classes`.
 - Through the standalone binary, a class with an open bracket or quote no longer swallows
@@ -276,8 +288,10 @@ Each of these reports something that passed before.
   `if on, do: a, else: a`, also past the limit or ending in a cycle.
 - **Slow input read in one pass:** a double-quoted string in an expression (`class={"..."}`
   of 4,000 characters took 110 seconds); class tokens of thousands of unclosed brackets or
-  digits, such as `bg-red-500/[/[/[`; long style values and `@theme` blocks of thousands of
-  declarations; `var()` naming `var()` many times over, which took 15 seconds on a kilobyte;
+  digits, such as `bg-red-500/[/[/[`; long style values, custom properties included, and
+  `@theme` blocks of thousands of declarations; a stylesheet of 5 MB or more with no `;` after
+  its imports, as in @shadcn/lint; `var()` naming `var()` many times over, which took 15
+  seconds on a kilobyte;
   a long `var()` fallback named again and again, which is now read once per variable. No
   findings change, except as listed above.
 - The standalone binary takes one build for the classes a run's files and contract entries

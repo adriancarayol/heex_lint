@@ -111,9 +111,11 @@ defmodule HeexLint.Element do
 
   @doc """
   Every `{...}` and `<%= ... %>` in `template`: attribute values, text and
-  EEx. Empty when the template does not parse.
+  EEx. Empty when the template does not parse. A clause head, `<% "a" -> %>`, comes
+  back as `fn "a" -> ...`, placed so that positions in it stay right, which can put
+  its column at 0.
   """
-  @spec expressions(Template.t()) :: [{:expr, String.t(), {pos_integer(), pos_integer()}}]
+  @spec expressions(Template.t()) :: [{:expr, String.t(), {pos_integer(), non_neg_integer()}}]
   def expressions(%Template{} = template) do
     with {:ok, elements} <- Template.elements(template) do
       {eex, tokens, cont} = tokenize(template)

@@ -24,8 +24,10 @@ first. Create `.heex_lint.exs` only if the defaults do not fit:
 
 - **Theme.** The linter finds the stylesheet that imports Tailwind. Set
   `settings: [theme: "..."]` only if it picks the wrong one. If the design
-  system's tokens come from an npm package, its colors read as undeclared until
-  `settings: [theme_imports: ["^@acme/ui/"]]` names its `@import`.
+  system's tokens come from an npm package, the linter does not know them until
+  `settings: [theme_imports: ["^@acme/ui/"]]` names its `@import`. A theme that declares a
+  token of its own reports the package's colors as undeclared until then. A theme with none
+  checks no color against tokens at all, so nothing tells you.
 - **Design system.** Modules under a `components/` directory are the design
   system. Add `ui:` prefixes or `component_imports:` if components live
   elsewhere.
