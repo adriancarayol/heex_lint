@@ -262,6 +262,8 @@ Each of these reports something that passed before.
   stylesheets now counts the whole import tree rather than one chain. Packages contribute
   the `--animate-*` names of their `@theme`, and `NODE_PATH` no longer counts for a
   stylesheet.
+- A stylesheet that starts with a byte order mark reads like one without it, as in
+  @shadcn/lint. Its leading `:root` was read as a scoped selector, so an earlier value won.
 - A contract entry the theme's Tailwind build generates, such as a plugin's `prose`, is
   known like any other class and no longer warns, and `spacin`, a slip away from a category,
   is no configuration error when the build generates it. An entry nothing knows still warns.

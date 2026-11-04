@@ -367,11 +367,16 @@ defmodule HeexLint.Theme do
       acc = %{acc | files: acc.files ++ [file]}
 
       case File.read(file) do
-        {:ok, css} -> read_css(css, file, seen, acc, walk)
+        {:ok, css} -> read_css(without_bom(css), file, seen, acc, walk)
         {:error, _} -> {acc, seen}
       end
     end
   end
+
+  # JavaScript's `trim` and `\s` take a byte order mark for white space, and Elixir's do
+  # not: left in, a leading `:root` reads as a scoped selector.
+  defp without_bom(<<0xEF, 0xBB, 0xBF, css::binary>>), do: css
+  defp without_bom(css), do: css
 
   defp read_css(css, file, seen, acc, walk) do
     utilities = parse_utilities(css)

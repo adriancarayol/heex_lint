@@ -169,6 +169,25 @@ defmodule HeexLint.ThemeTest do
       assert length(theme.files) == 2
     end
 
+    test "a byte order mark leaves a leading :root unscoped", %{tmp_dir: dir} do
+      theme =
+        load(dir, %{
+          "base.css" => ":root { --radius: 12px; }",
+          "tokens.css" => "\uFEFF:root { --radius: 8px; } .compact { --radius: 4px; }",
+          "bare.css" => "\uFEFF--gap: 3px;",
+          "app.css" => """
+          @import "./base.css";
+          @import "./tokens.css";
+          @import "./bare.css";
+          @theme { --radius-card: var(--radius); }
+          """
+        })
+
+      assert theme.values["radius"] == "8px"
+      assert theme.values["gap"] == "3px"
+      assert Map.new(Theme.scale(theme, :radius))["card"] == 8.0
+    end
+
     test "a color token reads its variable from :root", %{tmp_dir: dir} do
       theme =
         load(dir, %{
