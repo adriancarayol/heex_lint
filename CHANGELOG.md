@@ -225,8 +225,9 @@ Each of these reports something that passed before.
   names. What `//home/me/theme.css` used to contribute is gone.
 - A theme variable stops resolving once its value would grow past 100,000 UTF-16 units, and
   is unresolved like one with no value.
-- `@utility` bodies left open or nested in each other are read in at most 16 passes over the
-  file. Past that a body sets nothing a category can be read from, as an empty one does.
+- `@utility` bodies that hold another, nested or left open, are read in at most 16 passes
+  over the file. Past that such a body sets nothing a category can be read from, as an empty
+  one does. A body with none inside it is always read.
 - `allow_dynamic_identifiers` only removes findings, for the names you list.
 
 ### Findings that change

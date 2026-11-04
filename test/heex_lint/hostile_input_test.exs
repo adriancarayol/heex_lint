@@ -1211,8 +1211,22 @@ defmodule HeexLint.HostileInputTest do
 
       assert length(theme.utility_properties) == 40_000
       assert List.first(theme.utility_properties) == {"u1", ["b"]}
-      # Past the passes a body sets nothing a category can be read from.
-      assert List.last(theme.utility_properties) == {"u40000", []}
+      # Past the passes a body that holds another sets nothing a category can be read from.
+      assert Enum.at(theme.utility_properties, 39_998) == {"u39999", []}
+      # A body with none inside it costs no pass.
+      assert List.last(theme.utility_properties) == {"u40000", ["b"]}
+    end
+
+    test "those past the passes leave a body with none inside it alone" do
+      braces = Enum.map_join(1..40, "\n", &~s|@utility brace-#{&1} { content: "{"; color: red; }|)
+      healthy = Enum.map_join(1..200, "\n", &"@utility h#{&1} { color: red; top: 0; }")
+
+      utilities = Theme.parse_utilities(braces <> "\n" <> healthy)
+
+      assert Enum.all?(
+               1..200,
+               &(List.keyfind(utilities, "h#{&1}", 0) == {"h#{&1}", ["color", "top"]})
+             )
     end
 
     test "nesting of a real size reads every body" do

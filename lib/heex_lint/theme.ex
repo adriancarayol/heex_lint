@@ -671,9 +671,10 @@ defmodule HeexLint.Theme do
   defp tailwind_spec?(spec),
     do: spec == "tailwindcss" or String.starts_with?(spec, "tailwindcss/")
 
-  # Not in @shadcn/lint. Real bodies do not overlap, so reading them is one pass over
-  # the file. Bodies left open or nested in each other each run on to the end of it,
-  # so a file of them is quadratic. Past this many passes a body reads as setting
+  # Not in @shadcn/lint. Bodies with no other inside them cannot overlap, so reading all
+  # of them is one pass over the file. One that holds another, nested in it or left open,
+  # can run on to the end of the file, so a file of them is quadratic, and a `{` in a
+  # string counts as a brace here too. Past this many passes such a body reads as setting
   # nothing a category can be read from.
   @utility_body_passes 16
 
@@ -681,14 +682,20 @@ defmodule HeexLint.Theme do
   # Each @utility in source order, with the properties its body sets.
   def parse_utilities(css) do
     stripped = strip_comments(css)
+    heads = Regex.scan(~r/@utility\s+([\w-]+\*?)\s*\{/, stripped, return: :index)
+    closes = body_closes(stripped, heads)
+    next_heads = Enum.map(Enum.drop(heads, 1), fn [{start, _} | _] -> start end)
 
     {utilities, _left} =
-      ~r/@utility\s+([\w-]+\*?)\s*\{/
-      |> Regex.scan(stripped, return: :index)
+      heads
+      |> Enum.zip(next_heads ++ [byte_size(stripped)])
       |> Enum.map_reduce(
         @utility_body_passes * byte_size(stripped),
-        fn [{start, length}, {name_start, name_length}], left ->
-          {properties, left} = declared_properties(stripped, start + length, left)
+        fn {[{start, length}, {name_start, name_length}], next_head}, left ->
+          open = start + length
+          # An unclosed body runs to the end of the file.
+          close = Map.get(closes, open, byte_size(stripped))
+          {properties, left} = declared_properties(stripped, open, close, next_head, left)
           {{binary_part(stripped, name_start, name_length), properties}, left}
         end
       )
@@ -696,37 +703,46 @@ defmodule HeexLint.Theme do
     merge_utilities([], utilities)
   end
 
+  # Where each body closes, by where it opens, with one pass over the braces.
+  defp body_closes(css, heads) do
+    opens = MapSet.new(heads, fn [{start, length} | _] -> start + length end)
+
+    {_stack, closes} =
+      css
+      |> :binary.matches(["{", "}"])
+      |> Enum.reduce({[], %{}}, fn {at, 1}, {stack, closes} ->
+        case {:binary.at(css, at), stack} do
+          {?{, stack} ->
+            {[at + 1 | stack], closes}
+
+          {?}, []} ->
+            {[], closes}
+
+          {?}, [open | stack]} ->
+            {stack, if(MapSet.member?(opens, open), do: Map.put(closes, open, at), else: closes)}
+        end
+      end)
+
+    closes
+  end
+
   # The properties an @utility body sets, from just inside its brace to the
   # matching close, nesting included: a declaration follows a brace or a
   # semicolon, which neither a selector like &:hover nor an at-rule prelude
   # does. Custom properties stay in: a body that sets --tw-shadow-color is
   # as much a color as one that sets box-shadow.
-  defp declared_properties(_css, _start, left) when left <= 0, do: {[], left}
+  defp declared_properties(_css, _open, close, next_head, left)
+       when next_head < close and left <= 0,
+       do: {[], left}
 
-  defp declared_properties(css, start, left) do
-    rest = binary_part(css, start, byte_size(css) - start)
-    body = utility_body(rest, 1, 0)
-
+  defp declared_properties(css, open, close, next_head, left) do
     properties =
       ~r/(?:^|[;{}])\s*(-{0,2}[a-zA-Z][\w-]*)\s*:/
-      |> Regex.scan(body, capture: :all_but_first)
+      |> Regex.scan(binary_part(css, open, close - open), capture: :all_but_first)
       |> Enum.map(fn [name] -> String.downcase(name) end)
       |> Enum.uniq()
 
-    {properties, left - byte_size(body)}
-  end
-
-  # An unclosed body runs to the end of the file.
-  defp utility_body(css, depth, length) when depth == 0 or length == byte_size(css) do
-    binary_part(css, 0, if(depth == 0, do: length - 1, else: length))
-  end
-
-  defp utility_body(css, depth, length) do
-    case :binary.at(css, length) do
-      ?{ -> utility_body(css, depth + 1, length + 1)
-      ?} -> utility_body(css, depth - 1, length + 1)
-      _ -> utility_body(css, depth, length + 1)
-    end
+    {properties, if(next_head < close, do: left - (close - open), else: left)}
   end
 
   @doc false
