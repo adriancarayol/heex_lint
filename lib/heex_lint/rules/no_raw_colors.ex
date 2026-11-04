@@ -292,22 +292,18 @@ defmodule HeexLint.Rules.NoRawColors do
       for module <- source.modules,
           clauses <- Map.values(module.functions),
           clause <- clauses,
-          call <- merge_calls(clause.body, merge),
+          calls = merge_calls(clause.body, merge),
           context = Map.merge(context, %{module: module.name, clause: clause}),
-          key <- Collector.map_keys(call, context, opts),
+          key <- Collector.map_keys(calls, context, opts),
           do: key
 
-    anywhere =
-      for call <- merge_calls(source.ast, merge),
-          key <- Collector.map_keys(call, context, opts),
-          do: key
+    anywhere = Collector.map_keys(merge_calls(source.ast, merge), context, opts)
 
     # A module attribute reads from its module, whether or not a function holds the call.
     in_modules =
       for {module, body} <- Enum.zip(source.modules, Source.module_bodies(source.ast)),
-          call <- merge_calls(body, merge),
           context = Map.put(context, :module, module.name),
-          key <- Collector.map_keys(call, context, opts),
+          key <- Collector.map_keys(merge_calls(body, merge), context, opts),
           do: key
 
     in_templates =
@@ -317,9 +313,8 @@ defmodule HeexLint.Rules.NoRawColors do
           template.module == module.name,
           {:expr, code, _position} = expression <- Element.expressions(template),
           {:ok, ast} <- [Code.parse(code)],
-          call <- merge_calls(ast, merge),
           context = Map.put(context, :template, template),
-          key <- Collector.template_map_keys(call, expression, context, opts),
+          key <- Collector.template_map_keys(merge_calls(ast, merge), expression, context, opts),
           do: key
 
     in_functions ++ anywhere ++ in_modules ++ in_templates
@@ -349,7 +344,7 @@ defmodule HeexLint.Rules.NoRawColors do
           {node, acc}
       end)
 
-    calls
+    Enum.reverse(calls)
   end
 
   defp merge_function?(callee, merge), do: HeexLint.Sites.helper_name(callee) in merge

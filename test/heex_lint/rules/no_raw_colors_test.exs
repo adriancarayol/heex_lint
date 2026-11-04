@@ -277,6 +277,23 @@ defmodule HeexLint.Rules.NoRawColorsTest do
       )
     end
 
+    test "a call another call read is one finding, and one it did not read its own",
+         %{tmp_dir: dir} do
+      for {body, count} <- [
+            {~S|cn(cn("bg-pink-500"))|, 1},
+            {~S'"bg-pink-500" |> cn() |> cn()', 1},
+            {~S|cn(["p-1", cn("bg-pink-500"), cn("text-pink-500")])|, 2},
+            {~S|cn(if cn("bg-pink-500"), do: "p-1")|, 1},
+            {~S|cn(cn("bg-pink-500") && "p-1")|, 1},
+            {~S|cn(foo(cn("bg-pink-500")))|, 1},
+            {~S|x = cn("bg-pink-500"); cn(x)|, 1}
+          ] do
+        code = "def a, do: (#{body})"
+
+        assert length(in_code(dir, code)) == count, body
+      end
+    end
+
     test "are checked wherever a template has them", %{tmp_dir: dir} do
       for template <- [
             ~S|<div title={cn("bg-pink-500")} />|,
@@ -867,6 +884,17 @@ defmodule HeexLint.Rules.NoRawColorsTest do
       assert Enum.any?(findings, &(&1.message =~ "bg-pink-500"))
       assert Enum.any?(findings, &(&1.message =~ "text-pink-500"))
       assert Enum.any?(findings, &(&1.message =~ "border-pink-500"))
+    end
+
+    test "a nested call's map is read, once", %{tmp_dir: dir} do
+      for body <- [
+            ~S|cn(cn(%{"bg-pink-500" => on}))|,
+            ~S'%{"bg-pink-500" => on} |> cn() |> cn()',
+            ~S|cn(if cn(%{"bg-pink-500" => on}), do: "p-1")|
+          ] do
+        assert [finding] = scanned(dir, body)
+        assert finding.message =~ "bg-pink-500"
+      end
     end
 
     test "a map through Map.put keeps its keys and adds the one put", %{tmp_dir: dir} do

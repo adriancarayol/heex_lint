@@ -335,6 +335,8 @@ Each of these reports something that passed before.
   findings change, except as listed above.
 - **Slow input read once per task:** assigns read in a module of thousands of components, as
   `cn(@tones)` under `scan_all_strings` walked every clause on each read. No findings change.
+- **Nested or piped merge calls in code** are read once, not once per call: `|> cn()` repeated
+  8,000 times took 4.6 seconds, and 4,000 took 4.4 under `scan_all_strings`. No findings change.
 - **Bindings that all read each other** no longer take gigabytes: what a site reads again is
   not pushed again. A hole does not read them again at all, so a cycle in one is no longer
   a false dynamic `style`, and the reads spent on a cycle no longer lose a class further

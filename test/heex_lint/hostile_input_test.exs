@@ -1123,6 +1123,28 @@ defmodule HeexLint.HostileInputTest do
   end
 
   describe "a read repeated across a module" do
+    # Each call read all those inside it: 8,000 took 4.6 s, and 4,000 took 4.4 s under
+    # scan_all_strings, four times as long with each doubling.
+    for {name, rules} <- [
+          {"plain rules", [no_raw_colors: :error]},
+          {"scan_all_strings", [no_raw_colors: {:error, scan_all_strings: true}]}
+        ] do
+      test "piped merge calls are read once, under #{name}", %{tmp_dir: dir} do
+        pipes = repeat(" |> cn()", 16_000)
+
+        files = %{
+          "lib/app_web/piped.ex" => """
+          defmodule AppWeb.Piped do
+            def cn(x), do: x
+            def a, do: "bg-pink-500" #{pipes}
+          end
+          """
+        }
+
+        assert [_] = quick(fn -> lint(dir, files, rules: unquote(rules)) end)
+      end
+    end
+
     # 20 bindings that all read each other are read again thousands of times. Each read
     # pushed its 200 literals again, which took past 4 GB in this test's rules.
     test "what a site reads again is not pushed again", %{tmp_dir: dir} do

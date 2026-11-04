@@ -236,6 +236,12 @@ defmodule HeexLint.Sites do
   defp code_sites(project, source, opts) do
     helpers = helpers(opts)
     site = fn call, context -> code_site(source, Collector.expression(call, context, opts)) end
+
+    call_sites = fn ast, context ->
+      for collected <- Collector.calls(helper_calls(ast, helpers), context, opts),
+          do: code_site(source, collected)
+    end
+
     file = %{project: project, source: source}
 
     modules =
@@ -248,12 +254,10 @@ defmodule HeexLint.Sites do
           for {_key, clauses} <- module.functions,
               clause <- clauses,
               clause.body != nil,
-              call <- helper_calls(clause.body, helpers),
-              do: site.(call, Map.put(context, :clause, clause))
+              found <- call_sites.(clause.body, Map.put(context, :clause, clause)),
+              do: found
 
-        outside_sites =
-          for call <- helpers_outside(body, module, helpers),
-              do: site.(call, context)
+        outside_sites = call_sites.(outside_functions(body, module.functions), context)
 
         default_sites =
           for {_name, component} <- module.components,
@@ -265,15 +269,8 @@ defmodule HeexLint.Sites do
         function_sites ++ outside_sites ++ default_sites
       end)
 
-    outside_modules =
-      for call <- helper_calls(outside_functions(source.ast, %{}), helpers),
-          do: site.(call, file)
-
-    modules ++ outside_modules
+    modules ++ call_sites.(outside_functions(source.ast, %{}), file)
   end
-
-  defp helpers_outside(body, module, helpers),
-    do: body |> outside_functions(module.functions) |> helper_calls(helpers)
 
   defp helpers(opts) do
     merge = MapSet.new(Keyword.get(opts, :merge_functions, []))

@@ -272,31 +272,66 @@ defmodule HeexLint.Collector do
   end
 
   @doc """
-  The string keys of the maps a merge-function call in Elixir code reads, as
-  in `cn(["p-1", %{"bg-red-500" => on}])`. It follows the same branches,
-  variables and hops as `expression/3`. Only `scan_all_strings` asks for them:
-  no class site reads map keys yet.
+  Collects from the merge-function calls of some Elixir code, in source order. A call
+  one before it read is skipped, as in `template_calls/5`.
   """
-  @spec map_keys(Macro.t(), map(), keyword()) :: [string_value()]
-  def map_keys(ast, context, opts \\ []) do
-    state = %{state(context, opts, file_text(context), :body) | map_keys: []}
-    Enum.reverse(visit(state, ast).map_keys)
+  @spec calls([Macro.t()], map(), keyword()) :: [t()]
+  def calls(calls, context, opts \\ []) do
+    {collected, _read} =
+      Enum.flat_map_reduce(calls, MapSet.new(), fn {_callee, meta, _args} = call, read ->
+        if MapSet.member?(read, {meta[:line], meta[:column]}) do
+          {[], read}
+        else
+          collected = expression(call, context, opts)
+          {[collected], Enum.into(collected.calls, read)}
+        end
+      end)
+
+    collected
   end
 
   @doc """
-  The same keys for a merge-function call in a template expression. Only what
-  the call reads from Elixir code counts, with an assign followed through
+  The string keys of the maps merge-function calls in Elixir code read, as
+  in `cn(["p-1", %{"bg-red-500" => on}])`. It follows the same branches,
+  variables and hops as `expression/3`. A call one before it read is skipped, so a
+  caller lists one before those inside it. Only `scan_all_strings` asks for them:
+  no class site reads map keys yet.
+  """
+  @spec map_keys([Macro.t()], map(), keyword()) :: [string_value()]
+  def map_keys(calls, context, opts \\ []) do
+    unread_map_keys(calls, %{state(context, opts, file_text(context), :body) | map_keys: []})
+  end
+
+  @doc """
+  The same keys for the merge-function calls of a template expression. Only what
+  a call reads from Elixir code counts, with an assign followed through
   every function of the template's module, as `mount/3` sets what `render/1`
   reads: the keys are reported where the code writes them. A map written in
   the template itself stays unread, as does what a function returns.
   """
-  @spec template_map_keys(Macro.t(), HeexLint.Element.value(), map(), keyword()) ::
+  @spec template_map_keys([Macro.t()], HeexLint.Element.value(), map(), keyword()) ::
           [string_value()]
-  def template_map_keys(call, {:expr, code, position}, context, opts \\ []) do
+  def template_map_keys(calls, {:expr, code, position}, context, opts \\ []) do
     text = expression_text(code, position, context)
-    state = %{state(context, opts, text, :template) | map_keys: []}
-    Enum.reverse(visit(state, call).map_keys)
+    unread_map_keys(calls, %{state(context, opts, text, :template) | map_keys: []})
   end
+
+  defp unread_map_keys(calls, state) do
+    {keys, _read} =
+      Enum.flat_map_reduce(calls, MapSet.new(), fn call, read ->
+        if MapSet.member?(read, call_position(state, call)) do
+          {[], read}
+        else
+          inner = visit(state, call)
+          {Enum.reverse(inner.map_keys), Enum.into(inner.calls, read)}
+        end
+      end)
+
+    keys
+  end
+
+  defp call_position(state, {:|>, _, [_left, {_callee, meta, _args}]}), do: locate(state, meta)
+  defp call_position(state, {_callee, meta, _args}), do: locate(state, meta)
 
   @doc """
   Where the value of a quoted literal in a template expression starts, past its quote.
