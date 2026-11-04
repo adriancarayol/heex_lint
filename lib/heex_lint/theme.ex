@@ -589,10 +589,24 @@ defmodule HeexLint.Theme do
     do: take_string(rest, q, [byte | acc])
 
   @doc false
-  def parse_imports(css) do
-    ~r/@import\s+(?:url\(\s*)?["']([^"']+)["']\s*\)?[^;]*;/
-    |> Regex.scan(strip_comments(css), capture: :all_but_first)
-    |> List.flatten()
+  def parse_imports(css), do: css |> strip_comments() |> imports(0, [])
+
+  # A rule's end is its `;`, found with one search. A `[^;]*` after each @import reads
+  # the rest of a file that has none once per @import in it.
+  defp imports(text, offset, acc) do
+    case Regex.run(@import_head, text, offset: offset, return: :index) do
+      nil ->
+        Enum.reverse(acc)
+
+      [{start, length}, {id_start, id_length}] ->
+        head_end = start + length
+
+        case :binary.match(text, ";", scope: {head_end, byte_size(text) - head_end}) do
+          # No `;` ends this @import, so none ends a later one either.
+          :nomatch -> Enum.reverse(acc)
+          {at, _} -> imports(text, at + 1, [binary_part(text, id_start, id_length) | acc])
+        end
+    end
   end
 
   @doc false

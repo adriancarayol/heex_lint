@@ -973,6 +973,37 @@ defmodule HeexLint.HostileInputTest do
     end
   end
 
+  describe "an @import with no `;`" do
+    @unterminated String.duplicate("@import 'a' ", 421_000)
+    @tailwind String.duplicate(~S|@import "tailwindcss" |, 230_000)
+
+    # Ported from upstream. Its 20,000 repeats do not show here: the regex engine
+    # looks for the `;` first in a file under 5 MB, so these are past that.
+    test "costs one scan" do
+      assert quick(fn -> Theme.parse_imports(@unterminated) end) == []
+      assert quick(fn -> Theme.parse_tailwind_prefix(@unterminated) end) == nil
+      assert quick(fn -> Theme.parse_imports(@tailwind) end) == []
+      assert quick(fn -> Theme.parse_tailwind_prefix(@tailwind) end) == nil
+    end
+
+    test "a stylesheet of them loads", %{tmp_dir: dir} do
+      assert load(dir, @unterminated).missing_imports == []
+    end
+
+    test "those that end are still read" do
+      css = ~S"""
+      @import "tailwindcss" prefix(tw);
+      @import url("./a.css") layer(base);
+      @import './b;c.css' supports(display: grid);
+      """
+
+      assert Theme.parse_imports(css) == ["tailwindcss", "./a.css", "./b;c.css"]
+      assert Theme.parse_imports(~S|@import "./a.css" @import "./b.css";|) == ["./a.css"]
+      assert Theme.parse_imports(~S|@import "./a.css"; @import "./b.css"|) == ["./a.css"]
+      assert Theme.parse_imports(~S|/* @import "./a.css"; */ .x { top: 0; }|) == []
+    end
+  end
+
   describe "the code a project keeps" do
     # :persistent_term copies without sharing, so a term kept twice costs twice, and
     # the VM aborts on a project at about 1 GB.
