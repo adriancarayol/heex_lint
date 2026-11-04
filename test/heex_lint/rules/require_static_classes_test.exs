@@ -20,6 +20,13 @@ defmodule HeexLint.Rules.RequireStaticClassesTest do
     assert static(dir, template) == []
   end
 
+  test "a merge call's map has its keys read, and a computed key is dynamic", %{tmp_dir: dir} do
+    assert static(dir, ~S|<.button class={cn(%{"mt-4" => @on})}>Save</.button>|) == []
+    assert [_] = static(dir, ~S|<.button class={cn(%{@name => @on})}>Save</.button>|)
+    assert [_] = static(dir, ~S|<.button class={~s(p-2 bg-#{@color})}>Save</.button>|)
+    assert static(dir, ~S|<.button class={~s(p-2 #{if @on, do: "mt-4"})}>Save</.button>|) == []
+  end
+
   test "classes built from runtime values are reported", %{tmp_dir: dir} do
     [finding] = static(dir, ~S|<.button class={"bg-#{@color}"}>Save</.button>|)
 

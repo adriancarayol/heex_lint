@@ -100,6 +100,17 @@ defmodule HeexLint.UtilityClassesTest do
                [{"a", []}, {"b", ["color"]}]
     end
 
+    test "an unclosed body reads to its last byte" do
+      assert Theme.parse_utilities("@utility a { top: 0; color:") == [{"a", ["top", "color"]}]
+    end
+
+    test "a brace in a string counts, as in @shadcn/lint" do
+      assert Theme.parse_utilities("""
+             @utility a { content: "{"; color: red; }
+             @utility b { top: 0; }
+             """) == [{"a", ["content", "color", "top"]}, {"b", ["top"]}]
+    end
+
     test "a utility declared again takes the new body and keeps its place" do
       assert Theme.parse_utilities("""
              @utility a { color: red; }
@@ -335,6 +346,17 @@ defmodule HeexLint.UtilityClassesTest do
       assert restyle(dir, @utilities, ~s(<.button class="heading-2xs">x</.button>),
                allow: ["layout", "heading-2xs"]
              ) == []
+    end
+
+    test "bodies a string's brace leaves open do not cost another its category", %{tmp_dir: dir} do
+      braces = Enum.map_join(1..17, "\n", &~s|@utility brace-#{&1} { content: "{"; color: red; }|)
+
+      rules =
+        Enum.map_join(1..300, "\n", &".r#{&1} { margin: 1px; padding: 2px; border: 0; top: 0; }")
+
+      css = ~s(@import "tailwindcss";\n#{braces}\n@utility paintbox { color: red; }\n#{rules})
+
+      assert restyle(dir, css, ~s(<.button class="paintbox">x</.button>), allow: ["color"]) == []
     end
 
     test "reports a utility's category, in the words for that category", %{tmp_dir: dir} do

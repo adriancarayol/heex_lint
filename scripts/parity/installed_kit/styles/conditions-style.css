@@ -1,0 +1,4 @@
+/* Tailwind reads this one, @shadcn/lint's theme read the other. */
+@theme inline {
+  --color-kit-style: oklch(0.5 0.1 20);
+}

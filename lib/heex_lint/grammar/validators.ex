@@ -4,6 +4,8 @@
 defmodule HeexLint.Grammar.Validators do
   @moduledoc false
 
+  alias HeexLint.Grammar.Classes
+
   # cn's config names these predicates in marker form ({"$v": "isNumber"});
   # `check/2` looks them up by that name.
 
@@ -96,20 +98,46 @@ defmodule HeexLint.Grammar.Validators do
         :infinity
 
       Regex.match?(~r/^0[xX][0-9a-fA-F]+$/, text) ->
-        text |> String.slice(2..-1//1) |> String.to_integer(16) |> Kernel.*(1.0)
+        radix_number(text, 16)
 
       Regex.match?(~r/^0[oO][0-7]+$/, text) ->
-        text |> String.slice(2..-1//1) |> String.to_integer(8) |> Kernel.*(1.0)
+        radix_number(text, 8)
 
       Regex.match?(~r/^0[bB][01]+$/, text) ->
-        text |> String.slice(2..-1//1) |> String.to_integer(2) |> Kernel.*(1.0)
+        radix_number(text, 2)
 
-      Regex.match?(~r/^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/, text) ->
-        text |> normalize_decimal() |> Float.parse() |> elem(0)
+      # \d+(\.\d*)? for \d+\.?\d*: the same numbers, without trying every split of
+      # a run of digits.
+      Regex.match?(~r/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/, text) ->
+        case text |> normalize_decimal() |> parse_float() do
+          {number, _rest} -> number
+          # What JavaScript reads as Infinity, such as 1e999.
+          :error -> :infinity
+        end
 
       true ->
         :nan
     end
+  end
+
+  @doc """
+  `Float.parse/1`, with the same answer on every supported Elixir: `:error` past the
+  float range. Up to 1.19 it raises on digits with no exponent, such as 400 of them,
+  and 1.20 returns `:error` as it always did for `1e999`.
+  """
+  @spec parse_float(String.t()) :: {float(), String.t()} | :error
+  def parse_float(text) do
+    Float.parse(text)
+  rescue
+    ArgumentError -> :error
+  end
+
+  defp radix_number(<<_prefix::binary-size(2), digits::binary>>, radix) do
+    String.to_integer(digits, radix) * 1.0
+  rescue
+    # Past the float range, and past the VM's largest integer.
+    ArithmeticError -> :infinity
+    SystemLimitError -> :infinity
   end
 
   # Float.parse needs digits on both sides of the point.
@@ -119,15 +147,29 @@ defmodule HeexLint.Grammar.Validators do
     |> String.replace(~r/\.([eE]|$)/, ".0\\g{1}")
   end
 
+  # tailwind-merge's \d+ before the unit and .+ inside the function retry from every
+  # digit and every function name, which is quadratic on a long value. One digit
+  # gives the same answers, and only the first function can close: a later one's ")"
+  # closes the first one too.
   defp length_only?(v) do
-    Regex.match?(
-      ~r/\d+(%|px|r?em|[sdl]?v([hwib]|min|max)|pt|pc|in|cm|mm|cap|ch|ex|r?lh|cq(w|h|i|b|min|max))|\b(calc|min|max|clamp)\(.+\)|^0$/,
-      v
-    ) and not Regex.match?(~r/^(rgba?|hsla?|hwb|(ok)?(lab|lch)|color-mix)\(.+\)$/, v)
+    (Regex.match?(
+       ~r/\d(%|px|r?em|[sdl]?v([hwib]|min|max)|pt|pc|in|cm|mm|cap|ch|ex|r?lh|cq(w|h|i|b|min|max))|^0$/,
+       v
+     ) or length_function?(v)) and
+      not Regex.match?(~r/^(rgba?|hsla?|hwb|(ok)?(lab|lch)|color-mix)\(.+\)$/, v)
   end
 
+  defp length_function?(v) do
+    case Regex.run(~r/\b(calc|min|max|clamp)\(/, v, return: :index, capture: :first) do
+      [{at, length}] -> Classes.index_from(v, ")", at + length + 1) != nil
+      nil -> false
+    end
+  end
+
+  # (\d*\.)?\d+ for tailwind-merge's (\d+)?\.?(\d+): the same numbers, without
+  # trying every split of a run of digits.
   defp shadow?(v),
-    do: Regex.match?(~r/^(inset_)?-?((\d+)?\.?(\d+)[a-z]+|0)_-?((\d+)?\.?(\d+)[a-z]+|0)/, v)
+    do: Regex.match?(~r/^(inset_)?-?((\d*\.)?\d+[a-z]+|0)_-?((\d*\.)?\d+[a-z]+|0)/, v)
 
   defp image?(v) do
     Regex.match?(

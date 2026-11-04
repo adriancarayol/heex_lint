@@ -9,10 +9,15 @@ defmodule HeexLint.Rules.NoUnknownClasses do
   Custom utilities and plain class selectors in the theme's import graph
   are known. Classes from stylesheets outside it need an `allow` entry.
   A class the grammar reads as a color is left to `no_raw_colors` when it
-  names a token or misspells one.
+  names a token or misspells one. Under `prefix(tw)`, only a `tw:` class can
+  be a color: an unprefixed `text-muted` is no more a Tailwind class than
+  `flex`, and is reported here.
 
   Without a Tailwind to ask (see `HeexLint.Tailwind`), the class grammar,
   `@utility` names and class selectors answer instead; that checks less.
+
+  A class longer than 10,000 characters or with more than 64 variants is not
+  checked, and neither is one that makes Tailwind or a plugin throw.
 
   ## Options
 
@@ -23,7 +28,7 @@ defmodule HeexLint.Rules.NoUnknownClasses do
 
   @behaviour HeexLint.Rule
 
-  alias HeexLint.{Messages, Policy, Rule, Tailwind, Theme}
+  alias HeexLint.{Messages, Policy, Project, Rule, Tailwind, Theme}
   alias HeexLint.Grammar.{Classes, ProjectClassifier, Similar}
   alias HeexLint.Policy.ConfigError
   alias HeexLint.Rules.NoRawColors
@@ -90,7 +95,7 @@ defmodule HeexLint.Rules.NoUnknownClasses do
 
       for {site, string, token, position, words} <- candidates,
           %{suggestion: suggestion, base_known: base_known} <- List.wrap(Map.get(by_token, token)),
-          not (color?(theme, token) and not base_known and
+          not (tailwind_color?(project, token) and not base_known and
                  not owns_color_typo?(theme, token, suggestion)) do
         report(
           token,
@@ -174,6 +179,10 @@ defmodule HeexLint.Rules.NoUnknownClasses do
   end
 
   defp color?(theme, token), do: ProjectClassifier.category_of(theme, token) == "color"
+
+  # Under prefix(tw), no_raw_colors leaves an unprefixed text-muted to this rule.
+  defp tailwind_color?(project, token),
+    do: Project.tailwind_class?(project, token) and color?(project.theme, token)
 
   # An undeclared token or a near-miss of one is no_raw_colors' finding; a
   # typo of another utility (text-smal) is this rule's.
