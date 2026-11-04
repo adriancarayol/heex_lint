@@ -119,9 +119,9 @@ Each of these reports something that passed before.
   grammar. Through the standalone binary this holds unless the build reaches that class,
   through the stylesheet's own `@source` or Tailwind's automatic detection from its
   directory, since Tailwind then cannot build the theme at all.
-- **Standalone binary, names that only start a selector.** A class is known only when its
-  whole selector is in the build: `fle` beside `flex`, or `hover` beside `hover:flex`, read
-  as known. This applies with or without a prefix.
+- **Standalone binary, names that only start a selector.** `fle` beside `flex`, or `hover`
+  beside `hover:flex`, read as known before, with or without a prefix, and no longer do. A
+  `.name` anywhere else in the build still counts, such as `png` beside `bg-[url(/a.png)]`.
 - **A stylesheet past its deadline** uses the grammar for the rest of the run, with a
   warning. The grammar accepts less of what a plugin generates, so `no_unknown_classes` can
   report a plugin's class there.
@@ -160,6 +160,12 @@ Each of these reports something that passed before.
   under it: `title={"bg-pink-500"}`, `data-class={if @on, do: "bg-pink-500"}`,
   `<div>{"bg-pink-500"}</div>`, `<%= "bg-pink-500" %>` and `:if={@tone == "bg-pink-500"}`.
 
+- **Table keys and holes.** A literal key reads as a map does: its last write, and `1`, `1.0`,
+  `-1` and `false` as keys of their own. In a hole, as in `"--x: #{t.a}"`, a table reads every
+  entry, as in @shadcn/lint, so a raw color in another entry of `t` is reported there.
+- Under `scan_all_strings`, a map read through an assigned table in a template, as in
+  `cn(@t.a)`, or by a merge call in a module attribute or a default argument, is reported.
+
 ### Findings that go away
 
 - `data-*` and `aria-*` attributes such as `data-class` are no longer read as class lists,
@@ -178,7 +184,8 @@ Each of these reports something that passed before.
   a module attribute, in or out of a function's body.
   **Some real class keys go unread with them:** a map a function returns, as in `cn(tones())`
   in a template, a map piped through another call first, as in `%{...} |> Map.put(...) |> cn()`,
-  and a map reaching `cn(@tones)` as a component's prop or a `:for` variable. A map written
+  a map reaching `cn(@tones)` as a component's prop or a `:for` variable, and a default
+  argument read as a variable, as in `def a(tones \\ %{...}), do: cn(tones)`. A map written
   in a template, as in `<div class={cn(%{"bg-red-500" => @on})} />`, stays unread as it was,
   where @shadcn/lint reports it.
 - `scan_all_strings` leaves a class a tag's class site reads to that site, so a component's
@@ -267,7 +274,8 @@ Each of these reports something that passed before.
   plugin is doing, and the standalone binary is stopped the same way. The linter waits 60
   seconds for a stylesheet's first answer through Node and 30 for later ones, and 60 for
   each question through the standalone binary; `HEEX_LINT_TAILWIND_TIMEOUT` replaces all of
-  them. Past that the process is killed, with whatever it started. That stylesheet uses the
+  them. Past that the process is killed, with whatever it started but a child a plugin
+  detaches, which leaves the process group. That stylesheet uses the
   grammar for the rest of the run, with a warning, and two failures turn Tailwind off for
   the run. Where a slow Tailwind or a dead oracle used to end the run with an exit, every
   rule now falls back to the grammar and says so.
@@ -300,6 +308,14 @@ Each of these reports something that passed before.
   findings change, except as listed above.
 - The standalone binary takes one build for the classes a run's files and contract entries
   name, rather than one per `text-*` class, on a theme with an `@config` or `@plugin`.
+
+- Two linters at once no longer share a build directory, where one could read the other's
+  answer, and a VM that exits during a build leaves no directory behind.
+- A plugin writing to stdout with no newline no longer costs its stylesheet the answer, and a
+  question waits for any number ahead of it while they are being answered.
+- A spelling suggestion costs the length of two long names, not its square in time and memory.
+  One line of many string literals under `scan_all_strings` costs its length. A number too
+  large for the VM, such as a 1 MB hex digit run, reads as infinity and no longer ends a run.
 
 ### API changes
 
