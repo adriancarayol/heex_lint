@@ -181,12 +181,13 @@ Each of these reports something that passed before.
 - `scan_all_strings` skips plain string map keys such as `%{"fill-color" => 1}`, in
   `no_raw_colors` and `no_arbitrary_values`. Map values are still checked, and so are the
   keys of a map that reaches a merge function, directly or through a list, branch, pipe,
-  variable, table lookup, same-module function or an assign set anywhere in the module, or
-  a module attribute, in or out of a function's body.
+  variable, table lookup, `Map.put`, same-module function or an assign set anywhere in the
+  module, or a module attribute, in or out of a function's body.
   **Some real class keys go unread with them:** a map a function returns, as in `cn(tones())`
-  in a template, a map piped through another call first, as in `%{...} |> Map.put(...) |> cn()`,
-  a map reaching `cn(@tones)` as a component's prop or a `:for` variable, and a default
-  argument read as a variable, as in `def a(tones \\ %{...}), do: cn(tones)`. A map written
+  in a template, a map piped through a call other than `Map.put` or `Map.merge` first, as in
+  `%{...} |> Map.delete(...) |> cn()`, a map reaching `cn(@tones)` as a component's prop or a
+  `:for` variable, and a default argument read as a variable, as in
+  `def a(tones \\ %{...}), do: cn(tones)`. A map written
   in a template, as in `<div class={cn(%{"bg-red-500" => @on})} />`, stays unread as it was,
   where @shadcn/lint reports it.
 - `scan_all_strings` leaves a class a tag's class site reads to that site, so a component's

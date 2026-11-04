@@ -820,6 +820,32 @@ defmodule HeexLint.Rules.NoRawColorsTest do
       assert Enum.any?(findings, &(&1.message =~ "border-pink-500"))
     end
 
+    test "a map through Map.put keeps its keys and adds the one put", %{tmp_dir: dir} do
+      for body <- [
+            ~S|base = %{"bg-pink-500" => on}; cn(Map.put(base, "k", tone))|,
+            ~S't = %{"bg-pink-500" => on} |> Map.put("k", 1); cn(t)',
+            ~S'%{"bg-pink-500" => on} |> Map.put("k", 1) |> cn()',
+            ~S|cn(Map.put(map, "bg-pink-500", on))|
+          ] do
+        assert [finding] = scanned(dir, body)
+        assert finding.message =~ "bg-pink-500"
+      end
+
+      assert scanned(dir, ~S|cn(Map.delete(%{"bg-pink-500" => on}, "k"))|) == []
+    end
+
+    test "an assign through Map.put in a template's merge call is read", %{tmp_dir: dir} do
+      body = ~S"""
+      def a(assigns) do
+        assigns = assign(assigns, :t, %{"bg-pink-500" => true})
+        ~H|<div class={cn(Map.put(@t, :k, 1))} />|
+      end
+      """
+
+      assert [finding] = templated(dir, body)
+      assert finding.message =~ "bg-pink-500"
+    end
+
     test "no_arbitrary_values reads class map keys too", %{tmp_dir: dir} do
       rules = [no_arbitrary_values: {:error, scan_all_strings: true}]
 

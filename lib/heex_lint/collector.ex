@@ -535,6 +535,17 @@ defmodule HeexLint.Collector do
        when is_list(keys) and is_list(args),
        do: Enum.reduce(args, state, &visit(&2, &1))
 
+  # `Map.put` keeps the map's keys and adds its own, which a template leaves unread,
+  # as it does a map written there.
+  defp visit(
+         %{map_keys: keys} = state,
+         {{:., _, [{:__aliases__, _, [:Map]}, :put]}, _, [map, key, _value]}
+       )
+       when is_list(keys) do
+    state = visit(state, map)
+    if state.mode == :template, do: state, else: map_entries(state, [{key, nil}])
+  end
+
   defp visit(state, {_, _, args} = node) when is_list(args), do: call(state, node)
 
   defp visit(state, node), do: unresolved(state, meta_of(node))
