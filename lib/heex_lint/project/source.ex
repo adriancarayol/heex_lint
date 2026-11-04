@@ -3,16 +3,26 @@ defmodule HeexLint.Project.Source do
   One parsed source file: its modules, function components and templates.
   """
 
-  alias HeexLint.{Code, Template}
+  alias HeexLint.{Code, Element, Template}
   alias HeexLint.Project.{Component, ModuleInfo}
 
-  defstruct [:path, :contents, :ast, lines: {}, modules: [], templates: [], error: nil]
+  defstruct [
+    :path,
+    :contents,
+    :ast,
+    :non_ascii,
+    lines: {},
+    modules: [],
+    templates: [],
+    error: nil
+  ]
 
   @type t :: %__MODULE__{
           path: String.t(),
           contents: String.t(),
           ast: Macro.t() | nil,
           lines: tuple(),
+          non_ascii: MapSet.t(pos_integer()) | nil,
           modules: [ModuleInfo.t()],
           templates: [Template.t()],
           error: String.t() | nil
@@ -21,24 +31,47 @@ defmodule HeexLint.Project.Source do
   @def_kinds [:def, :defp, :defmacro, :defmacrop]
 
   @doc """
+  The numbers of the lines whose columns are not their bytes. Reading a line from a
+  column costs its length only on these.
+  """
+  @spec non_ascii_lines(tuple()) :: MapSet.t(pos_integer())
+  def non_ascii_lines(lines) do
+    for {line, number} <- lines |> Tuple.to_list() |> Enum.with_index(1),
+        String.length(line) != byte_size(line),
+        into: MapSet.new(),
+        do: number
+  end
+
+  @doc """
   Parses the file at `path` with `contents`.
   """
   @spec parse(String.t(), String.t()) :: t()
   def parse(path, contents) do
+    lines = contents |> String.split(~r/\r?\n/) |> List.to_tuple()
+
     source = %__MODULE__{
       path: path,
       contents: contents,
-      lines: contents |> String.split(~r/\r?\n/) |> List.to_tuple()
+      lines: lines,
+      non_ascii: non_ascii_lines(lines)
     }
 
-    case Path.extname(path) do
-      ".heex" ->
-        %{source | templates: [%Template{file: path, source: contents}]}
+    ext = Path.extname(path)
 
-      ext when ext in [".ex", ".exs"] ->
+    cond do
+      ext in [".heex", ".ex", ".exs"] and not String.valid?(contents) ->
+        # Neither parser takes it, and they raise.
+        %{source | error: "#{path}: not valid UTF-8"}
+
+      ext == ".heex" ->
+        template = %Template{file: path, source: contents}
+        nested = nested_templates(template, %{file: path, name: nil}, nil, nil)
+        %{source | templates: [template | nested]}
+
+      ext in [".ex", ".exs"] ->
         parse_elixir(source)
 
-      _ ->
+      true ->
         source
     end
   end
@@ -58,26 +91,58 @@ defmodule HeexLint.Project.Source do
   defp format_error({prefix, suffix}), do: "#{prefix}#{suffix}"
   defp format_error(message), do: message
 
-  # Every defmodule, nested ones with their full names.
-  defp modules({:defmodule, meta, [name_ast, [{_do, body}]]}, parent, path, acc) do
+  defp modules(ast, parent, path, acc) do
+    each_module(ast, parent, acc, fn kind, name, line, body, acc ->
+      id = System.unique_integer([:positive])
+      module = read_module(%ModuleInfo{name: name, file: path, line: line, id: id}, body)
+      [if(kind == :defimpl, do: %{module | templates: [], components: %{}}, else: module) | acc]
+    end)
+  end
+
+  @doc """
+  The body of each `defmodule` in `ast`, in the order of the source's `modules`. A
+  project keeps `ast`, and each copy of a term in it costs what the term does, so a
+  module does not keep its body too.
+  """
+  @spec module_bodies(Macro.t()) :: [Macro.t()]
+  def module_bodies(ast),
+    do: each_module(ast, nil, [], fn _kind, _name, _line, body, acc -> [body | acc] end)
+
+  # Every defmodule, nested ones with their full names, and every defimpl: its functions
+  # are read as a module's are, but no template or component directly in it is. A module
+  # inside one is a module like any other.
+  defp each_module({:defmodule, meta, [name_ast, [{_do, body}]]}, parent, acc, fun) do
     case Code.alias_name(name_ast) do
       nil ->
         acc
 
       name ->
         name = if parent, do: "#{parent}.#{name}", else: name
-        module = read_module(%ModuleInfo{name: name, file: path, line: meta[:line]}, body)
 
         body
         |> Code.statements()
-        |> Enum.reduce([module | acc], &modules(&1, name, path, &2))
+        |> Enum.reduce(
+          fun.(:defmodule, name, meta[:line], body, acc),
+          &each_module(&1, name, &2, fun)
+        )
     end
   end
 
-  defp modules({:__block__, _, statements}, parent, path, acc),
-    do: Enum.reduce(statements, acc, &modules(&1, parent, path, &2))
+  defp each_module({:defimpl, meta, [protocol | rest]}, parent, acc, fun) do
+    options = Enum.flat_map(rest, &Code.keyword/1)
+    target = if for = options[:for], do: Macro.to_string(for), else: parent
+    name = "#{Macro.to_string(protocol)}.#{target}"
+    body = Keyword.get(options, :do)
 
-  defp modules(_other, _parent, _path, acc), do: acc
+    body
+    |> Code.statements()
+    |> Enum.reduce(fun.(:defimpl, name, meta[:line], body, acc), &each_module(&1, name, &2, fun))
+  end
+
+  defp each_module({:__block__, _, statements}, parent, acc, fun),
+    do: Enum.reduce(statements, acc, &each_module(&1, parent, &2, fun))
+
+  defp each_module(_other, _parent, acc, _fun), do: acc
 
   defp read_module(module, body) do
     {module, _pending} =
@@ -124,7 +189,7 @@ defmodule HeexLint.Project.Source do
 
   defp statement({:@, _, [{name, _, [value]}]}, {module, pending}) when is_atom(name) do
     attributes = Map.update(module.attributes, Atom.to_string(name), [value], &(&1 ++ [value]))
-    {%{module | attributes: attributes}, pending}
+    {loose_templates(%{module | attributes: attributes}, value), pending}
   end
 
   defp statement({:attr, meta, [name | rest]}, {module, pending}) do
@@ -170,13 +235,28 @@ defmodule HeexLint.Project.Source do
         args = if is_list(args), do: args, else: []
         body = rest |> Enum.flat_map(&Code.keyword/1) |> Keyword.get(:do)
         name = Atom.to_string(name)
-        clause = %{kind: kind, args: args, guard: guard, body: body, line: meta[:line]}
+
+        clause = %{
+          kind: kind,
+          args: args,
+          guard: guard,
+          body: body,
+          line: meta[:line],
+          column: meta[:column],
+          id: System.unique_integer([:positive])
+        }
+
         key = {name, length(args)}
         functions = Map.update(module.functions, key, [clause], &(&1 ++ [clause]))
         module = %{module | functions: functions}
 
         module =
-          if kind in [:def, :defp], do: component(module, name, clause, pending), else: module
+          if kind in [:def, :defp],
+            do: component(module, name, clause, rest, pending),
+            else: %{
+              module
+              | templates: module.templates ++ block_templates(rest, module, name, clause)
+            }
 
         {module, []}
 
@@ -185,7 +265,19 @@ defmodule HeexLint.Project.Source do
     end
   end
 
-  defp statement(_other, acc), do: acc
+  defp statement(other, {module, pending}), do: {loose_templates(module, other), pending}
+
+  # A template in a quote or a module attribute, or in a `def` inside an `if`, has no
+  # function to follow its variables through. A module inside one of those is not read.
+  defp loose_templates(module, ast) do
+    ast
+    |> Macro.prewalk(fn
+      {kind, _, _} when kind in [:defmodule, :defimpl, :defprotocol] -> nil
+      node -> node
+    end)
+    |> sigils(module, nil, nil)
+    |> then(&%{module | templates: module.templates ++ &1})
+  end
 
   defp add_aliases(module, {{:., _, [base, :{}]}, _, children}, _opts) do
     case Code.alias_name(base) do
@@ -242,9 +334,9 @@ defmodule HeexLint.Project.Source do
 
   # A def is a function component when attrs or slots precede it or its
   # body renders ~H. Every ~H in its body becomes a template.
-  defp component(module, name, clause, pending) do
+  defp component(module, name, clause, blocks, pending) do
     arity = length(clause.args)
-    templates = if clause.body, do: sigils(clause.body, module, name, clause), else: []
+    templates = block_templates(blocks, module, name, clause)
 
     existing = Map.get(module.components, name)
 
@@ -270,9 +362,28 @@ defmodule HeexLint.Project.Source do
     end
   end
 
+  # The body and any `rescue`, `catch`, `else` and `after`. What the body binds is not in
+  # scope in those, so each is read as a body of its own.
+  defp block_templates(blocks, module, name, clause) do
+    blocks
+    |> Enum.flat_map(&Code.keyword/1)
+    |> Enum.flat_map(fn
+      {:do, body} ->
+        sigils(body, module, name, clause)
+
+      {_section, body} ->
+        own = %{clause | body: body, id: System.unique_integer([:positive])}
+        sigils(body, module, name, own)
+    end)
+  end
+
   defp sigils(body, module, name, clause) do
     {_, templates} =
       Macro.prewalk(body, [], fn
+        # A variable in a quote is not the one the function around it binds.
+        {:quote, _, args}, acc when is_list(args) and clause != nil ->
+          {nil, Enum.reverse(sigils(args, module, name, nil)) ++ acc}
+
         {:sigil_H, meta, [{:<<>>, string_meta, [text]}, _modifiers]} = node, acc
         when is_binary(text) ->
           template = %{
@@ -282,13 +393,31 @@ defmodule HeexLint.Project.Source do
               clause: clause
           }
 
-          {node, [template | acc]}
+          nested = nested_templates(template, module, name, clause)
+          {node, Enum.reverse([template | nested]) ++ acc}
 
         node, acc ->
           {node, acc}
       end)
 
     Enum.reverse(templates)
+  end
+
+  # A `~H` in a template's `{...}`. Parsed where it stands, its own positions are the file's.
+  defp nested_templates(template, module, name, clause) do
+    if String.contains?(template.source, "~H") do
+      # A heredoc's lines have lost their indentation, which is where they stand in the file.
+      # Elixir 1.18 adds a `:column` to every line, so the first is placed with spaces too.
+      indent = "\n" <> String.duplicate(" ", template.indentation)
+
+      for {:expr, code, {line, column}} <- Element.expressions(template),
+          code = String.duplicate(" ", max(column - 1, 0)) <> String.replace(code, "\n", indent),
+          {:ok, ast} <- [Code.parse(code, line: line)],
+          nested <- sigils(ast, module, name, clause),
+          do: nested
+    else
+      []
+    end
   end
 
   @doc "The text of line `n` (1-based), or an empty string."

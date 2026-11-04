@@ -1,0 +1,30 @@
+/* Custom scales and utilities the grammar cannot place by name alone. */
+@import "tailwindcss";
+
+@theme {
+  --color-primary: #171717;
+  --radius-card: 12px;
+  --shadow-soft: 0 1px 2px rgb(0 0 0 / 0.1);
+  --tracking-snug2: 0.1em;
+  --leading-comfy: 1.6;
+  --blur-huge: 40px;
+  --ease-snap: cubic-bezier(0.2, 0, 0, 1);
+  --aspect-card: 3 / 4;
+  --font-weight-chunky: 800;
+  --text-stat: 2rem;
+  --border-color-line: #e5e5e5;
+}
+
+@utility heading-2xs {
+  font-size: 0.6rem;
+  font-weight: 600;
+}
+
+@utility paintbox {
+  color: red;
+  display: block;
+}
+
+@utility stack-it {
+  display: flex;
+}

@@ -8,6 +8,7 @@ defmodule HeexLint.Project.ModuleInfo do
     :name,
     :file,
     :line,
+    :id,
     aliases: %{},
     imports: [],
     uses: [],
@@ -23,13 +24,16 @@ defmodule HeexLint.Project.ModuleInfo do
           args: [Macro.t()],
           guard: Macro.t() | nil,
           body: Macro.t() | nil,
-          line: pos_integer()
+          line: pos_integer(),
+          column: pos_integer(),
+          id: pos_integer()
         }
 
   @type t :: %__MODULE__{
           name: String.t(),
           file: String.t(),
           line: pos_integer(),
+          id: pos_integer() | nil,
           aliases: %{String.t() => String.t()},
           imports: [String.t()],
           uses: [{String.t(), String.t() | nil}],

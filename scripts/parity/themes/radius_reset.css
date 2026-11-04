@@ -1,0 +1,8 @@
+/* A namespace reset: only the project's radius remains. */
+@import "tailwindcss";
+
+@theme {
+  --color-primary: #171717;
+  --radius-*: initial;
+  --radius-card: 12px;
+}

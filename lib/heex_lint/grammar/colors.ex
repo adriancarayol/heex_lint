@@ -166,6 +166,27 @@ defmodule HeexLint.Grammar.Colors do
   @spec named_color?(String.t()) :: boolean()
   def named_color?(value), do: Map.has_key?(@named, value |> String.trim() |> String.downcase())
 
+  # A color function whose channels are one theme variable, with an optional
+  # literal or variable alpha: oklch(var(--primary-oklch) / 0.2). Literal
+  # channels and a var() fallback still hardcode a color.
+  # \d+(?:\.\d*)? for @shadcn/lint's \d+\.?\d*: the same numbers, without trying every
+  # split of a run of digits.
+  @variable_channels ~r/(?<![\w-])(?:rgba?|hsla?|hwb|oklch|oklab|lab|lch|color)\(\s*var\(\s*--[\w-]+\s*\)\s*(?:\/\s*(?:[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?%?|var\(\s*--[\w-]+\s*\))\s*)?\)/i
+
+  @largest_channel 1.0e150
+  @out_of_range {@largest_channel, 0.0, 0.0}
+
+  @doc """
+  `value` with each color function over one theme variable blanked out.
+
+      iex> HeexLint.Grammar.Colors.without_variable_channel_colors("oklch(var(--x) / 0.2)")
+      " "
+      iex> HeexLint.Grammar.Colors.without_variable_channel_colors("oklch(var(--x, 0.5 0.1 200))")
+      "oklch(var(--x, 0.5 0.1 200))"
+  """
+  @spec without_variable_channel_colors(String.t()) :: String.t()
+  def without_variable_channel_colors(value), do: Regex.replace(@variable_channels, value, " ")
+
   @doc """
   Parses a CSS color into OKLab, or `nil` for anything that is not a literal
   color (variables, `color-mix()`, keywords such as `currentColor`).
@@ -183,9 +204,20 @@ defmodule HeexLint.Grammar.Colors do
       text == "" -> nil
       String.starts_with?(text, "#") -> from_hex(text)
       Map.has_key?(@named, text) -> from_hex(Map.fetch!(@named, text))
-      true -> function(text)
+      true -> text |> function() |> within_range()
     end
+  rescue
+    ArithmeticError -> @out_of_range
   end
+
+  # JavaScript computes on past the float range, through Infinity and NaN, where
+  # Elixir raises. A color out there is a color all the same, near no other. The
+  # limit leaves `distance/2` room to square.
+  defp within_range({l, a, b})
+       when abs(l) > @largest_channel or abs(a) > @largest_channel or abs(b) > @largest_channel,
+       do: @out_of_range
+
+  defp within_range(lab), do: lab
 
   @doc """
   Perceptual distance between two colors: roughly, under 0.02 is the same

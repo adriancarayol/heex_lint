@@ -20,6 +20,7 @@ defmodule HeexLint.Messages do
   @keys ~w(
     className class property component suggestions file category variants wrapper
     sizes entries tokens suggestion replacement attribute value around where variantsSuffix
+    prop
   )
 
   @doc "The placeholder names messages may use."
@@ -123,9 +124,10 @@ defmodule HeexLint.Messages do
   defp nearest_key(key) do
     {best, _} =
       Enum.reduce(@keys, {nil, 3}, fn candidate, {best, closest} ->
-        d = Similar.edit_distance(String.downcase(key), String.downcase(candidate))
+        d = Similar.within(String.downcase(key), String.downcase(candidate), 3)
 
         cond do
+          d == nil -> {best, closest}
           d < closest -> {candidate, d}
           d == closest -> {nil, closest}
           true -> {best, closest}

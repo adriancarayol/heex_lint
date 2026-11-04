@@ -75,7 +75,7 @@ defmodule HeexLint.IntegrationTest do
     [finding] = lint(dir, files, rules: rules, settings: [component_imports: ["^SaladUI\\."]])
 
     assert finding.message ==
-             ~s|"bg-pink-500" is not allowed on <.button>: <.button> owns its color. Use a variant: default, secondary, ghost. Add a new variant in deps/salad_ui/lib/salad_ui/button.ex only if the design explicitly calls for a treatment none of these provides.|
+             ~s|"bg-pink-500" is not allowed on <.button>: <.button> owns its color. Use a variant: default, secondary, ghost. Add a new variant to <.button> only if the design explicitly calls for a treatment none of these provides.|
   end
 
   test "suppression comments, with or without rule names", %{tmp_dir: dir} do
@@ -120,6 +120,29 @@ defmodule HeexLint.IntegrationTest do
     assert contents =~ ~s(class="text-[14px]")
     # Several fixes in one literal compose.
     assert contents =~ ~s|class="hover:px-(--gutter) border-(--x) text-(--y)"|
+  end
+
+  test "--fix does not write a token whose value holds only under a scoped selector", %{
+    tmp_dir: dir
+  } do
+    css = """
+    @import "tailwindcss";
+    @theme { --radius-card: var(--radius); }
+    :root { --radius: 8px; }
+    .compact { --radius: 4px; }
+    """
+
+    files = %{
+      "assets/css/app.css" => css,
+      "lib/app_web/live/page_live.ex" => live(~s(<div class="rounded-[4px]" />))
+    }
+
+    result = run(dir, files, rules: [no_arbitrary_values: :error])
+    assert HeexLint.Fixer.apply(result.diagnostics) == 1
+
+    # rounded-card is 8px at :root; rounded-sm is the 4px that was written.
+    contents = File.read!(Path.join(dir, "lib/app_web/live/page_live.ex"))
+    assert contents =~ ~s(class="rounded-sm")
   end
 
   test "unparsable templates are failures, not crashes", %{tmp_dir: dir} do

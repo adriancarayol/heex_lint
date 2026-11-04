@@ -5,7 +5,13 @@ defmodule HeexLint.Grammar.Lengths do
   Ported from @shadcn/lint's `src/grammar/lengths.ts` (MIT).
   """
 
+  alias HeexLint.Grammar.Validators
+
   @rem 16
+
+  # JavaScript reads a length past the float range as Infinity, where Elixir raises.
+  # This stands in for it: further than any step, with room to subtract any two.
+  @farthest 1.0e307
 
   @doc """
   The pixel value of `value`, or `nil`.
@@ -16,19 +22,23 @@ defmodule HeexLint.Grammar.Lengths do
       nil
       iex> HeexLint.Grammar.Lengths.px("calc(0.5rem + 2px)")
       10.0
+      iex> HeexLint.Grammar.Lengths.px("1e999px")
+      1.0e307
   """
   @spec px(String.t()) :: float() | nil
   def px(value) do
     with tokens when is_list(tokens) and tokens != [] <- tokenize(String.trim(value), []),
          {result, []} <- sum(tokens) do
       case result do
-        {:px, px} -> px * 1.0
+        {:px, px} -> (px * 1.0) |> max(-@farthest) |> min(@farthest)
         {:n, n} when n == 0 -> 0.0
         _ -> nil
       end
     else
       _ -> nil
     end
+  rescue
+    ArithmeticError -> @farthest
   end
 
   @doc """
@@ -103,11 +113,17 @@ defmodule HeexLint.Grammar.Lengths do
   end
 
   defp parse_float(text) do
-    text
-    |> String.replace(~r/^\./, "0.")
-    |> String.replace(~r/\.(e|E|$)/, ".0\\1")
-    |> Float.parse()
-    |> elem(0)
+    parsed =
+      text
+      |> String.replace(~r/^\./, "0.")
+      |> String.replace(~r/\.(e|E|$)/, ".0\\1")
+      |> Validators.parse_float()
+
+    case parsed do
+      {value, _rest} -> value
+      # What JavaScript reads as Infinity, such as 1e999.
+      :error -> @farthest
+    end
   end
 
   defp sum(tokens) do

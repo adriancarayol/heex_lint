@@ -1,0 +1,8 @@
+/* A whole-theme reset that keeps the spacing scale and one color. */
+@import "tailwindcss";
+
+@theme {
+  --*: initial;
+  --spacing: 4px;
+  --color-primary: #171717;
+}

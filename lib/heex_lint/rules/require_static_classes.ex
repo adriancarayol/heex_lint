@@ -8,7 +8,9 @@ defmodule HeexLint.Rules.RequireStaticClasses do
       Dynamically built class on <.button> cannot be checked. Use static class strings.
 
   Static strings and choices between complete classes pass, and so do
-  same-function assigns, variables and local helpers the linter can read.
+  same-function assigns, variables and local helpers the linter can read. A
+  chain of them longer than 64 bindings, or one that reads itself, cannot be
+  read, and is reported where it stops.
   A function component forwarding the `class` it received is allowed; its
   authored default is still checked.
 

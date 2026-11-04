@@ -1,0 +1,9 @@
+/* A theme that loads JavaScript: only Tailwind knows what these add. */
+@import "tailwindcss";
+@plugin "parity-plugin-kit";
+@config "parity-plugin-kit/tailwind.config.js";
+
+@theme inline {
+  --color-primary: #123456;
+  --color-brandy: #654321;
+}

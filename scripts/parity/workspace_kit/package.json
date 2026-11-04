@@ -1,0 +1,7 @@
+{
+  "name": "parity-workspace-kit",
+  "exports": {
+    "./theme.css": "./theme.css",
+    "./more.css": "./more.css"
+  }
+}

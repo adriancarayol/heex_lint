@@ -33,7 +33,20 @@ defmodule HeexLint.Rules.InlineStyleValuesTest do
     {~S|--x: #zzz|, "--x", false},
     {~S|--x: 1px solid black|, "--x", true},
     {~S|--x: url("red.png")|, "--x", false},
-    {~S|--x: foo\;bar|, "--x", false}
+    {~S|--x: foo\;bar|, "--x", false},
+    {~S|--x: oklch(var(--primary-oklch))|, "--x", false},
+    {~S|--x: oklch(var(--x) / 0.2)|, "--x", false},
+    {~S|--x: hsl(var(--x) / 50%)|, "--x", false},
+    {~S|--x: rgb(var(--x) / var(--a))|, "--x", false},
+    {~S|--x: linear-gradient(oklch(var(--x)), color(var(--y) / 0.5))|, "--x", false},
+    {~S|--x: OKLCH( VAR( --x ) / .5e1% )|, "--x", false},
+    {~S|--x: oklch(0.62 0.19 260)|, "--x", true},
+    {~S|--x: oklch(var(--l) 0.19 260)|, "--x", true},
+    {~S|--x: oklch(var(--x, 0.62 0.19 260))|, "--x", true},
+    {~S|--x: oklch(var(--x) / red)|, "--x", true},
+    {~S|--x: oklch(var(--x)) red|, "--x", true},
+    {~S|--x: my-oklch(var(--x))|, "--x", true},
+    {~S|--x: color-mix(var(--x))|, "--x", true}
   ]
 
   test "declarations and raw colors match the reference" do
