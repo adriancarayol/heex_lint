@@ -1019,7 +1019,7 @@ defmodule HeexLint.HostileInputTest do
     end
 
     test "still answers for each module of a file" do
-      ast =
+      source =
         Source.parse("a.ex", """
         defmodule A do
           @a 1
@@ -1032,10 +1032,15 @@ defmodule HeexLint.HostileInputTest do
         defmodule C do
           @c 3
         end
-        """).ast
+        """)
 
-      assert %{{"A", 1} => _, {"A.B", 4} => _, {"C", 9} => _} = bodies = Source.module_bodies(ast)
-      assert map_size(bodies) == 3
+      bodies = Enum.zip(Enum.map(source.modules, & &1.name), Source.module_bodies(source.ast))
+
+      for {name, attribute} <- [{"A", :a}, {"A.B", :b}, {"C", :c}] do
+        {^name, body} = List.keyfind!(bodies, name, 0)
+        {_, found} = Macro.prewalk(body, false, &{&1, &2 or match?({^attribute, _, _}, &1)})
+        assert found, name
+      end
     end
   end
 

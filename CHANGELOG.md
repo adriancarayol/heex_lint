@@ -176,7 +176,9 @@ Each of these reports something that passed before.
   variable, module attribute, same-module function or an assign set anywhere in the module.
   **Some real class keys go unread with them:** a map a function returns, as in `cn(tones())`
   in a template, a map piped through another call first, as in `%{...} |> Map.put(...) |> cn()`,
-  and a map reaching `cn(@tones)` as a component's prop or a `:for` variable.
+  and a map reaching `cn(@tones)` as a component's prop or a `:for` variable. A map written
+  in a template, as in `<div class={cn(%{"bg-red-500" => @on})} />`, stays unread as it was,
+  where @shadcn/lint reports it.
 - `scan_all_strings` leaves a class a tag's class site reads to that site, so a component's
   contract decides it: `<.button class="bg-pink-500">` under a contract allowing that class
   is no longer reported. A string bound in code and read there is still reported.

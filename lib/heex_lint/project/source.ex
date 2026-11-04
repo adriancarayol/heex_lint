@@ -71,16 +71,13 @@ defmodule HeexLint.Project.Source do
   end
 
   @doc """
-  The body of each `defmodule` in `ast`, by name and line. A project keeps `ast`,
-  and each copy of a term in it costs what the term does, so a module does not keep
-  its body too.
+  The body of each `defmodule` in `ast`, in the order of the source's `modules`. A
+  project keeps `ast`, and each copy of a term in it costs what the term does, so a
+  module does not keep its body too.
   """
-  @spec module_bodies(Macro.t()) :: %{{String.t(), pos_integer()} => Macro.t()}
-  def module_bodies(ast) do
-    each_module(ast, nil, %{}, fn name, line, body, acc ->
-      Map.put(acc, {name, line}, body)
-    end)
-  end
+  @spec module_bodies(Macro.t()) :: [Macro.t()]
+  def module_bodies(ast),
+    do: each_module(ast, nil, [], fn _name, _line, body, acc -> [body | acc] end)
 
   # Every defmodule, nested ones with their full names.
   defp each_module({:defmodule, meta, [name_ast, [{_do, body}]]}, parent, acc, fun) do

@@ -444,10 +444,10 @@ defmodule HeexLint.Rules.NoRawColorsTest do
     end
 
     for {name, template} <- [
-          {"a class attribute", ~S|<div class={tv(%{@base \| a: "bg-pink-500"})} />|},
-          {"another attribute", ~S|<div title={tv(%{@base \| a: "bg-pink-500"})} />|},
-          {":if", ~S|<div :if={tv(%{@base \| a: "bg-pink-500"})} />|},
-          {"a body", ~S|<div>{tv(%{@base \| a: "bg-pink-500"})}</div>|}
+          {"a class attribute", ~S[<div class={tv(%{@base | a: "bg-pink-500"})} />]},
+          {"another attribute", ~S[<div title={tv(%{@base | a: "bg-pink-500"})} />]},
+          {":if", ~S[<div :if={tv(%{@base | a: "bg-pink-500"})} />]},
+          {"a body", ~S[<div>{tv(%{@base | a: "bg-pink-500"})}</div>]}
         ] do
       test "a map update in #{name} has its entries read", %{tmp_dir: dir} do
         assert [finding] = colors(dir, unquote(template), variant_functions: ["tv"])
@@ -457,9 +457,9 @@ defmodule HeexLint.Rules.NoRawColorsTest do
 
     test "a map update in code has its entries read", %{tmp_dir: dir} do
       for code <- [
-            ~S|@x tv(%{@y \| a: "bg-pink-500"})|,
-            ~S|def a(b \\ tv(%{y() \| a: "bg-pink-500"})), do: b|,
-            ~S|tv(%{y() \| a: "bg-pink-500"})|
+            ~S[@x tv(%{@y | a: "bg-pink-500"})],
+            ~S[def a(b \\ tv(%{y() | a: "bg-pink-500"})), do: b],
+            ~S[tv(%{y() | a: "bg-pink-500"})]
           ] do
         module = "defmodule AppWeb.Code do\n#{code}\nend\n"
         rules = [no_raw_colors: {:error, variant_functions: ["tv"]}]
@@ -467,16 +467,52 @@ defmodule HeexLint.Rules.NoRawColorsTest do
       end
     end
 
+    test "a map update's string keys have their values read too", %{tmp_dir: dir} do
+      for {update, count} <- [
+            {~S["base" => "bg-pink-500"], 1},
+            {~S[:base => "bg-pink-500", "x" => "bg-red-500"], 2},
+            {~S["variants" => %{"s" => %{"x" => "bg-pink-500"}}], 1}
+          ] do
+        template = "<div class={tv(%{@a | #{update}})} />"
+        findings = colors(dir, template, variant_functions: ["tv"])
+        assert length(findings) == count, template
+      end
+    end
+
+    test "two modules on one line keep their own code", %{tmp_dir: dir} do
+      for code <- [
+            ~S|defmodule A do @x cn("bg-pink-500"); end; defmodule A do @y cn("bg-red-500"); end|,
+            ~S|defmodule A.B do @x cn("bg-pink-500"); end; defmodule A do defmodule B do @y cn("bg-red-500"); end; end|
+          ] do
+        assert [_, _] = lint(dir, %{"lib/app_web/one.ex" => code <> "\n"}, rules: @calls), code
+      end
+    end
+
+    test "an attribute named like one holds no map keys", %{tmp_dir: dir} do
+      module = """
+      defmodule AppWeb.Named do
+        @cn %{"fill-color" => true}
+        @x cn(%{"bg-pink-500" => true})
+      end
+      """
+
+      rules = [no_raw_colors: {:error, scan_all_strings: true}]
+      assert [finding] = lint(dir, %{"lib/app_web/named.ex" => module}, rules: rules)
+      assert finding.message =~ "bg-pink-500"
+    end
+
     test "a variant config's base and any other entry end nothing", %{tmp_dir: dir} do
+      assert colors(dir, ~S[<div title={tv(%{@a | b})} />], variant_functions: ["tv"]) == []
+
       for template <- [
             ~S|<div title={tv(%{unquote_splicing(@y)})} />|,
-            ~S|<div title={tv(%{@a \| "k" => @b})} />|
+            ~S[<div title={tv(%{@a | "k" => @b})} />]
           ] do
         assert colors(dir, template, variant_functions: ["tv"]) == [], template
       end
 
       assert [_] =
-               colors(dir, ~S|<div title={tv(%{%{a: "bg-pink-500"} \| b: "p-1"})} />|,
+               colors(dir, ~S[<div title={tv(%{%{a: "bg-pink-500"} | b: "p-1"})} />],
                  variant_functions: ["tv"]
                )
     end
@@ -1178,6 +1214,24 @@ defmodule HeexLint.Rules.NoRawColorsTest do
 
       assert [finding] = colors(dir, ~S|<svg><path stop-color={ "blue" } /></svg>|)
       assert finding.message =~ ~s|stop-color="blue" hardcodes a color|
+
+      assert [finding] = colors(dir, ~S|<svg fill={"\x72ed"} />|)
+      assert finding.message =~ ~s|fill="red" hardcodes a color|
+
+      assert [finding] = colors(dir, ~S|<svg fill={"\#f00"} />|)
+      assert finding.message =~ ~s|fill="#f00" hardcodes a color|
+    end
+
+    test "with no value have nothing to read", %{tmp_dir: dir} do
+      for template <- [
+            ~S|<svg fill />|,
+            ~S|<svg stroke />|,
+            ~S|<input color />|,
+            ~S|<font color>x</font>|,
+            ~S|<svg><path stop-color /></svg>|
+          ] do
+        assert colors(dir, template) == [], template
+      end
     end
 
     test "report at the literal", %{tmp_dir: dir} do

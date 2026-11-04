@@ -236,10 +236,11 @@ defmodule HeexLint.Sites do
     helpers = helpers(opts)
     site = fn call, context -> code_site(source, Collector.expression(call, context, opts)) end
     file = %{project: project, source: source}
-    bodies = Source.module_bodies(source.ast)
 
     modules =
-      Enum.flat_map(source.modules, fn module ->
+      source.modules
+      |> Enum.zip(Source.module_bodies(source.ast))
+      |> Enum.flat_map(fn {module, body} ->
         context = Map.put(file, :module, module.name)
 
         function_sites =
@@ -250,7 +251,7 @@ defmodule HeexLint.Sites do
               do: site.(call, Map.put(context, :clause, clause))
 
         outside_sites =
-          for call <- helpers_outside(bodies[{module.name, module.line}], module, helpers),
+          for call <- helpers_outside(body, module, helpers),
               do: site.(call, context)
 
         default_sites =

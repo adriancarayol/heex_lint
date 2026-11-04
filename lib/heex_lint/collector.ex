@@ -1007,8 +1007,11 @@ defmodule HeexLint.Collector do
 
   # %{base | a: "..."} has its entries and what is in its base. An entry that is
   # neither that nor a pair, such as `unquote_splicing(entries)`, is only code.
-  defp visit_entry(state, {:|, _, [base, updates]}),
-    do: state |> visit_values(base) |> visit_values(updates)
+  defp visit_entry(state, {:|, _, [base, updates]}) do
+    updates
+    |> List.wrap()
+    |> Enum.reduce(visit_values(state, base), &visit_entry(&2, &1))
+  end
 
   defp visit_entry(state, {_key, value}), do: visit_values(state, value)
   defp visit_entry(state, entry), do: visit(state, entry)

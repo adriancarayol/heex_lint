@@ -326,6 +326,10 @@ defmodule HeexLint.Rules.NoRawColors do
         {kind, meta, [_head | body]}, acc when kind in [:def, :defp, :defmacro, :defmacrop] ->
           {{kind, meta, [nil | body]}, acc}
 
+        # `@cn %{...}` sets an attribute of that name, and what it holds can be a call.
+        {:@, meta, [{name, _, args}]}, acc when is_atom(name) and is_list(args) ->
+          {{:__block__, meta, args}, acc}
+
         {:|>, _, [_left, {callee, _, args}]} = node, acc when is_list(args) ->
           {node, if(merge_function?(callee, merge), do: [node | acc], else: acc)}
 
@@ -569,13 +573,16 @@ defmodule HeexLint.Rules.NoRawColors do
 
   defp static_value({:expr, code, _} = expression, context) do
     with {:ok, {:__block__, _, [value]} = node} when is_binary(value) <- Code.parse(code),
-         %{strings: [%{literal: %{from: position}}]} <-
+         %{strings: [%{items: [{:char, _text, position} | _]}]} <-
            Collector.template_expression(node, expression, context) do
       [{value, position}]
     else
       _ -> []
     end
   end
+
+  # `<svg fill />` has no value.
+  defp static_value(_other, _context), do: []
 
   @doc false
   def raw_color_value?(value) do
