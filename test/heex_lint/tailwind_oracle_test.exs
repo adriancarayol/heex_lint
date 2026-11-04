@@ -1828,6 +1828,58 @@ defmodule HeexLint.TailwindOracleTest do
     end
   end
 
+  describe "the standalone binary and undeclared colors" do
+    # A build gives no suggestion, so it cannot change what no_raw_colors says.
+    for {name, theme} <- [
+          plain: ~s(@import "tailwindcss";\n@theme { --color-primary: red; }\n),
+          module:
+            ~s(@import "tailwindcss";\n@plugin "./plugin.js";\n@theme { --color-primary: red; }\n)
+        ] do
+      @tag :standalone
+      test "take no build on a #{name} theme", %{tmp_dir: dir} do
+        counter = Path.join(dir, "builds")
+
+        bin =
+          script(dir, "fake/tailwind", """
+          #!/bin/sh
+          echo x >> "#{counter}"
+          exec "#{standalone_bin()}" "$@"
+          """)
+
+        classes = Enum.map_join(1..15, " ", &"bg-und#{&1}")
+
+        files =
+          Map.merge(page(~s(<div class="#{classes}" />)), %{
+            "assets/css/app.css" => unquote(theme),
+            "assets/css/plugin.js" => "module.exports = function () {}\n"
+          })
+
+        result = run(dir, files, rules: [no_raw_colors: :error], settings: [tailwind_bin: bin])
+
+        assert length(result.diagnostics) == 15
+        assert Enum.all?(result.diagnostics, &(&1.message =~ "is not a declared theme color"))
+        refute File.exists?(counter)
+      end
+    end
+
+    @tag :tailwind
+    test "stay quiet through Node when the typo is another utility's", %{tmp_dir: dir} do
+      with_tailwind(dir)
+
+      files =
+        Map.put(
+          page(~s(<div class="text-smal bg-undeclared" />)),
+          "assets/css/app.css",
+          ~s(@import "tailwindcss";\n@theme { --color-primary: red; }\n)
+        )
+
+      result = run(dir, files, rules: [no_raw_colors: :error])
+
+      assert [finding] = result.diagnostics
+      assert finding.message =~ ~s("bg-undeclared")
+    end
+  end
+
   describe "the standalone binary and contract entries" do
     @tag :standalone
     test "takes one build for all of them", %{tmp_dir: dir} do

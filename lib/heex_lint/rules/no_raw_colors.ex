@@ -487,14 +487,14 @@ defmodule HeexLint.Rules.NoRawColors do
 
   # cn's color groups take any value, so text-smal classifies as a color.
   # When Tailwind's nearest real class is not a color, the typo belongs to
-  # no_unknown_classes and this rule stays quiet.
+  # no_unknown_classes and this rule stays quiet. Only a suggestion can say so.
   defp typo_of_another_utility?(context, token) do
-    case Tailwind.unknown(context.project, [token]) do
-      [%{suggestion: suggestion} | _] when is_binary(suggestion) ->
-        ProjectClassifier.category_of(context.theme, suggestion) != "color"
-
-      _ ->
-        false
+    with true <- Tailwind.suggests?(context.project),
+         [%{suggestion: suggestion} | _] when is_binary(suggestion) <-
+           Tailwind.unknown(context.project, [token]) do
+      ProjectClassifier.category_of(context.theme, suggestion) != "color"
+    else
+      _ -> false
     end
   end
 

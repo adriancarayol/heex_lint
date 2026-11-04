@@ -309,6 +309,8 @@ Each of these reports something that passed before.
   findings change, except as listed above.
 - The standalone binary takes one build for the classes a run's files and contract entries
   name, rather than one per `text-*` class, on a theme with an `@config` or `@plugin`.
+- `no_raw_colors` no longer runs a standalone Tailwind build for each undeclared color. Only
+  Node's answers can change that finding, so through the binary such a class costs no build.
 
 - Two linters at once no longer share a build directory, where one could read the other's
   answer, and a VM that exits during a build leaves no directory behind.

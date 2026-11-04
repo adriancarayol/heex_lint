@@ -147,6 +147,15 @@ defmodule HeexLint.Tailwind do
   def expect(_pid, _entry, []), do: :ok
   def expect(pid, entry, tokens), do: GenServer.cast(pid, {:expect, entry, tokens})
 
+  @doc """
+  Whether a question about the project's current theme can come back with a suggestion.
+  Only Node's answers have them, so through the standalone binary a question asked for
+  one is a build that can say nothing. This starts nothing.
+  """
+  @spec suggests?(HeexLint.Project.t()) :: boolean()
+  def suggests?(%{entry: nil}), do: false
+  def suggests?(project), do: match?({:node, _}, status(project.oracle, project.entry))
+
   @doc "The strategy the oracle uses for `entry`, and why, for diagnostics."
   def status(nil, _entry), do: {:none, "not started"}
 
