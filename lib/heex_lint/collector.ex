@@ -1196,9 +1196,9 @@ defmodule HeexLint.Collector do
 
   # `@styles.popper` and `assigns.styles.popper`. What the assign holds is code of
   # the function that assigns it.
-  defp table(%{mode: :template, map_keys: nil} = state, node, route) do
+  defp table(%{mode: :template} = state, node, route) do
     with name when is_binary(name) <- assign_read(node),
-         [value] <- assigned_values(state.clause, name) do
+         [value] <- table_assigned(state, name) do
       alias_of(%{state | mode: :body}, {:assign, name}, value, route)
     else
       _ -> nil
@@ -1206,6 +1206,22 @@ defmodule HeexLint.Collector do
   end
 
   defp table(_state, _other, _route), do: nil
+
+  # As an assign does, map keys read from every function of the module.
+  defp table_assigned(%{map_keys: nil} = state, name), do: assigned_values(state.clause, name)
+
+  defp table_assigned(state, name) do
+    case current_module(state) do
+      %ModuleInfo{functions: functions} ->
+        for clauses <- Map.values(functions),
+            clause <- clauses,
+            value <- assigned_values(clause, name),
+            do: value
+
+      nil ->
+        []
+    end
+  end
 
   defp assign_read({:@, _, [{name, _, ctx}]}) when is_atom(name) and is_atom(ctx),
     do: Atom.to_string(name)

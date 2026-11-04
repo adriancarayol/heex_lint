@@ -702,6 +702,39 @@ defmodule HeexLint.Rules.NoRawColorsTest do
       end
     end
 
+    for {shape, setup, read} <- [
+          {"a dot", ~S|t = %{a: %{"bg-pink-500" => true}}|, "t.a"},
+          {"Access", ~S|t = %{a: %{"bg-pink-500" => true}}|, "t[:a]"},
+          {"Map.get", ~S|t = %{a: %{"bg-pink-500" => true}}|, "Map.get(t, :a)"},
+          {"an assign and a dot",
+           ~S|assigns = assign(assigns, :t, %{a: %{"bg-pink-500" => true}})|, "@t.a"},
+          {"an assign and Access",
+           ~S|assigns = assign(assigns, :t, %{a: %{"bg-pink-500" => true}})|, "@t[:a]"}
+        ] do
+      test "a table lookup in a template's merge call: #{shape}", %{tmp_dir: dir} do
+        module = """
+        defmodule AppWeb.Looked do
+          use AppWeb, :html
+          import AppWeb.Cn
+
+          def looked(assigns) do
+            #{unquote(setup)}
+            ~H\"\"\"
+            <div class={cn(#{unquote(read)})} />
+            \"\"\"
+          end
+        end
+        """
+
+        helper = "defmodule AppWeb.Cn do\n  def cn(value), do: value\nend\n"
+
+        assert [_one] =
+                 lint(dir, %{"lib/app_web/looked.ex" => module, "lib/app_web/cn.ex" => helper},
+                   rules: [no_raw_colors: {:error, scan_all_strings: true}]
+                 )
+      end
+    end
+
     test "a plain map key names a field", %{tmp_dir: dir} do
       assert scanned(dir, ~S|%{"bg-pink-500" => tone, "text-pink-500" => on}|) == []
       assert scanned(dir, ~S(%{map | "bg-pink-500" => tone})) == []
@@ -909,7 +942,7 @@ defmodule HeexLint.Rules.NoRawColorsTest do
       end
     end
 
-    test "class map keys stay unread in a table an assign holds", %{tmp_dir: dir} do
+    test "class map keys count in a table an assign holds", %{tmp_dir: dir} do
       body = ~S"""
       def a(assigns) do
         assigns = assign(assigns, :tones, %{warn: %{"bg-pink-500" => true}})
@@ -917,7 +950,7 @@ defmodule HeexLint.Rules.NoRawColorsTest do
       end
       """
 
-      assert templated(dir, body) == []
+      assert [_finding] = templated(dir, body)
     end
 
     test "class map keys count when an embedded template reads them", %{tmp_dir: dir} do
