@@ -291,6 +291,8 @@ What the name holds decides the rest:
   `t = %{assigns.base | a: "color: red"}` reports `color` for `t.a` under `t.a`. `t.b`
   is whatever the base holds, so it stays dynamic when the base cannot be read or does
   not have the key, and is exempt under `t.b`. A computed key on it stays dynamic too.
+  So does a computed or missing key on a table assigned with `assign/3`, as in
+  `@styles[@tone]`.
 - Any other value is exempt along with everything it goes on to read, literals
   included: `floating_styles = if assigns.open, do: "color: red", else: Floating.compute()`
   and an alias of another name both report nothing under `floating_styles`. So does a

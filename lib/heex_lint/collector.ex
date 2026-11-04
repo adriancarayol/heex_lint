@@ -1050,6 +1050,18 @@ defmodule HeexLint.Collector do
               unreadable(state, unread, meta, written)
           end
 
+        # As in @shadcn/lint, a table reached through an assign answers only for a key
+        # it writes. A computed key, a missing one, or a computed write after it is
+        # unreadable and reads no entry.
+        {pairs, [{:assign, _name} | _] = route} when state.kind != :hole ->
+          case update_entry({pairs, route}, key) do
+            {value, route} ->
+              state |> named(written, [value]) |> entries([value], route, key, meta)
+
+            unread ->
+              unreadable(state, unread, meta, written)
+          end
+
         {pairs, route} ->
           entry = key && List.keyfind(pairs, key, 0)
 

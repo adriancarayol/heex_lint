@@ -65,7 +65,8 @@ Each of these reports something that passed before.
 - **`assigns.name` in a template.** `assigns.name`, `assigns[:name]`, `Map.get(assigns,
   :name)` and `Map.fetch!(assigns, :name)` read what the rendering function assigns, as
   `@name` does, and a lookup on them or on `@name` reads a table assigned there, as in
-  `@styles.popper`. `assign(assigns, :s, "color: red")` with `style={assigns.s}` reports
+  `@styles.popper`. A computed or missing key on such a table, as in `@styles[@tone]`, reads
+  no entry and stays dynamic. `assign(assigns, :s, "color: red")` with `style={assigns.s}` reports
   `color`, and a `class` read this way reaches `no_raw_colors` and the other class rules.
   The dynamic or `require_static_classes` finding such a value had usually goes away; one
   appears where the value assigned cannot be read, as in `assign(assigns, :class,
