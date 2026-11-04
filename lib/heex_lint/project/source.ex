@@ -6,13 +6,23 @@ defmodule HeexLint.Project.Source do
   alias HeexLint.{Code, Template}
   alias HeexLint.Project.{Component, ModuleInfo}
 
-  defstruct [:path, :contents, :ast, lines: {}, modules: [], templates: [], error: nil]
+  defstruct [
+    :path,
+    :contents,
+    :ast,
+    :non_ascii,
+    lines: {},
+    modules: [],
+    templates: [],
+    error: nil
+  ]
 
   @type t :: %__MODULE__{
           path: String.t(),
           contents: String.t(),
           ast: Macro.t() | nil,
           lines: tuple(),
+          non_ascii: MapSet.t(pos_integer()) | nil,
           modules: [ModuleInfo.t()],
           templates: [Template.t()],
           error: String.t() | nil
@@ -21,14 +31,29 @@ defmodule HeexLint.Project.Source do
   @def_kinds [:def, :defp, :defmacro, :defmacrop]
 
   @doc """
+  The numbers of the lines whose columns are not their bytes. Reading a line from a
+  column costs its length only on these.
+  """
+  @spec non_ascii_lines(tuple()) :: MapSet.t(pos_integer())
+  def non_ascii_lines(lines) do
+    for {line, number} <- lines |> Tuple.to_list() |> Enum.with_index(1),
+        String.length(line) != byte_size(line),
+        into: MapSet.new(),
+        do: number
+  end
+
+  @doc """
   Parses the file at `path` with `contents`.
   """
   @spec parse(String.t(), String.t()) :: t()
   def parse(path, contents) do
+    lines = contents |> String.split(~r/\r?\n/) |> List.to_tuple()
+
     source = %__MODULE__{
       path: path,
       contents: contents,
-      lines: contents |> String.split(~r/\r?\n/) |> List.to_tuple()
+      lines: lines,
+      non_ascii: non_ascii_lines(lines)
     }
 
     ext = Path.extname(path)

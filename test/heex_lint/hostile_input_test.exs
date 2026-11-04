@@ -313,21 +313,38 @@ defmodule HeexLint.HostileInputTest do
     end
 
     # The value would differ from the source, and a fix writes to the source.
-    test "with an escape on its line offers no suggestion", %{tmp_dir: dir} do
-      for template <- [
-            ~S(<div class={"p-[12px] \\n"} />),
-            ~S(<div class={["p-[12px]", "\\n"]} />)
-          ] do
-        assert [%{suggestions: []}] =
-                 lint(dir, page(template), rules: [no_arbitrary_values: :error])
-      end
+    test "one line of many literals costs its length", %{tmp_dir: dir} do
+      literals = Enum.map_join(1..60_000, ", ", &~s("p-#{&1}"))
+      code = "defmodule AppWeb.Long do\n  def x, do: [#{literals}]\nend\n"
+      template = "<div id={[#{literals}]} />"
+
+      quick(fn ->
+        lint(dir, %{"lib/app_web/long.ex" => code},
+          rules: [no_raw_colors: {:error, scan_all_strings: true}]
+        )
+      end)
+
+      quick(fn ->
+        lint(dir, page(template), rules: [no_raw_colors: {:error, scan_all_strings: true}])
+      end)
     end
 
-    test "after an escape on its line still offers one", %{tmp_dir: dir} do
-      assert [%{suggestions: [_]}] =
-               lint(dir, page(~S(<div class={["\\n", "p-[12px]"]} />)),
+    test "with an escape of its own offers no suggestion", %{tmp_dir: dir} do
+      assert [%{suggestions: []}] =
+               lint(dir, page(~S(<div class={"p-[12px] \\n"} />)),
                  rules: [no_arbitrary_values: :error]
                )
+    end
+
+    # A fix writes to its own literal, whatever is around it.
+    for template <- [
+          ~S(<div class={["\\n", "p-[12px]"]} />),
+          ~S(<div class={["p-[12px]", "\\n"]} />)
+        ] do
+      test "beside another string's escape still offers one: #{template}", %{tmp_dir: dir} do
+        assert [%{suggestions: [_]}] =
+                 lint(dir, page(unquote(template)), rules: [no_arbitrary_values: :error])
+      end
     end
 
     test "keeps its classes' positions across lines", %{tmp_dir: dir} do

@@ -37,9 +37,12 @@ defmodule HeexLint.Collector do
 
   alias HeexLint.Code
   alias HeexLint.Project
-  alias HeexLint.Project.{Component, ModuleInfo}
+  alias HeexLint.Project.{Component, ModuleInfo, Source}
 
   @no_reads %{within: %{}, at: %{}}
+
+  # Past any real expression in a template, in bytes.
+  @long_expression 4_096
 
   defstruct strings: [], unresolved: [], reads: @no_reads, calls: []
 
@@ -303,9 +306,30 @@ defmodule HeexLint.Collector do
   end
 
   # Positions inside a `{...}` expression, as they are in the template's file.
+  defp expression_text(code, position, context) when byte_size(code) < @long_expression,
+    do: new_expression_text(code, position, context)
+
+  # A caller reads an expression once per literal, and one this long is worth keeping.
   defp expression_text(code, position, context) do
+    key = {__MODULE__, :expression_text, context.template.file, position}
+
+    case Process.get(key) do
+      nil ->
+        text = new_expression_text(code, position, context)
+        Process.put(key, text)
+        text
+
+      text ->
+        text
+    end
+  end
+
+  defp new_expression_text(code, position, context) do
+    lines = code |> String.split("\n") |> List.to_tuple()
+
     %{
-      lines: code |> String.split("\n") |> List.to_tuple(),
+      lines: lines,
+      non_ascii: Source.non_ascii_lines(lines),
       locate: locator(position, context.template.indentation),
       file: context.template.file
     }
@@ -330,6 +354,7 @@ defmodule HeexLint.Collector do
 
     %{
       lines: source.lines,
+      non_ascii: source.non_ascii || Source.non_ascii_lines(source.lines),
       locate: fn line, column -> {line, column} end,
       file: source.path
     }
@@ -546,8 +571,7 @@ defmodule HeexLint.Collector do
         {line, column} = origin(state, meta)
         # Escapes move classes between source and value; such a string
         # gets no suggestion rather than a wrong one.
-        source_line = text_line(state.text, meta[:line])
-        escaped = String.contains?(line_from(source_line, meta[:column] + 1), "\\")
+        escaped = state.text |> line_from(meta[:line], meta[:column] + 1) |> escaped?()
         fixable = raw_text(items) == text and not String.contains?(text, "\n") and not escaped
         literal = if fixable, do: %{file: state.text.file, from: {line, column + 1}, raw: text}
         push(state, text, strip_interp(items), literal)
@@ -1382,21 +1406,27 @@ defmodule HeexLint.Collector do
   defp scan(text, line, column), do: scan_string(text, cursor(text, line, column), [])
 
   # Where a walk is: what is left of the line, and its position.
-  defp cursor(text, line, column),
-    do: {text |> text_line(line) |> line_from(column), line, column}
+  defp cursor(text, line, column), do: {line_from(text, line, column), line, column}
 
   # A line from a column on. Columns count graphemes, which on an ASCII line are bytes:
   # a line of a thousand strings is read a thousand times.
-  defp line_from(source, column) do
-    size = byte_size(source)
+  defp line_from(text, line, column) do
+    source = text_line(text, line)
 
-    if String.length(source) == size do
+    if MapSet.member?(text.non_ascii, line) do
+      String.slice(source, (column - 1)..-1//1)
+    else
+      size = byte_size(source)
       skip = min(column - 1, size)
       binary_part(source, skip, size - skip)
-    else
-      String.slice(source, (column - 1)..-1//1)
     end
   end
+
+  # Whether a string has an escape, from just after its opening quote.
+  defp escaped?(<<"\\", _rest::binary>>), do: true
+  defp escaped?(<<"\"", _rest::binary>>), do: false
+  defp escaped?(<<_byte, rest::binary>>), do: escaped?(rest)
+  defp escaped?(<<>>), do: false
 
   # The character at a cursor, its position and the cursor after it.
   defp next_char(%{lines: lines}, {_rest, line, _column}) when line > tuple_size(lines), do: nil
