@@ -181,14 +181,13 @@ defmodule HeexLint.GrammarTest do
   end
 
   test "two long names cost their length" do
-    # Small enough that the whole table fails this on time, and not by filling the memory.
-    a = String.duplicate("a", 2_000)
-    b = String.duplicate("a", 1_999) <> "b"
-    c = String.duplicate("c", 2_000)
+    a = String.duplicate("a", 200_000)
+    b = String.duplicate("a", 199_999) <> "b"
+    c = String.duplicate("c", 200_000)
 
-    {time, answer} = :timer.tc(fn -> Similar.did_you_mean(a, [b, c]) end)
+    # Filling a whole table at this length would take the memory, so it is stopped early.
+    task = Task.async(fn -> Similar.did_you_mean(a, [b, c]) end)
 
-    assert answer == b
-    assert time < 500_000
+    assert {:ok, ^b} = Task.yield(task, 2_000) || Task.shutdown(task, :brutal_kill)
   end
 end

@@ -280,8 +280,9 @@ Files come from `inputs`, without any path that has a directory named `deps` in 
 - **Templates outside a `def`'s body.** Only the `def` and `defp` statements of a module
   collect templates. A `~H` in a template's `{...}`, as in
   `{if @on, do: ~H|<b class="bg-pink-500" />|}`, is not read by any rule, and nor is one in a
-  module attribute, a `defmacro`, a `def` inside an `if`, a `defimpl`, a `quote` outside a
-  `def` or a `def`'s `rescue`.
+  module attribute, a `defmacro`, a `def` inside an `if`, a `quote` outside a `def` or a
+  `def`'s `rescue`, nor directly in a `defimpl`. A module inside a `defimpl` is read as any
+  other module is.
 - **EEx tags a block splits.** `<%= Enum.map(cn("bg-pink-500"), fn x -> %>` and
   `<% end, cn("bg-pink-500")) %>` do not parse alone, so no rule reads what is in them.
 - **Patterns.** `%{a: s} = %{a: "color: red"}` does not read `s`, which is dynamic.

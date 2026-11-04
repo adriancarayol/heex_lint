@@ -314,8 +314,9 @@ defmodule HeexLint.HostileInputTest do
 
     # The value would differ from the source, and a fix writes to the source.
     test "a long :for is read once for what is inside it", %{tmp_dir: dir} do
-      items = Enum.map_join(1..20_000, ", ", &~s("item-#{&1}"))
-      children = String.duplicate(~S(<div class={@c}></div>), 2_000)
+      # Long enough that hashing the :for for each element inside it takes over the limit.
+      items = Enum.map_join(1..170_000, ", ", &~s("item-#{&1}"))
+      children = String.duplicate(~S(<div class={@c}></div>), 16_000)
       template = ~s(<section :for={x <- [#{items}]}>#{children}</section>)
 
       quick(fn -> lint(dir, page(template), rules: [no_raw_colors: :error]) end)

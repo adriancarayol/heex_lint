@@ -228,7 +228,9 @@ defmodule HeexLint.Tailwind do
     nil
   end
 
-  defp exit_reason({:timeout, waited}), do: "timed out after #{round(waited / 1000)} s"
+  defp exit_reason({:timeout, waited}) when is_number(waited),
+    do: "timed out after #{round(waited / 1000)} s"
+
   defp exit_reason({reason, _call}), do: inspect(reason)
   defp exit_reason(reason), do: inspect(reason)
 

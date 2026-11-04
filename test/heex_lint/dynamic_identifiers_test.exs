@@ -385,6 +385,15 @@ defmodule HeexLint.DynamicIdentifiersTest do
       assert findings(dir, files, ["unrelated"]) == [@dynamic]
     end
 
+    test "two :for at one position, as in two files, bind their own names" do
+      element = fn code ->
+        %HeexLint.Element{attributes: [%{name: ":for", value: {:expr, code, {1, 1}}}]}
+      end
+
+      assert Collector.bound_names(element.("a <- @list"), []) == [:a]
+      assert Collector.bound_names(element.("b <- @list"), []) == [:b]
+    end
+
     test "a :let variable is that variable", %{tmp_dir: dir} do
       files = page("", ~s|<.card :let={styles}><div style={styles} /></.card>|)
 

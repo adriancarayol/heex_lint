@@ -887,6 +887,19 @@ defmodule HeexLint.TailwindOracleTest do
     end
 
     @tag :capture_log
+    test "stopped with a timeout of its own answers nil", %{tmp_dir: dir} do
+      project = bare_project(dir)
+      {:ok, oracle} = Tailwind.start(project)
+      :sys.suspend(oracle)
+      Process.exit(oracle, {:timeout, {GenServer, :call, [self(), :x, 5_000]}})
+      asking = Task.async(fn -> Tailwind.unknown(%{project | oracle: oracle}, ["flex"]) end)
+      Process.sleep(100)
+      :sys.resume(oracle)
+
+      assert Task.await(asking, 15_000) == nil
+    end
+
+    @tag :capture_log
     test "that a crash took down does not take its caller with it", %{tmp_dir: dir} do
       project = bare_project(dir)
       {:ok, oracle} = Tailwind.start(project)

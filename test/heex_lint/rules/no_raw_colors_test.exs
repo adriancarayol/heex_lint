@@ -802,6 +802,40 @@ defmodule HeexLint.Rules.NoRawColorsTest do
       end
     end
 
+    test "an attr's default leaves an assigned table in the assigning function", %{tmp_dir: dir} do
+      helper = "defmodule AppWeb.Cn do\n  def cn(value), do: value\nend\n"
+
+      module = """
+      defmodule AppWeb.Tabled do
+        use AppWeb, :html
+        import AppWeb.Cn
+
+        attr :t, :map, default: %{}
+        def comp(assigns), do: ~H"<i />"
+
+        def mount(_, _, socket) do
+          t = %{a: %{"bg-pink-500" => 1}}
+          {:ok, assign(socket, :t, t)}
+        end
+
+        def render(assigns) do
+          t = %{a: %{"bg-red-500" => 1}}
+          _ = t
+          ~H"<div class={cn(@t.a)} />"
+        end
+      end
+      """
+
+      assert [finding] =
+               lint(
+                 dir,
+                 %{"lib/app_web/tabled.ex" => module, "lib/app_web/cn.ex" => helper},
+                 rules: [no_raw_colors: {:error, scan_all_strings: true}]
+               )
+
+      assert finding.message =~ "bg-pink-500"
+    end
+
     test "an assigned table's variable is the assigning function's", %{tmp_dir: dir} do
       helper = "defmodule AppWeb.Cn do\n  def cn(value), do: value\nend\n"
 

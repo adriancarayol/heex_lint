@@ -107,7 +107,8 @@ defmodule HeexLint.Project.Source do
     do: each_module(ast, nil, [], fn _kind, _name, _line, body, acc -> [body | acc] end)
 
   # Every defmodule, nested ones with their full names, and every defimpl: its functions
-  # are read as a module's are, but no template or component in it is.
+  # are read as a module's are, but no template or component directly in it is. A module
+  # inside one is a module like any other.
   defp each_module({:defmodule, meta, [name_ast, [{_do, body}]]}, parent, acc, fun) do
     case Code.alias_name(name_ast) do
       nil ->

@@ -195,16 +195,30 @@ defmodule HeexLint.Collector do
       end)
   end
 
-  defp binder_names(%{name: name, value: {:expr, code, _position}}, names) do
-    if name in names,
-      do: memo({__MODULE__, :binder_names, name, code}, fn -> binders(name, code) end),
-      else: []
+  # Every element inside a `:for` asks, so it is parsed once. Hashing the code on each
+  # question would cost its length, so the key is the position, which another file can
+  # share, and the code settles it.
+  defp binder_names(%{name: name, value: {:expr, code, position}}, names) do
+    if name in names do
+      key = {__MODULE__, :binder_names, name, position}
+
+      case Process.get(key) do
+        {^code, found} ->
+          found
+
+        _ ->
+          found = binders(name, code)
+          Process.put(key, {code, found})
+          found
+      end
+    else
+      []
+    end
   end
 
   defp binder_names(_attribute, _names), do: []
 
-  # A `:for` can have several generators, which only a list holds. Every element inside
-  # one asks, so it is parsed once.
+  # A `:for` can have several generators, which only a list holds.
   defp binders(name, code) do
     case Code.parse("[" <> code <> "]") do
       {:ok, ast} ->
@@ -1318,7 +1332,8 @@ defmodule HeexLint.Collector do
   defp assigning_clause(%{mode: :template, map_keys: keys} = state, map) when is_list(keys) do
     with name when is_binary(name) <- assign_read(map),
          %ModuleInfo{} = module <- current_module(state),
-         [{%{} = clause, _value}] <- Map.get(module_assigns(module), name, []) do
+         [clause] <-
+           for({%{} = clause, _} <- Map.get(module_assigns(module), name, []), do: clause) do
       %{state | clause: clause}
     else
       _ -> state
