@@ -320,4 +320,4 @@ unreadable default goes by its own name.
 Entries must be strings shaped like these names. Anything else, such as
 `assigns[:floating_styles]` or `Floating.styles()`, is a configuration error, since it
 would match nothing. The option applies to the whole rule: a contract cannot set it, and
-one that writes it is not told so.
+one that writes it is a configuration error.
