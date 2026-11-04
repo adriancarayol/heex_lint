@@ -43,6 +43,21 @@ Each configuration also runs `themed_cases.txt` under each theme in `themes/`:
   `style` condition beside a `default`, where Tailwind builds one file and both
   linters read the other, an array target, the package's `imports` map (`#tokens`),
   and `installed_bare/`, a package with no `package.json`.
+- `plugin_modules`: a plugin and a config from `plugin_kit/`, copied into `node_modules`.
+  Nothing in the CSS names their classes, so only Tailwind can say what they are:
+  `text-body` is a font size, `text-brand` a color, and the plugin throws on `boom-bad`,
+  which costs that class its answer and nothing else.
+- `hostile_values`: a value that fans out to a million copies, which both linters give
+  up on, the small chain beside it, which still resolves, a value past the budget only
+  when its line breaks count as two units each, values followed by thousands of spaces,
+  and a color past the float range.
+
+`themed_cases.txt` ends with classes written to be read badly: numbers past the float
+range, modifiers and values of a thousand unclosed brackets, a thousand digits. Two such
+classes stay out, because the difference is in what JavaScript's Infinity and NaN print,
+and `docs/parity.md` has both: `bg-[rgb(1e300,0,0)]`, whose NaN distance makes
+@shadcn/lint name the first token, and a 308-digit `p-[...px]`, whose step it prints
+with an exponent.
 
 The wrappers are `Panel`, which hands `className` to Card, `titleClassName` to
 CardTitle and `footerClassName` to a plain element, and `PassedPanel`, which hands
@@ -51,6 +66,20 @@ on `PassedPanel`'s `otherClassName`, which nothing names.
 
 The drivers take the configuration, the theme and the class list from the
 `CONFIG`, `THEME` and `CASES` environment variables.
+
+`grammar_driver.ts` and `grammar_driver.exs` compare the class grammar on its own, with
+no theme: the group and category of every name in Tailwind's class list, with each
+modifier Tailwind lists for it and behind `hover:`, and of every variant in front of every
+97th class. That comes to 457,699 names at the pinned versions, and their line in the output
+says "findings" as the others do.
+
+`style_cases.txt` holds `no-inline-styles` on style values written in both languages,
+each with its own `allowDynamicIdentifiers`. `style_driver.ts` and `style_driver.exs`
+lint them and print each case's distinct messages, not where they are, since
+@shadcn/lint reports a value at the attribute that reads it. They use no theme and no
+Tailwind. A string in HEEx is the object literal in JSX, a list is an object with
+spreads, `%{base | a: value}` is `{ ...base, a: value }`, and `Map.get` with a default
+is `??`. A case's accepted differences are in `known_gaps/configstyle-cases.txt`.
 
 Messages are compared after naming the components the same way (`<.button>`
 and `<Button>`) and the component and theme files by placeholder.
@@ -74,3 +103,6 @@ HeexLint invented, a new `<` line one it lost.
 
 To move the pin, change `commit` and `deps` in `run.sh`; the script reinstalls
 and rebuilds when they change.
+
+A full run takes about a minute and a half. `docs/parity.md` has the last result; update its
+numbers when they move.

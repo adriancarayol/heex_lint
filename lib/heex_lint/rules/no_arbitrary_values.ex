@@ -16,14 +16,15 @@ defmodule HeexLint.Rules.NoArbitraryValues do
 
     * `:allow`, `:deny`, `:contracts` - exceptions. See `HeexLint.Policy`.
     * `:message` - replaces the text. Also `{{replacement}}` and `{{tokens}}`.
-    * `:scan_all_strings` - check every string literal in the file except plain
-      map keys such as `%{"fill-color" => 1}`.
+    * `:scan_all_strings` - check every string literal with a hyphen in the
+      file, in code and in templates, except plain map keys such as
+      `%{"fill-color" => 1}`.
   """
 
   @behaviour HeexLint.Rule
 
-  alias HeexLint.{Messages, Policy, Rule, Suggest, Theme}
-  alias HeexLint.Grammar.{Classes, Lengths, ProjectClassifier, Categories}
+  alias HeexLint.{Messages, Policy, Rule, Suggest, Tailwind, Theme}
+  alias HeexLint.Grammar.{Classes, Lengths, ProjectClassifier, Categories, Validators}
   alias HeexLint.Policy.ConfigError
   alias HeexLint.Rules.NoRawColors
 
@@ -56,7 +57,9 @@ defmodule HeexLint.Rules.NoArbitraryValues do
 
   @impl true
   def prepare(options, project) do
-    {policy, warnings} = Policy.compile(options, project.theme, "no_arbitrary_values")
+    {policy, warnings} =
+      Policy.compile(options, project.theme, "no_arbitrary_values", &Tailwind.known(project, &1))
+
     {:ok, policy, warnings}
   rescue
     error in ConfigError -> {:error, error.message}
@@ -237,9 +240,16 @@ defmodule HeexLint.Rules.NoArbitraryValues do
   "rounded-tl-[10px]" as utility "rounded-tl", inner "10px", suffix "".
   """
   def split_arbitrary(token) do
-    case Regex.run(~r/^(.+?)-\[([^\]]*)\](.*)$/, Classes.normalize(token)) do
-      [_, utility, inner, suffix] -> %{utility: utility, inner: inner, suffix: suffix}
-      nil -> nil
+    base = Classes.normalize(token)
+
+    # The first "-[" decides: when no "]" follows it, none follows a later one either.
+    with open when open != nil <- Classes.index_from(base, "-[", 1),
+         close when close != nil <- Classes.index_from(base, "]", open + 2) do
+      %{
+        utility: binary_part(base, 0, open),
+        inner: binary_part(base, open + 2, close - open - 2),
+        suffix: binary_part(base, close + 1, byte_size(base) - close - 1)
+      }
     end
   end
 
@@ -263,7 +273,7 @@ defmodule HeexLint.Rules.NoArbitraryValues do
 
     with [_, negative, utility, px] <-
            Regex.run(~r/^(-?)([a-z]+(?:-[a-z]+)*)-\[(\d+(?:\.\d+)?)px\]$/, bare),
-         {px, ""} <- Float.parse(px),
+         {px, ""} <- Validators.parse_float(px),
          steps = px / unit,
          true <- steps * 4 == Float.round(steps * 4) do
       prefix = if variants == [], do: "", else: Enum.join(variants, ":") <> ":"
@@ -271,6 +281,9 @@ defmodule HeexLint.Rules.NoArbitraryValues do
     else
       _ -> nil
     end
+  rescue
+    # Past the float range, where JavaScript reads Infinity: no step is out there.
+    ArithmeticError -> nil
   end
 
   defp number(n) when n == trunc(n), do: Integer.to_string(trunc(n))

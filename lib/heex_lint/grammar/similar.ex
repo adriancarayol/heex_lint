@@ -13,38 +13,92 @@ defmodule HeexLint.Grammar.Similar do
   """
   @spec edit_distance(String.t(), String.t()) :: non_neg_integer()
   def edit_distance(a, b) do
-    a = String.to_charlist(a) |> List.to_tuple()
-    b = String.to_charlist(b) |> List.to_tuple()
-    rows = tuple_size(a) + 1
-    cols = tuple_size(b) + 1
+    a = chars(a)
+    b = chars(b)
+    bounded(a, b, max(tuple_size(a), tuple_size(b)))
+  end
 
-    first = for j <- 0..(cols - 1), into: %{}, do: {{0, j}, j}
+  @doc """
+  The distance between `a` and `b` when it is at most `budget`, or nil. Only the cells
+  within `budget` of the diagonal can hold such a distance, so two long names cost
+  their length and not its square.
 
-    d =
-      Enum.reduce(1..(rows - 1)//1, first, fn i, d ->
-        d = Map.put(d, {i, 0}, i)
+      iex> HeexLint.Grammar.Similar.within("foucs", "focus", 1)
+      1
 
-        Enum.reduce(1..(cols - 1)//1, d, fn j, d ->
-          cost = if elem(a, i - 1) == elem(b, j - 1), do: 0, else: 1
+      iex> HeexLint.Grammar.Similar.within("foucs", "bar", 1)
+      nil
+  """
+  @spec within(String.t(), String.t(), non_neg_integer()) :: non_neg_integer() | nil
+  def within(a, b, budget), do: bounded(chars(a), chars(b), budget)
 
-          value =
-            Enum.min([
-              Map.fetch!(d, {i - 1, j}) + 1,
-              Map.fetch!(d, {i, j - 1}) + 1,
-              Map.fetch!(d, {i - 1, j - 1}) + cost
-            ])
+  defp chars(text), do: text |> String.to_charlist() |> List.to_tuple()
 
-          value =
-            if i > 1 and j > 1 and elem(a, i - 1) == elem(b, j - 2) and
-                 elem(a, i - 2) == elem(b, j - 1),
-               do: min(value, Map.fetch!(d, {i - 2, j - 2}) + 1),
-               else: value
+  defp bounded(a, b, budget) when abs(tuple_size(a) - tuple_size(b)) > budget, do: nil
 
-          Map.put(d, {i, j}, value)
-        end)
-      end)
+  defp bounded(a, b, budget) do
+    first = for slot <- 0..(2 * budget), do: first_cell(slot - budget, budget)
+    first = List.to_tuple(first)
 
-    Map.fetch!(d, {rows - 1, cols - 1})
+    case rows(a, b, 1, first, nil, budget) do
+      nil ->
+        nil
+
+      last ->
+        case elem(last, tuple_size(b) - tuple_size(a) + budget) do
+          distance when distance <= budget -> distance
+          _over -> nil
+        end
+    end
+  end
+
+  defp first_cell(column, _budget) when column >= 0, do: column
+  defp first_cell(_column, budget), do: budget + 1
+
+  defp rows(a, _b, row, previous, _before, _budget) when row > tuple_size(a), do: previous
+
+  defp rows(a, b, row, previous, before, budget) do
+    current = cells(a, b, row, 0, previous, before, budget, budget + 1, [])
+
+    # A row's best is at most one more than the last one's, so a whole row over the
+    # budget means every row after it is too.
+    if Enum.min(Tuple.to_list(current)) > budget,
+      do: nil,
+      else: rows(a, b, row + 1, current, previous, budget)
+  end
+
+  # A slot is a column's distance from the diagonal, offset by the budget. So the
+  # cell above is one slot on, and the cell two up and two left is the same slot.
+  defp cells(_a, _b, _row, slot, _previous, _before, budget, _left, acc)
+       when slot > 2 * budget,
+       do: acc |> Enum.reverse() |> List.to_tuple()
+
+  defp cells(a, b, row, slot, previous, before, budget, left, acc) do
+    over = budget + 1
+    column = row + slot - budget
+
+    value =
+      cond do
+        column < 0 or column > tuple_size(b) ->
+          over
+
+        column == 0 ->
+          min(row, over)
+
+        true ->
+          up = if slot < 2 * budget, do: elem(previous, slot + 1), else: over
+          cost = if elem(a, row - 1) == elem(b, column - 1), do: 0, else: 1
+
+          value = min(min(up, left) + 1, elem(previous, slot) + cost)
+
+          if before != nil and column > 1 and elem(a, row - 1) == elem(b, column - 2) and
+               elem(a, row - 2) == elem(b, column - 1),
+             do: min(value, elem(before, slot) + 1),
+             else: value
+      end
+
+    value = min(value, over)
+    cells(a, b, row, slot + 1, previous, before, budget, value, [value | acc])
   end
 
   @doc """
@@ -57,9 +111,10 @@ defmodule HeexLint.Grammar.Similar do
   """
   @spec did_you_mean(String.t(), Enumerable.t(), non_neg_integer() | nil) :: String.t() | nil
   def did_you_mean(value, candidates, budget \\ nil) do
-    budget = budget || if String.length(value) < 6, do: 1, else: 2
+    length = String.length(value)
+    budget = budget || if length < 6, do: 1, else: 2
 
-    if String.length(value) < 3 do
+    if length < 3 do
       nil
     else
       candidates
@@ -68,14 +123,14 @@ defmodule HeexLint.Grammar.Similar do
           name == value ->
             {:halt, :exact}
 
-          abs(String.length(name) - String.length(value)) > budget ->
+          abs(String.length(name) - length) > budget ->
             {:cont, best}
 
           true ->
-            distance = edit_distance(value, name)
+            distance = within(value, name, budget)
 
             cond do
-              distance > budget ->
+              distance == nil ->
                 {:cont, best}
 
               best == nil ->

@@ -1,0 +1,5 @@
+{
+  "name": "parity-plugin-kit",
+  "version": "1.0.0",
+  "main": "plugin.js"
+}

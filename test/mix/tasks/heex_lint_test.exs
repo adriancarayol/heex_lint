@@ -34,6 +34,40 @@ defmodule Mix.Tasks.HeexLintTest do
     :exit, reason -> reason
   end
 
+  @tag :node
+  test "a Tailwind that hangs ends in a warning and the grammar's findings", %{tmp_dir: dir} do
+    setup_project(dir, ~s(<div class="zorblax" />), no_unknown_classes: :error)
+
+    File.mkdir_p!(Path.join(dir, "node_modules/tailwindcss"))
+
+    File.write!(
+      Path.join(dir, "node_modules/tailwindcss/package.json"),
+      ~s({"name": "tailwindcss", "main": "index.js"})
+    )
+
+    File.write!(Path.join(dir, "node_modules/tailwindcss/index.js"), """
+    const end = Date.now() + 30000
+    exports.__unstable__loadDesignSystem = async () => {
+      while (Date.now() < end) {}
+    }
+    """)
+
+    previous = System.get_env("HEEX_LINT_TAILWIND_TIMEOUT")
+    System.put_env("HEEX_LINT_TAILWIND_TIMEOUT", "1000")
+
+    on_exit(fn ->
+      if previous,
+        do: System.put_env("HEEX_LINT_TAILWIND_TIMEOUT", previous),
+        else: System.delete_env("HEEX_LINT_TAILWIND_TIMEOUT")
+    end)
+
+    assert {{:shutdown, 1}, output, errors} = task(dir, [])
+    assert output =~ ~s("zorblax")
+    assert errors =~ "warning: The Tailwind process did not answer"
+    assert errors =~ "within 1 s"
+    assert errors =~ "rules use the class grammar"
+  end
+
   test "passes on clean projects", %{tmp_dir: dir} do
     setup_project(dir, ~s(<div class="bg-primary" />), no_raw_colors: :error)
     assert {:ok, output, _} = task(dir, [])
@@ -103,6 +137,23 @@ defmodule Mix.Tasks.HeexLintTest do
     assert {:ok, output, _} = task(dir, ["--fix"])
     assert output =~ "Applied 1 fix."
     assert File.read!(Path.join(dir, "lib/app_web/live/page_live.ex")) =~ ~s(class="p-3")
+  end
+
+  test "--fix keeps a variant that starts with a digit", %{tmp_dir: dir} do
+    setup_project(dir, ~s(<div class="flex 2xl:p-[12px]" />), no_arbitrary_values: :error)
+    assert {:ok, output, _} = task(dir, ["--fix"])
+    assert output =~ "Applied 1 fix."
+    assert File.read!(Path.join(dir, "lib/app_web/live/page_live.ex")) =~ ~s(class="flex 2xl:p-3")
+  end
+
+  test "--fix takes a class too long to be a regex", %{tmp_dir: dir} do
+    variant = String.duplicate("a", 100_000)
+    setup_project(dir, ~s(<div class="flex #{variant}:p-[12px]" />), no_arbitrary_values: :error)
+    assert {:ok, output, _} = task(dir, ["--fix"])
+    assert output =~ "Applied 1 fix."
+
+    assert File.read!(Path.join(dir, "lib/app_web/live/page_live.ex")) =~
+             ~s(class="flex #{variant}:p-3")
   end
 
   test "--fix keeps a Tailwind prefix", %{tmp_dir: dir} do

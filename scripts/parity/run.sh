@@ -23,7 +23,7 @@ commit="9231259"
 deps="cn@0.4.0 @eslint/core@0.17.0 eslint@9.39.5 @typescript-eslint/parser@8.72.1 typescript@5.9.3 tsx@4.23.15 tsdown@0.12.9 tailwindcss@4.3.3 @tailwindcss/node@4.3.3"
 configs="1 2 3"
 # Every theme but the default runs the shorter themed_cases.txt.
-themes="scales radius_reset full_reset scoped_values explicit_imports workspace_package prefixed installed_package installed_unnamed installed_resolution"
+themes="scales radius_reset full_reset scoped_values explicit_imports workspace_package prefixed installed_package installed_unnamed installed_resolution plugin_modules hostile_values"
 
 # The same bytes order on every machine, so known_gaps/ does not depend on it.
 export LC_ALL=C
@@ -51,9 +51,12 @@ ln -sfn ../workspace_kit node_modules/parity-workspace-kit
 
 # A design system installed as a package: a real directory under node_modules,
 # so its tokens count only where both drivers' theme_imports name its import.
-rm -rf node_modules/parity-installed-kit node_modules/parity-installed-bare
+rm -rf node_modules/parity-installed-kit node_modules/parity-installed-bare node_modules/parity-plugin-kit
 cp -R installed_kit node_modules/parity-installed-kit
 cp -R installed_bare node_modules/parity-installed-bare
+# A plugin and a config, which the plugin_modules theme loads the same way in both
+# projects: by package, since its stylesheet sits at another depth in each.
+cp -R plugin_kit node_modules/parity-plugin-kit
 
 # The built package carries the Tailwind worker no-unknown-classes needs.
 dist=shadcn-lint/packages/lint/dist
@@ -76,7 +79,7 @@ gaps=0
 checked=""
 
 check() {
-  local config="$1" name="$2" theme="$3" cases="$4"
+  local config="$1" name="$2" theme="$3" cases="$4" driver="${5:-driver}"
   local label="config $config, theme $name"
   local known="known_gaps/config$config-$name.txt"
   checked="$checked $known"
@@ -86,8 +89,8 @@ check() {
   # The reference must really ask Tailwind: every warning it prints says it
   # fell back to the bundled grammar, and then the comparison says nothing
   # about the project's theme.
-  if ! npx tsx driver.ts >/dev/null 2>"$work/stderr"; then
-    echo "$label: driver.ts failed" >&2
+  if ! npx tsx "$driver.ts" >/dev/null 2>"$work/stderr"; then
+    echo "$label: $driver.ts failed" >&2
     cat "$work/stderr" >&2
     exit 1
   fi
@@ -97,7 +100,7 @@ check() {
     exit 1
   fi
 
-  (cd "$root" && MIX_ENV=test mix run "$here/driver.exs" >/dev/null)
+  (cd "$root" && MIX_ENV=test mix run "$here/$driver.exs" >/dev/null)
   unset CONFIG THEME CASES
 
   sort -o ref_out.tsv ref_out.tsv
@@ -148,6 +151,13 @@ for config in $configs; do
     check "$config" "$theme" "$here/themes/$theme.css" "$here/themed_cases.txt"
   done
 done
+
+# no-inline-styles reads style values rather than classes, so it has its own
+# cases and drivers, and no theme or Tailwind.
+check style cases "" "$here/style_cases.txt" style_driver
+
+# The class grammar on its own, on the whole of Tailwind's class list.
+check grammar classlist "" "" grammar_driver
 
 # A gap file no run wrote belongs to a config or theme that is gone.
 for file in known_gaps/*.txt; do

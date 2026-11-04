@@ -33,6 +33,15 @@ defmodule HeexLint.WrapperPropsTest do
       \"""
     end
 
+    def by_map(assigns) do
+      ~H\"""
+      <.card class={Map.get(assigns, :class)}>
+        <.card_title class={Map.get(assigns, :title_class, nil)}>x</.card_title>
+        <.card_content class={Map.fetch!(assigns, :body_class)}>x</.card_content>
+      </.card>
+      \"""
+    end
+
     attr :rest, :global
 
     def passed(assigns) do
@@ -117,6 +126,19 @@ defmodule HeexLint.WrapperPropsTest do
     test "props read off assigns follow theirs", %{project: project} do
       assert target(project, "AppWeb.Panels", "members") == "card"
       assert target(project, "AppWeb.Panels", "members", "body_class") == "card_content"
+      assert target(project, "AppWeb.Panels", "by_map") == "card"
+      assert target(project, "AppWeb.Panels", "by_map", "title_class") == "card_title"
+      assert target(project, "AppWeb.Panels", "by_map", "body_class") == "card_content"
+    end
+
+    test "a prop read through Map is judged against what it reaches", %{tmp_dir: dir} do
+      files = %{"lib/app_web/panels.ex" => @panels}
+
+      for attribute <- ["class", "title_class", "body_class"] do
+        template = ~s(<AppWeb.Panels.by_map #{attribute}="bg-red-500" />)
+        files = Map.put(files, "lib/app_web/live/page_live.ex", live(template))
+        assert [_] = lint(dir, files, rules: [no_restyle: {:error, allow: ["layout"]}]), attribute
+      end
     end
 
     test "a prop stays itself through global attributes", %{project: project} do
