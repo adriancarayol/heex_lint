@@ -583,6 +583,173 @@ defmodule HeexLint.Rules.NoRawColorsTest do
       assert colors(dir, ~S'<%= if @on do %><i /><% end %>') == []
     end
 
+    test "a tag whose words only look like blocks keeps its class", %{tmp_dir: dir} do
+      for template <- [
+            ~S'<%= if Keyword.has_key?(cn("bg-pink-500"), :do) do %>x<% end %>',
+            ~S'<%= if f(cn("bg-pink-500"), :fn) do %>x<% end %>',
+            ~S'<%= if f(@x.do, cn("bg-pink-500")) do %>x<% end %>',
+            ~S'<%= if do?(cn("bg-pink-500")) do %>x<% end %>',
+            ~S'<%= if f(~s[(], cn("bg-pink-500")) do %>x<% end %>',
+            ~S'<%= if f(?(, cn("bg-pink-500")) do %>x<% end %>',
+            ~S'<%= if f("(", cn("bg-pink-500")) do %>x<% end %>',
+            ~S'<%= if f(do: 1, a: cn("bg-pink-500")) do %>x<% end %>',
+            ~S'<%= Enum.map(f(:do, "(", ?(, ~s[(], cn("bg-pink-500")), fn x -> %>x<% end) %>',
+            ~S'<%= f(fn x -> %>x<% end, :end, cn("bg-pink-500")) %>',
+            ~S'<%= f(fn x -> %>x<% end, end: 1, b: cn("bg-pink-500")) %>',
+            ~S'<%= f(fn x -> %>x<% end, ~s[)], cn("bg-pink-500")) %>',
+            ~S'<%= f(fn x -> %>x<% end, ?), cn("bg-pink-500")) %>'
+          ] do
+        assert [_] = colors(dir, template), template
+      end
+    end
+
+    test "a nested ~H on a later line of a heredoc is where it stands", %{tmp_dir: dir} do
+      module = ~S'''
+      defmodule AppWeb.Page do
+        use AppWeb, :html
+        def page(assigns) do
+          ~H"""
+          {if @on do
+            ~H|<b class="bg-pink-500" />|
+          end}
+          """
+        end
+      end
+      '''
+
+      assert [finding] =
+               lint(dir, %{"lib/app_web/page.ex" => module}, rules: [no_raw_colors: :error])
+
+      assert {finding.line, finding.column} == {6, 20}
+    end
+
+    test "a section after a function's body reads its own variables", %{tmp_dir: dir} do
+      for section <- ["rescue", "catch", "else", "after"] do
+        arrow = if section == "after", do: "", else: "_ ->"
+
+        module = """
+        defmodule AppWeb.Page do
+          use AppWeb, :html
+          def page(assigns) do
+            c = "bg-pink-500"
+            foo(c)
+          #{section}
+            #{arrow}
+              c = "bg-red-500"
+              ~H|<b class={c} />|
+          end
+        end
+        """
+
+        assert [finding] =
+                 lint(dir, %{"lib/app_web/page.ex" => module}, rules: [no_raw_colors: :error]),
+               section
+
+        assert finding.message =~ "bg-red-500"
+      end
+    end
+
+    test "a variable in a quote is not the macro's", %{tmp_dir: dir} do
+      module = """
+      defmodule AppWeb.Page do
+        use AppWeb, :html
+        defmacro m do
+          c = "bg-pink-500"
+          quote do
+            def r(assigns, c), do: ~H|<b class={c} />|
+          end
+        end
+      end
+      """
+
+      assert lint(dir, %{"lib/app_web/page.ex" => module}, rules: [no_raw_colors: :error]) == []
+    end
+
+    test "a module inside another is read once, in its own right" do
+      source =
+        HeexLint.Project.Source.parse("lib/a.ex", """
+        defmodule A do
+          defmodule B do
+            def b(assigns), do: ~H"<i />"
+          end
+        end
+        """)
+
+      assert [%{module: "A.B"}] = source.templates
+    end
+
+    test "a variant config in a name has every value read", %{tmp_dir: dir} do
+      module = fn read ->
+        """
+        defmodule AppWeb.Code do
+          @c %{base: "bg-pink-500"}
+          def a do
+            x = %{meta: "bg-pink-500"}
+            _ = x
+            tv(#{read})
+          end
+        end
+        """
+      end
+
+      for read <- ["x", "@c"] do
+        assert [_] =
+                 lint(dir, %{"lib/app_web/code.ex" => module.(read)},
+                   rules: [no_raw_colors: {:error, variant_functions: ["tv"]}]
+                 ),
+               read
+      end
+    end
+
+    test "a merge call's map survives what is around it", %{tmp_dir: dir} do
+      opts = [variant_functions: ["tv"]]
+
+      # Its keys are read after a call inside it ends, and not inside a variant call.
+      assert [_] = colors(dir, ~S|<div title={cn(cn("p-1"), %{"bg-pink-500" => 1})} />|, opts)
+
+      assert [_] =
+               colors(
+                 dir,
+                 ~S|<div title={cn(tv(%{base: "p-1"}), %{"bg-pink-500" => 1})} />|,
+                 opts
+               )
+
+      assert colors(dir, ~S|<div title={cn(tv(%{base: %{"bg-pink-500" => "p-1"}}))} />|, opts) ==
+               []
+
+      # And not after the merge call ends.
+      assert colors(dir, ~S|<div class={[cn("p-1"), %{"bg-pink-500" => 1}]} />|) == []
+      # An update has its base's keys, and Map.merge and Map.put hand them on.
+      assert [_] = colors(dir, ~S[<div title={cn(%{%{"bg-pink-500" => 1} | "p-1" => 2})} />])
+      assert [_] = colors(dir, ~S|<div title={cn(Map.merge(%{"bg-pink-500" => 1}, %{}))} />|)
+      assert [_] = colors(dir, ~S|<div title={cn(Map.put(%{}, "bg-pink-500", 1))} />|)
+    end
+
+    test "a variant call in a merge call does not read a name's keys", %{tmp_dir: dir} do
+      module = """
+      defmodule AppWeb.Code do
+        def a do
+          x = %{"bg-pink-500" => 1}
+          cn(tv(%{base: x}))
+        end
+      end
+      """
+
+      assert lint(dir, %{"lib/app_web/code.ex" => module},
+               rules: [no_raw_colors: {:error, variant_functions: ["tv"]}]
+             ) == []
+    end
+
+    test "a ~s heredoc's text is read and its holes are dynamic", %{tmp_dir: dir} do
+      template = ~s(<.button class={~s'''\n  bg-pink-500 \#{@x}\n  '''}>x</.button>)
+      assert [_] = colors(dir, template)
+
+      assert [_] =
+               lint(dir, %{"lib/app_web/live/page_live.ex" => live(template)},
+                 rules: [require_static_classes: :error]
+               )
+    end
+
     test "a split tag's class is where it stands", %{tmp_dir: dir} do
       assert [finding] = colors(dir, ~S'<%= f(fn x -> %><i /><% end, cn("bg-pink-500")) %>')
       assert {finding.line, finding.column} == {6, 38}
@@ -629,7 +796,7 @@ defmodule HeexLint.Rules.NoRawColorsTest do
 
       assert finding.message =~ ~s("bg-lime-400")
 
-      assert [_] = colors(dir, ~S|<div title={cn(%{@a \| "bg-pink-500" => @on})} />|)
+      assert [_] = colors(dir, ~S[<div title={cn(%{@a | "bg-pink-500" => @on})} />])
     end
 
     test "an atom key is a class at its map, and a keyword list holds options", %{tmp_dir: dir} do

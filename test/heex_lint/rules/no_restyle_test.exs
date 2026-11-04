@@ -40,6 +40,22 @@ defmodule HeexLint.Rules.NoRestyleTest do
       attr :rest, :global
       def rest_get(assigns), do: ~H"<.card class={@rest[:class]}>x</.card>"
 
+      attr :rest, :global
+      def rest_map_get(assigns), do: ~H"<.card class={Map.get(@rest, :class)}>x</.card>"
+
+      attr :rest, :global
+      def rest_dot(assigns), do: ~H"<.card class={@rest.class}>x</.card>"
+
+      attr :a_class, :any, default: nil
+      attr :b_class, :any, default: nil
+      def dup_list(assigns), do: ~H"<.card {[class: @a_class, class: @b_class]}>x</.card>"
+
+      attr :title_class, :any, default: nil
+      def computed_map(assigns), do: ~H"<.card {%{@k => @title_class}}>x</.card>"
+
+      attr :class, :any, default: nil
+      def updated_map(assigns), do: ~H"<.card {%{%{class: @class} | id: 1}}>x</.card>"
+
       attr :other, :any, default: %{}
       def other_get(assigns), do: ~H"<.card class={@other[:class]}>x</.card>"
 
@@ -75,6 +91,21 @@ defmodule HeexLint.Rules.NoRestyleTest do
     test "a read of a global attribute follows it", %{tmp_dir: dir} do
       assert [finding] = handed(dir, ~S|<.rest_get class="bg-red-500" />|)
       assert finding.message =~ "forwards class to <.card>"
+    end
+
+    test "every way to read a global attribute follows it", %{tmp_dir: dir} do
+      assert [_] = handed(dir, ~S|<.rest_map_get class="bg-red-500" />|)
+      assert [_] = handed(dir, ~S|<.rest_dot class="bg-red-500" />|)
+    end
+
+    test "a keyword list spread onto a component keeps a key's last value", %{tmp_dir: dir} do
+      assert handed(dir, ~S|<.dup_list a_class="bg-red-500" b_class="mt-4" />|) == []
+      assert [_] = handed(dir, ~S|<.dup_list a_class="mt-4" b_class="bg-red-500" />|)
+    end
+
+    test "a spread whose keys cannot all be read lands under its own name", %{tmp_dir: dir} do
+      assert [_] = handed(dir, ~S|<.computed_map title_class="bg-red-500" />|)
+      assert [_] = handed(dir, ~S|<.updated_map class="bg-red-500" />|)
     end
 
     test "a read of another map's member does not", %{tmp_dir: dir} do

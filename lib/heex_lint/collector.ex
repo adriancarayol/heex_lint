@@ -262,12 +262,13 @@ defmodule HeexLint.Collector do
   value the runtime keeps. Nil for any other expression.
   """
   @spec spread_entries(Macro.t()) :: [{String.t(), Macro.t()}] | nil
+  def spread_entries({:%{}, _, [{:|, _, _}]}), do: nil
+
+  # A component's attributes go through `Map.new`, so a keyword list keeps a key's last too.
   def spread_entries(ast) do
     with pairs when is_list(pairs) <- root_pairs(ast),
-         true <- Enum.all?(pairs, &match?({_key, _value}, &1)) do
-      pairs = if is_list(ast), do: pairs, else: Enum.reverse(pairs)
-
-      for({key, value} <- pairs, name = Code.name(key), do: {name, value})
+         true <- Enum.all?(pairs, &(match?({_key, _value}, &1) and Code.name(elem(&1, 0)) != nil)) do
+      for({key, value} <- Enum.reverse(pairs), do: {Code.name(key), value})
       |> Enum.uniq_by(&elem(&1, 0))
     else
       _ -> nil
@@ -514,6 +515,7 @@ defmodule HeexLint.Collector do
       unresolved: [],
       map_keys: nil,
       in_merge: false,
+      in_values: false,
       read: :value,
       reads: @no_reads,
       calls: [],
@@ -686,6 +688,20 @@ defmodule HeexLint.Collector do
 
   defp visit(%{in_merge: true} = state, {:%{}, meta, entries}),
     do: merge_map(state, entries, meta)
+
+  defp visit(%{in_merge: true} = state, {{:., _, [{:__aliases__, _, [:Map]}, :merge]}, _, args})
+       when is_list(args),
+       do: Enum.reduce(args, state, &visit(&2, &1))
+
+  defp visit(
+         %{in_merge: true} = state,
+         {{:., _, [{:__aliases__, _, [:Map]}, :put]}, meta, [map, key, _value]}
+       ),
+       do: state |> visit(map) |> merge_map([{key, nil}], meta)
+
+  # A variant config in a name has every value read, as nothing says which are names.
+  defp visit(%{in_values: true} = state, {:%{}, _, entries}),
+    do: Enum.reduce(entries, state, &visit_entry(&2, &1))
 
   defp visit(%{map_keys: keys} = state, {{:., _, [{:__aliases__, _, [:Map]}, :merge]}, _, args})
        when is_list(keys) and is_list(args),
@@ -1248,8 +1264,9 @@ defmodule HeexLint.Collector do
 
       is_binary(name) and MapSet.member?(state.merge, name) ->
         outer = state.in_merge
-        inner = %{read_call(state, meta) | in_merge: true}
-        %{Enum.reduce(args, inner, &visit(&2, &1)) | in_merge: outer}
+        values = state.in_values
+        inner = %{read_call(state, meta) | in_merge: true, in_values: false}
+        %{Enum.reduce(args, inner, &visit(&2, &1)) | in_merge: outer, in_values: values}
 
       is_atom(callee) and local_function?(state, Atom.to_string(callee), arity) ->
         if state.mode == :template and is_list(state.map_keys),
@@ -1332,7 +1349,10 @@ defmodule HeexLint.Collector do
       else: visit_values(state, list)
   end
 
-  defp visit_variant_config(state, node), do: visit_values(state, node)
+  defp visit_variant_config(state, node) do
+    outer = state.in_values
+    %{visit_values(%{state | in_values: true}, node) | in_values: outer}
+  end
 
   defp variant_entries(state, entries), do: Enum.reduce(entries, state, &variant_entry(&2, &1))
 

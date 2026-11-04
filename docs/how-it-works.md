@@ -280,8 +280,9 @@ Files come from `inputs`, without any path that has a directory named `deps` in 
   Elixir passes options.
 - **Templates with no function around them.** A `~H` in a module attribute, a `quote` outside
   a `def` or a `def` inside an `if` is read, but what it does not hold itself cannot be
-  followed, so a variable in it is dynamic. A `~H` directly in a `defimpl` is not read by
-  any rule. A module inside a `defimpl` is read as any other module is.
+  followed, so a variable in it is dynamic. A `~H` directly in a `defimpl`, or a module
+  inside an `if` or a `quote`, is not read by any rule. A module inside a `defimpl` is read
+  as any other module is.
 - **EEx tags a block splits.** `<% end) |> cn() %>` does not parse once its `end` is taken
   off, so no rule reads what is in it. `<% end, cn("bg-pink-500")) %>` is read, and so is
   `<%= Enum.map(cn("bg-pink-500"), fn x -> %>`.

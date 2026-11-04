@@ -253,7 +253,10 @@ defmodule HeexLint.Project.Source do
         module =
           if kind in [:def, :defp],
             do: component(module, name, clause, rest, pending),
-            else: %{module | templates: module.templates ++ sigils(rest, module, name, clause)}
+            else: %{
+              module
+              | templates: module.templates ++ block_templates(rest, module, name, clause)
+            }
 
         {module, []}
 
@@ -265,7 +268,7 @@ defmodule HeexLint.Project.Source do
   defp statement(other, {module, pending}), do: {loose_templates(module, other), pending}
 
   # A template in a quote or a module attribute, or in a `def` inside an `if`, has no
-  # function to follow its variables through. A module inside one reads its own.
+  # function to follow its variables through. A module inside one of those is not read.
   defp loose_templates(module, ast) do
     ast
     |> Macro.prewalk(fn
@@ -331,10 +334,9 @@ defmodule HeexLint.Project.Source do
 
   # A def is a function component when attrs or slots precede it or its
   # body renders ~H. Every ~H in its body becomes a template.
-  # `blocks` holds the body and any `rescue`, `catch`, `else` and `after`.
   defp component(module, name, clause, blocks, pending) do
     arity = length(clause.args)
-    templates = sigils(blocks, module, name, clause)
+    templates = block_templates(blocks, module, name, clause)
 
     existing = Map.get(module.components, name)
 
@@ -360,9 +362,28 @@ defmodule HeexLint.Project.Source do
     end
   end
 
+  # The body and any `rescue`, `catch`, `else` and `after`. What the body binds is not in
+  # scope in those, so each is read as a body of its own.
+  defp block_templates(blocks, module, name, clause) do
+    blocks
+    |> Enum.flat_map(&Code.keyword/1)
+    |> Enum.flat_map(fn
+      {:do, body} ->
+        sigils(body, module, name, clause)
+
+      {_section, body} ->
+        own = %{clause | body: body, id: System.unique_integer([:positive])}
+        sigils(body, module, name, own)
+    end)
+  end
+
   defp sigils(body, module, name, clause) do
     {_, templates} =
       Macro.prewalk(body, [], fn
+        # A variable in a quote is not the one the function around it binds.
+        {:quote, _, args}, acc when is_list(args) and clause != nil ->
+          {nil, Enum.reverse(sigils(args, module, name, nil)) ++ acc}
+
         {:sigil_H, meta, [{:<<>>, string_meta, [text]}, _modifiers]} = node, acc
         when is_binary(text) ->
           template = %{
@@ -385,7 +406,11 @@ defmodule HeexLint.Project.Source do
   # A `~H` in a template's `{...}`. Parsed where it stands, its own positions are the file's.
   defp nested_templates(template, module, name, clause) do
     if String.contains?(template.source, "~H") do
+      # A heredoc's lines have lost their indentation, which is where they stand in the file.
+      indent = "\n" <> String.duplicate(" ", template.indentation)
+
       for {:expr, code, {line, column}} <- Element.expressions(template),
+          code = String.replace(code, "\n", indent),
           {:ok, ast} <- [Code.parse(code, line: line, column: max(column, 1))],
           nested <- sigils(ast, module, name, clause),
           do: nested

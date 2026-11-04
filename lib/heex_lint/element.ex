@@ -139,8 +139,7 @@ defmodule HeexLint.Element do
       # <%= Enum.map(cn(@tones), fn x -> %> what else it leaves open.
       opening =
         for {:start_expr, marker, code, meta} <- eex do
-          code = List.to_string(code)
-          {:expr, code <> closers(code), eex_code_start(marker, meta)}
+          {:expr, closed(List.to_string(code)), eex_code_start(marker, meta)}
         end
 
       # <% end, cn(@tones)) %> goes on after the block it closes.
@@ -165,9 +164,16 @@ defmodule HeexLint.Element do
     _ in [Tokenizer.ParseError, EEx.SyntaxError] -> []
   end
 
-  @nesting ~r/"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\bdo\b(?!:)|\bfn\b|\bend\b|<<|>>|[(\[{)\]}]/
+  # What opens or closes something, past strings, sigils, char literals and the likes of
+  # `:do`, `@x.fn` and `end?`.
+  @nesting ~r/"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|~[a-zA-Z]+(?:\((?:\\.|[^)\\])*\)|\[(?:\\.|[^\]\\])*\]|\{(?:\\.|[^}\\])*\}|<(?:\\.|[^>\\])*>|\/(?:\\.|[^\/\\])*\/|\|(?:\\.|[^|\\])*\|)|(?<!\w)\?\\?.|(?<![:.\w?!@])(?:do|fn|end)(?![\w?!:])|<<|>>|[(\[{)\]}]/
 
   defp nesting(code), do: @nesting |> Regex.scan(code, return: :index) |> List.flatten()
+
+  defp closed(code) do
+    with_end = code <> "\nend"
+    if match?({:ok, _}, HeexLint.Code.parse(with_end)), do: with_end, else: code <> closers(code)
+  end
 
   defp closers(code) do
     stack =
