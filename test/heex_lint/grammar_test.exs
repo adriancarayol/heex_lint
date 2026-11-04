@@ -131,4 +131,63 @@ defmodule HeexLint.GrammarTest do
     assert Similar.did_you_mean("ab", ["abc"]) == nil
     assert Similar.did_you_mean("primary", ["primary"]) == nil
   end
+
+  # The whole table, as in @shadcn/lint's similar.ts.
+  defp full_table(a, b) do
+    a = String.to_charlist(a) |> List.to_tuple()
+    b = String.to_charlist(b) |> List.to_tuple()
+    first = for j <- 0..tuple_size(b), into: %{}, do: {{0, j}, j}
+
+    table =
+      Enum.reduce(1..tuple_size(a)//1, first, fn i, d ->
+        Enum.reduce(1..tuple_size(b)//1, Map.put(d, {i, 0}, i), fn j, d ->
+          cost = if elem(a, i - 1) == elem(b, j - 1), do: 0, else: 1
+          value = Enum.min([d[{i - 1, j}] + 1, d[{i, j - 1}] + 1, d[{i - 1, j - 1}] + cost])
+
+          value =
+            if i > 1 and j > 1 and elem(a, i - 1) == elem(b, j - 2) and
+                 elem(a, i - 2) == elem(b, j - 1),
+               do: min(value, d[{i - 2, j - 2}] + 1),
+               else: value
+
+          Map.put(d, {i, j}, value)
+        end)
+      end)
+
+    table[{tuple_size(a), tuple_size(b)}]
+  end
+
+  test "a distance and a budget agree with the whole table" do
+    :rand.seed(:exsss, {1, 2, 3})
+
+    word = fn ->
+      for _ <- 1..:rand.uniform(9)//1, into: "", do: Enum.random(["a", "b", "é", "c"])
+    end
+
+    for _ <- 1..3_000 do
+      {a, b} = {word.(), word.()}
+      distance = full_table(a, b)
+      assert Similar.edit_distance(a, b) == distance
+
+      for budget <- 0..4 do
+        assert Similar.within(a, b, budget) == if(distance <= budget, do: distance)
+      end
+    end
+
+    assert Similar.edit_distance("", "") == 0
+    assert Similar.edit_distance("", "abc") == 3
+    assert Similar.within("abc", "", 3) == 3
+    assert Similar.within("abc", "", 2) == nil
+  end
+
+  test "two long names cost their length" do
+    a = String.duplicate("a", 200_000)
+    b = String.duplicate("a", 199_999) <> "b"
+    c = String.duplicate("c", 200_000)
+
+    {time, answer} = :timer.tc(fn -> Similar.did_you_mean(a, [b, c]) end)
+
+    assert answer == b
+    assert time < 2_000_000
+  end
 end
