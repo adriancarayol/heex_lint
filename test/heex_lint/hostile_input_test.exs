@@ -12,7 +12,7 @@ defmodule HeexLint.HostileInputTest do
 
   alias HeexLint.Grammar.{Classes, Classifier, Colors, Lengths, Validators}
   alias HeexLint.Project.Source
-  alias HeexLint.Rules.NoArbitraryValues
+  alias HeexLint.Rules.{NoArbitraryValues, NoInlineStyles}
   alias HeexLint.{Collector, Element, Suggest, Template, Theme}
 
   @moduletag :tmp_dir
@@ -1179,6 +1179,32 @@ defmodule HeexLint.HostileInputTest do
 
       assert [%{rule: :no_inline_styles}] =
                quick(fn -> lint(dir, page(template), rules: [no_inline_styles: :error]) end)
+    end
+
+    for value <- ["#fff ", "var(--a) ", "url(a) "] do
+      test "of a custom property, #{value}repeated, are read in one pass", %{tmp_dir: dir} do
+        style = ~s(--x: #{repeat(unquote(value), div(800_000, byte_size(unquote(value))))})
+
+        quick(fn ->
+          lint(dir, page(~s(<div style="#{style}" />)), rules: [no_inline_styles: :error])
+        end)
+      end
+    end
+
+    test "url( is one word in any case, and only at a word's start" do
+      assert NoInlineStyles.raw_color?("URL(#fff)") == false
+      assert NoInlineStyles.raw_color?("Url(#fff)") == false
+      assert NoInlineStyles.raw_color?("xurl(#fff)") == true
+      assert NoInlineStyles.raw_color?("url(#fff) #fff") == true
+    end
+
+    test "var() holds no color, in any case, up to its first )" do
+      assert NoInlineStyles.raw_color?("var(--a, red)") == false
+      assert NoInlineStyles.raw_color?("VAR(--a, red) Var(--b, blue)") == false
+      assert NoInlineStyles.raw_color?("var(--a) red") == true
+      assert NoInlineStyles.raw_color?("var(--a, var(--b)) red") == true
+      assert NoInlineStyles.raw_color?("var(--a, red") == true
+      assert NoInlineStyles.raw_color?("var(--a) var(--b, red") == true
     end
 
     test "a value of many declarations reports each", %{tmp_dir: dir} do

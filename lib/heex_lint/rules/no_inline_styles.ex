@@ -226,10 +226,24 @@ defmodule HeexLint.Rules.NoInlineStyles do
 
     Regex.match?(@color_function, text) or Colors.parse(text) != nil or
       text
-      |> String.replace(~r/var\([^)]*\)/i, " ")
+      |> without_vars("")
       |> String.split(~r/[\s,()\/]+/)
       |> Enum.any?(&(&1 != "" and Colors.parse(&1) != nil))
   end
+
+  # `var\([^)]*\)`, case-insensitively, each replaced by a space. In one pass: a regex
+  # replace costs more for each match the more of them there are.
+  defp without_vars(<<v, a, r, ?(, rest::binary>> = text, acc)
+       when v in ~c"vV" and a in ~c"aA" and r in ~c"rR" do
+    case :binary.split(rest, ")") do
+      [_variable, rest] -> without_vars(rest, acc <> " ")
+      # No `)` ends this one, so none ends a later one either.
+      [_rest] -> acc <> text
+    end
+  end
+
+  defp without_vars(<<byte, rest::binary>>, acc), do: without_vars(rest, <<acc::binary, byte>>)
+  defp without_vars("", acc), do: acc
 
   defp color_value_text(value), do: color_text(value, "", nil, 0, nil)
 
@@ -297,11 +311,13 @@ defmodule HeexLint.Rules.NoInlineStyles do
   defp color_text(text, acc, nil, 0, prev) do
     boundary = prev == nil or not Regex.match?(~r/[\w-]/, <<prev::utf8>>)
 
-    if boundary and String.downcase(String.slice(text, 0, 4)) == "url(" do
-      color_text(String.slice(text, 4..-1//1), acc <> " ", nil, 1, ?()
-    else
-      <<c::utf8, rest::binary>> = text
-      color_text(rest, acc <> <<c::utf8>>, nil, 0, c)
+    case text do
+      <<u, r, l, ?(, rest::binary>>
+      when boundary and u in ~c"uU" and r in ~c"rR" and l in ~c"lL" ->
+        color_text(rest, acc <> " ", nil, 1, ?()
+
+      <<c::utf8, rest::binary>> ->
+        color_text(rest, acc <> <<c::utf8>>, nil, 0, c)
     end
   end
 
