@@ -462,10 +462,10 @@ defmodule HeexLint.Rules.NoRawColorsTest do
     end
 
     for {name, template} <- [
-          {"a class attribute", ~S[<div class={tv(%{@base | a: "bg-pink-500"})} />]},
-          {"another attribute", ~S[<div title={tv(%{@base | a: "bg-pink-500"})} />]},
-          {":if", ~S[<div :if={tv(%{@base | a: "bg-pink-500"})} />]},
-          {"a body", ~S[<div>{tv(%{@base | a: "bg-pink-500"})}</div>]}
+          {"a class attribute", ~S[<div class={tv(%{@base | base: "bg-pink-500"})} />]},
+          {"another attribute", ~S[<div title={tv(%{@base | base: "bg-pink-500"})} />]},
+          {":if", ~S[<div :if={tv(%{@base | base: "bg-pink-500"})} />]},
+          {"a body", ~S[<div>{tv(%{@base | base: "bg-pink-500"})}</div>]}
         ] do
       test "a map update in #{name} has its entries read", %{tmp_dir: dir} do
         assert [finding] = colors(dir, unquote(template), variant_functions: ["tv"])
@@ -475,9 +475,9 @@ defmodule HeexLint.Rules.NoRawColorsTest do
 
     test "a map update in code has its entries read", %{tmp_dir: dir} do
       for code <- [
-            ~S[@x tv(%{@y | a: "bg-pink-500"})],
-            ~S[def a(b \\ tv(%{y() | a: "bg-pink-500"})), do: b],
-            ~S[tv(%{y() | a: "bg-pink-500"})]
+            ~S[@x tv(%{@y | base: "bg-pink-500"})],
+            ~S[def a(b \\ tv(%{y() | base: "bg-pink-500"})), do: b],
+            ~S[tv(%{y() | base: "bg-pink-500"})]
           ] do
         module = "defmodule AppWeb.Code do\n#{code}\nend\n"
         rules = [no_raw_colors: {:error, variant_functions: ["tv"]}]
@@ -488,13 +488,110 @@ defmodule HeexLint.Rules.NoRawColorsTest do
     test "a map update's string keys have their values read too", %{tmp_dir: dir} do
       for {update, count} <- [
             {~S["base" => "bg-pink-500"], 1},
-            {~S[:base => "bg-pink-500", "x" => "bg-red-500"], 2},
+            {~S[:base => "bg-pink-500", "class" => "bg-red-500"], 2},
             {~S["variants" => %{"s" => %{"x" => "bg-pink-500"}}], 1}
           ] do
         template = "<div class={tv(%{@a | #{update}})} />"
         findings = colors(dir, template, variant_functions: ["tv"])
         assert length(findings) == count, template
       end
+    end
+
+    test "a variant config reads only what holds classes", %{tmp_dir: dir} do
+      for config <- [
+            ~S|%{meta: "bg-pink-500"}|,
+            ~S|%{default_variants: %{size: "bg-pink-500"}}|,
+            ~S|%{compound_variants: [%{size: "bg-pink-500", class: "p-1"}]}|,
+            ~S|[meta: "bg-pink-500"]|
+          ] do
+        assert colors(dir, "<div title={tv(#{config})} />", variant_functions: ["tv"]) == [],
+               config
+      end
+
+      for config <- [
+            ~S|%{base: "bg-pink-500"}|,
+            ~S|%{"base" => "bg-pink-500"}|,
+            ~S|%{class: "bg-pink-500"}|,
+            ~S|%{slots: %{title: "bg-pink-500"}}|,
+            ~S|%{variants: %{size: %{sm: "bg-pink-500"}}}|,
+            ~S|%{compound_variants: [%{size: "sm", class: "bg-pink-500"}]}|,
+            ~S|%{compound_slots: [[slots: ["title"], class_name: "bg-pink-500"]]}|,
+            ~S|[base: "bg-pink-500"]|
+          ] do
+        assert [finding] = colors(dir, "<div title={tv(#{config})} />", variant_functions: ["tv"]),
+               config
+
+        assert finding.message =~ ~s("bg-pink-500")
+      end
+    end
+
+    test "a merge call reads a map's keys and not its values", %{tmp_dir: dir} do
+      assert [finding] = colors(dir, ~S|<div class={cn(%{"bg-pink-500" => @on})} />|)
+      assert finding.message =~ ~s("bg-pink-500")
+      assert {finding.line, finding.column} == {6, 23}
+
+      assert [finding] =
+               colors(
+                 dir,
+                 ~S|<div class={cn(["p-1", %{"p-2" => "bg-pink-500"}, %{"bg-lime-400" => 1}])} />|
+               )
+
+      assert finding.message =~ ~s("bg-lime-400")
+
+      assert [_] = colors(dir, ~S|<div title={cn(%{@a \| "bg-pink-500" => @on})} />|)
+    end
+
+    test "a map outside a merge call has no class keys", %{tmp_dir: dir} do
+      assert colors(dir, ~S|<div data-x={%{"bg-pink-500" => @on}} />|) == []
+    end
+
+    test "a variant call inside a merge call keeps its rule", %{tmp_dir: dir} do
+      assert colors(dir, ~S|<div title={cn(tv(%{meta: 1, "bg-pink-500" => 1}))} />|,
+               variant_functions: ["tv"]
+             ) == []
+    end
+
+    test "a ~s hole is read as a string's is", %{tmp_dir: dir} do
+      assert [finding] = colors(dir, ~S|<div class={~s(p-2 #{"bg-pink-500"})} />|)
+      assert finding.message =~ ~s("bg-pink-500")
+
+      assert [finding] = colors(dir, ~S|<div class={~s(bg-pink-500 #{@x} p-1)} />|)
+      assert {finding.line, finding.column} == {6, 20}
+
+      assert [finding] = colors(dir, ~S|<div class={~s(#{@x} bg-pink-500)} />|)
+      assert {finding.line, finding.column} == {6, 26}
+    end
+
+    test "a ~s hole on an assigned table reads it", %{tmp_dir: dir} do
+      module = fn read ->
+        """
+        defmodule AppWeb.Tabled do
+          use AppWeb, :html
+
+          def render(assigns) do
+            assigns = assign(assigns, :t, %{a: "bg-pink-500"})
+            ~H"<.button class={~s(p-2 \#{#{read}})}>x</.button>"
+          end
+        end
+        """
+      end
+
+      for read <- ["@t.a", "@t[:a]"] do
+        assert [finding] =
+                 lint(dir, %{"lib/app_web/tabled.ex" => module.(read)},
+                   rules: [no_raw_colors: :error]
+                 ),
+               read
+
+        assert finding.message =~ "bg-pink-500"
+      end
+
+      assert [finding] =
+               lint(dir, %{"lib/app_web/tabled.ex" => module.("@t[@v]")},
+                 rules: [require_static_classes: :error]
+               )
+
+      assert finding.message =~ "cannot be checked"
     end
 
     test "two modules on one line keep their own code", %{tmp_dir: dir} do
@@ -530,7 +627,7 @@ defmodule HeexLint.Rules.NoRawColorsTest do
       end
 
       assert [_] =
-               colors(dir, ~S[<div title={tv(%{%{a: "bg-pink-500"} | b: "p-1"})} />],
+               colors(dir, ~S[<div title={tv(%{%{base: "bg-pink-500"} | class: "p-1"})} />],
                  variant_functions: ["tv"]
                )
     end
@@ -1304,22 +1401,24 @@ defmodule HeexLint.Rules.NoRawColorsTest do
       end
     end
 
-    test "a template's merge call stays unread where it was", %{tmp_dir: dir} do
-      assert templated(
-               dir,
-               ~S|def a(assigns), do: ~H"<div class={cn(%{\"bg-pink-500\" => @on})} />"|
-             ) ==
-               []
+    test "a template's merge call reads a map's keys", %{tmp_dir: dir} do
+      assert [_] =
+               templated(
+                 dir,
+                 ~S|def a(assigns), do: ~H"<div class={cn(%{\"bg-pink-500\" => @on})} />"|
+               )
 
-      assert templated(dir, ~S"""
-             def a(assigns), do: ~H"<div class={cn(tones())} />"
+      assert [_] =
+               templated(dir, ~S"""
+               def a(assigns), do: ~H"<div class={cn(tones())} />"
 
-             defp tones, do: %{"bg-pink-500" => true}
-             """) == []
+               defp tones, do: %{"bg-pink-500" => true}
+               """)
     end
 
-    test "class map keys stay out of the default scan", %{tmp_dir: dir} do
-      assert scanned(dir, ~S|cn(["p-1", %{"bg-pink-500" => on}])|, no_raw_colors: :error) == []
+    test "class map keys are in the default scan, each once", %{tmp_dir: dir} do
+      assert [_] = scanned(dir, ~S|cn(["p-1", %{"bg-pink-500" => on}])|, no_raw_colors: :error)
+      assert [_] = scanned(dir, ~S|cn(["p-1", %{"bg-pink-500" => on}])|)
     end
   end
 

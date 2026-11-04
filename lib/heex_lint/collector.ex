@@ -91,6 +91,15 @@ defmodule HeexLint.Collector do
   # keep no route: only what is on the route stops it.
   @max_route 64
 
+  @class_names ["class", "class_name", "className"]
+  @variant_class_keys ["base", "slots", "variants" | @class_names]
+  @variant_compound_keys [
+    "compound_variants",
+    "compoundVariants",
+    "compound_slots",
+    "compoundSlots"
+  ]
+
   # How many times a site may read a binding it has already read. Only reads
   # that stopped on their route are read again, and bindings that all read each
   # other can do that on every route there is. First reads do not count. A read cut
@@ -249,6 +258,23 @@ defmodule HeexLint.Collector do
   def root_keys(_value), do: []
 
   @doc """
+  What a readable map or keyword list spread onto a tag sets, each key once with the
+  value the runtime keeps. Nil for any other expression.
+  """
+  @spec spread_entries(Macro.t()) :: [{String.t(), Macro.t()}] | nil
+  def spread_entries(ast) do
+    with pairs when is_list(pairs) <- root_pairs(ast),
+         true <- Enum.all?(pairs, &match?({_key, _value}, &1)) do
+      pairs = if is_list(ast), do: pairs, else: Enum.reverse(pairs)
+
+      for({key, value} <- pairs, name = Code.name(key), do: {name, value})
+      |> Enum.uniq_by(&elem(&1, 0))
+    else
+      _ -> nil
+    end
+  end
+
+  @doc """
   Collects `key` from a root attribute that spreads a readable map or keyword
   list onto the element: `{%{class: "p-4"}}`. Nil when the root is not one, or
   does not set `key`.
@@ -279,6 +305,7 @@ defmodule HeexLint.Collector do
     end)
   end
 
+  defp root_pairs({:%{}, _, [{:|, _, [_map, pairs]}]}), do: pairs
   defp root_pairs({:%{}, _, pairs}), do: pairs
   defp root_pairs(list) when is_list(list), do: if(Keyword.keyword?(list), do: list)
   defp root_pairs(_), do: nil
@@ -486,6 +513,7 @@ defmodule HeexLint.Collector do
       strings: [],
       unresolved: [],
       map_keys: nil,
+      in_merge: false,
       read: :value,
       reads: @no_reads,
       calls: [],
@@ -531,7 +559,19 @@ defmodule HeexLint.Collector do
        when sigil in [:sigil_s, :sigil_S] do
     text = parts |> Enum.filter(&is_binary/1) |> Enum.join()
     {line, column} = locate(state, meta)
-    push(state, text, chars(text, {line, column + 3}, 0), nil)
+    exprs = for {:"::", _, [{{:., _, [Kernel, :to_string]}, _, [expr]}, _]} <- parts, do: expr
+
+    cond do
+      exprs == [] ->
+        push(state, text, chars(text, {line, column + 3}, 0), nil)
+
+      String.length(to_string(meta[:delimiter])) == 3 ->
+        state = if state.kind == :class, do: unresolved(state, meta), else: state
+        push(state, text, chars(text, {line, column + 3}, 0), nil)
+
+      true ->
+        template(state, sigil_items(state, parts, {line, column + 3}), exprs, meta)
+    end
   end
 
   defp visit(state, list) when is_list(list), do: Enum.reduce(list, state, &visit(&2, &1))
@@ -643,6 +683,9 @@ defmodule HeexLint.Collector do
 
   defp visit(%{map_keys: keys} = state, {:%{}, _, entries}) when is_list(keys),
     do: map_entries(state, entries)
+
+  defp visit(%{in_merge: true} = state, {:%{}, meta, entries}),
+    do: merge_map(state, entries, meta)
 
   defp visit(%{map_keys: keys} = state, {{:., _, [{:__aliases__, _, [:Map]}, :merge]}, _, args})
        when is_list(keys) and is_list(args),
@@ -800,6 +843,22 @@ defmodule HeexLint.Collector do
       end)
 
     Enum.reduce(kept, state, fn token, acc -> push(acc, raw_text(token), token, nil) end)
+  end
+
+  # What a `~s` holds, with each hole where its `#{` is and the text after it where its
+  # `}` ends.
+  defp sigil_items(state, parts, position) do
+    {items, _position} =
+      Enum.flat_map_reduce(parts, position, fn
+        text, {line, column} = at when is_binary(text) ->
+          {chars(text, at, 0), {line, column + String.length(text)}}
+
+        {:"::", _, [{{:., _, [Kernel, :to_string]}, meta, _}, _]}, _at ->
+          {line, column} = locate(state, meta[:closing])
+          {[{:interp, locate(state, meta)}], {line, column + 1}}
+      end)
+
+    items
   end
 
   defp nested(state, nil), do: state
@@ -1183,10 +1242,14 @@ defmodule HeexLint.Collector do
         end
 
       is_binary(name) and MapSet.member?(state.variant, name) ->
-        Enum.reduce(args, read_call(state, meta), &visit_values(&2, &1))
+        outer = state.in_merge
+        inner = %{read_call(state, meta) | in_merge: false}
+        %{Enum.reduce(args, inner, &visit_variant_config(&2, &1)) | in_merge: outer}
 
       is_binary(name) and MapSet.member?(state.merge, name) ->
-        Enum.reduce(args, read_call(state, meta), &visit(&2, &1))
+        outer = state.in_merge
+        inner = %{read_call(state, meta) | in_merge: true}
+        %{Enum.reduce(args, inner, &visit(&2, &1)) | in_merge: outer}
 
       is_atom(callee) and local_function?(state, Atom.to_string(callee), arity) ->
         if state.mode == :template and is_list(state.map_keys),
@@ -1240,6 +1303,71 @@ defmodule HeexLint.Collector do
   end
 
   # Variant configs carry classes as values: %{primary: "...", ghost: "..."}.
+  # In a merge call a map's keys are the classes, as in `cn(%{"bg-pink-500" => @on})`.
+  # An atom key has no position of its own, so it is at the map's.
+  defp merge_map(state, [{:|, _, [map, updates]}], meta),
+    do: state |> visit(map) |> merge_map(List.wrap(updates), meta)
+
+  defp merge_map(state, entries, meta) do
+    Enum.reduce(entries, state, fn
+      {{:__block__, key_meta, [key]}, _value}, acc when is_binary(key) ->
+        literal(acc, key, key_meta)
+
+      {key, _value}, acc when is_atom(key) and key not in [nil, true, false] ->
+        text = Atom.to_string(key)
+        push(acc, text, chars(text, locate(acc, meta), 0), nil)
+
+      _computed, acc ->
+        unresolved(acc, meta)
+    end)
+  end
+
+  # In a variant config some keys hold classes. `default_variants` and what a compound
+  # variant selects on are names.
+  defp visit_variant_config(state, {:%{}, _, entries}), do: variant_entries(state, entries)
+
+  defp visit_variant_config(state, list) when is_list(list) do
+    if Keyword.keyword?(list),
+      do: variant_entries(state, list),
+      else: visit_values(state, list)
+  end
+
+  defp visit_variant_config(state, node), do: visit_values(state, node)
+
+  defp variant_entries(state, entries), do: Enum.reduce(entries, state, &variant_entry(&2, &1))
+
+  defp variant_entry(state, {:|, _, [base, updates]}),
+    do: state |> visit_variant_config(base) |> variant_entries(List.wrap(updates))
+
+  defp variant_entry(state, {key, value}) do
+    cond do
+      Code.name(key) in @variant_class_keys -> visit_values(state, value)
+      Code.name(key) in @variant_compound_keys -> compound_classes(state, value)
+      true -> state
+    end
+  end
+
+  defp variant_entry(state, entry), do: visit(state, entry)
+
+  defp compound_classes(state, list) when is_list(list),
+    do: Enum.reduce(list, state, &compound_class(&2, &1))
+
+  defp compound_classes(state, _value), do: state
+
+  defp compound_class(state, {:%{}, _, entries}), do: compound_class(state, entries)
+
+  defp compound_class(state, entries) when is_list(entries) do
+    Enum.reduce(entries, state, fn
+      {key, value}, acc ->
+        if Code.name(key) in @class_names, do: visit_values(acc, value), else: acc
+
+      _other, acc ->
+        acc
+    end)
+  end
+
+  defp compound_class(state, _other), do: state
+
   defp visit_values(state, {:%{}, _, entries}),
     do: Enum.reduce(entries, state, &visit_entry(&2, &1))
 
