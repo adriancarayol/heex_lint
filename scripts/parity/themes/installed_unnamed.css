@@ -1,0 +1,8 @@
+/* The same package by a specifier theme_imports does not name: its tokens stay out. */
+@import "tailwindcss";
+@import "parity-installed-kit/unnamed.css";
+
+/* One color of the app's own. */
+@theme inline {
+  --color-spotlight: oklch(0.92 0 0);
+}

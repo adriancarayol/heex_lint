@@ -1,0 +1,25 @@
+/* A kit that imports Tailwind itself: its palette is still not a token. */
+@import "tailwindcss";
+@import "./brand.css";
+
+@theme inline {
+  --color-kit-primary: var(--kit-primary);
+  --color-kit-muted: var(--kit-muted);
+  --radius-kit: 7px;
+  --text-kicker: 0.6875rem;
+  --shadow-lift: 0 4px 12px rgb(0 0 0 / 0.1);
+}
+
+:root {
+  --kit-primary: oklch(0.205 0 0);
+  --kit-muted: oklch(0.97 0 0);
+}
+
+.dark {
+  --kit-primary: oklch(0.9 0 0);
+}
+
+@utility kit-stack {
+  display: flex;
+  gap: 1rem;
+}

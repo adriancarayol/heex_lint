@@ -1,0 +1,1185 @@
+defmodule HeexLint.VariableChainsTest do
+  use ExUnit.Case, async: true
+
+  import HeexLint.TestProject
+
+  @moduletag :tmp_dir
+  # A walk that doubles with every link does not fail, it just never returns.
+  @moduletag timeout: 30_000
+
+  @rules [no_raw_colors: :error, require_static_classes: :error]
+  @path "lib/app_web/page.ex"
+  @class ~s(<.button class={@c}>x</.button>)
+
+  # A function binding `body`, then rendering `template`.
+  defp page(body, template \\ @class, extra \\ "") do
+    %{
+      @path => """
+      defmodule AppWeb.Page do
+        use AppWeb, :html
+      #{extra}
+        def page(assigns) do
+      #{body}
+          ~H"#{template}"
+        end
+      end
+      """
+    }
+  end
+
+  # `depth` variables, each read from the one before it the way `shape` reads A.
+  defp chain(shape, depth, first \\ ~s("bg-pink-500")) do
+    binds = for i <- 1..depth, do: "v#{i} = #{String.replace(shape, "A", "v#{i - 1}")}\n"
+    Enum.join(["v0 = #{first}\n" | binds])
+  end
+
+  defp assigned(name), do: "assigns = assign(assigns, :c, #{name})"
+
+  # A read that never ends takes all the memory before any timeout: it is killed.
+  defp within_seconds(fun) do
+    task = Task.async(fun)
+
+    case Task.yield(task, 5_000) || Task.shutdown(task, :brutal_kill) do
+      {:ok, result} -> result
+      _ -> flunk("did not finish in 5 s")
+    end
+  end
+
+  # What each finding points at: its rule and the source text there.
+  defp found(diagnostics, dir) do
+    lines = dir |> Path.join(@path) |> File.read!() |> String.split("\n")
+
+    diagnostics
+    |> Enum.map(fn d ->
+      at = lines |> Enum.at(d.line - 1) |> String.slice((d.column - 1)..-1//1)
+      {d.rule, Regex.run(~r/^[@\w-]+/, at) |> List.first()}
+    end)
+    |> Enum.sort()
+  end
+
+  # Where `text` starts in the page, as the first character after `before`.
+  defp position(dir, before) do
+    lines = dir |> Path.join(@path) |> File.read!() |> String.split("\n")
+    index = Enum.find_index(lines, &String.contains?(&1, before))
+
+    [{start, length}] =
+      Regex.run(~r/#{Regex.escape(before)}/, Enum.at(lines, index), return: :index)
+
+    {index + 1, start + length + 1}
+  end
+
+  defp at(diagnostics) do
+    diagnostics |> Enum.map(&{&1.line, &1.column}) |> Enum.sort()
+  end
+
+  describe "a chain of variables" do
+    test "is followed to the limit of 64 bindings", %{tmp_dir: dir} do
+      files = page(chain("A", 63), "<.button class={v63}>x</.button>")
+      assert found(lint(dir, files, rules: @rules), dir) == [{:no_raw_colors, "bg-pink-500"}]
+    end
+
+    test "is dynamic at the first read past the limit", %{tmp_dir: dir} do
+      files = page(chain("A", 64), "<.button class={v64}>x</.button>")
+      diagnostics = lint(dir, files, rules: @rules)
+
+      assert [%{rule: :require_static_classes}] = diagnostics
+      assert at(diagnostics) == [position(dir, "v1 = ")]
+    end
+
+    test "through an assign counts the assign", %{tmp_dir: dir} do
+      assert found(
+               lint(dir, page(chain("A", 62) <> assigned("v62")), rules: @rules),
+               dir
+             ) == [{:no_raw_colors, "bg-pink-500"}]
+
+      assert found(
+               lint(dir, page(chain("A", 63) <> assigned("v63")), rules: @rules),
+               dir
+             ) == [{:require_static_classes, "v0"}]
+    end
+
+    test "of 70 links is dynamic, not dropped", %{tmp_dir: dir} do
+      assert [%{rule: :require_static_classes} = finding] =
+               lint(dir, page(chain("A", 70) <> assigned("v70")), rules: @rules)
+
+      assert finding.message ==
+               "Dynamically built class on <.button> cannot be checked. Use static class strings."
+
+      assert at([finding]) == [position(dir, "v8 = ")]
+    end
+
+    test "of 8 links reports its class on any element", %{tmp_dir: dir} do
+      files = page(chain("A", 8) <> assigned("v8"), ~s(<div class={@c}></div>))
+
+      assert found(lint(dir, files, rules: @rules), dir) == [{:no_raw_colors, "bg-pink-500"}]
+    end
+
+    for {shape, depth} <- [{"A", 5000}, {"cn(A)", 3000}] do
+      test "too long to follow is not a crash: #{shape}", %{tmp_dir: dir} do
+        last = "v#{unquote(depth)}"
+        files = page(chain(unquote(shape), unquote(depth)) <> assigned(last))
+
+        # no_raw_colors would also read each `cn` call on its own.
+        rules = [no_restyle: :error, require_static_classes: :error]
+
+        assert [%{rule: :require_static_classes}] =
+                 within_seconds(fn -> lint(dir, files, rules: rules) end)
+      end
+    end
+
+    test "cut on a long route is still read on a short one", %{tmp_dir: dir} do
+      us = for i <- 1..10, do: "u#{i} = u#{i - 1}\n"
+      ws = for i <- 1..60, do: "w#{i} = w#{i - 1}\n"
+
+      body =
+        ~s(u0 = "bg-pink-500"\n) <>
+          Enum.join(us) <>
+          "w0 = u10\n" <> Enum.join(ws) <> assigned("if(assigns.on, do: w60, else: u10)")
+
+      assert found(lint(dir, page(body), rules: @rules), dir) == [
+               {:no_raw_colors, "bg-pink-500"},
+               {:require_static_classes, "u8"}
+             ]
+    end
+
+    test "read in full is still cut past the limit", %{tmp_dir: dir} do
+      us = for i <- 1..10, do: "u#{i} = u#{i - 1}\n"
+      ws = for i <- 1..62, do: "w#{i} = w#{i - 1}\n"
+
+      body =
+        ~s(u0 = "bg-pink-500"\n) <>
+          Enum.join(us) <>
+          "w0 = u10\n" <> Enum.join(ws) <> assigned("if(assigns.on, do: u10, else: w62)")
+
+      assert found(lint(dir, page(body), rules: @rules), dir) == [
+               {:no_raw_colors, "bg-pink-500"},
+               {:require_static_classes, "u10"}
+             ]
+    end
+
+    test "cut in a read it skipped is still read on a short route", %{tmp_dir: dir} do
+      us = for i <- 1..10, do: "u#{i} = u#{i - 1}\n"
+      ws = for i <- 1..58, do: "w#{i} = w#{i - 1}\n"
+
+      body =
+        ~s(u0 = "bg-pink-500"\n) <>
+          Enum.join(us) <>
+          "p1 = u10\np2 = u10\nw0 = [p1, p2]\n" <>
+          Enum.join(ws) <> assigned("[w58, p2]")
+
+      assert found(lint(dir, page(body), rules: @rules), dir) == [
+               {:no_raw_colors, "bg-pink-500"},
+               {:require_static_classes, "u7"}
+             ]
+    end
+
+    test "read by a merge call in code reports its class", %{tmp_dir: dir} do
+      files = %{
+        @path => """
+        defmodule AppWeb.Page do
+          use AppWeb, :html
+          import Tails, only: [cn: 1]
+
+          def classes(_on) do
+        #{chain("A", 8)}
+            cn(v8)
+          end
+        end
+        """
+      }
+
+      assert found(lint(dir, files, rules: [no_raw_colors: :error]), dir) ==
+               [{:no_raw_colors, "bg-pink-500"}]
+    end
+  end
+
+  describe "a binding read twice at one site" do
+    for shape <- [
+          "if(assigns.on, do: A, else: A)",
+          "[A, A]",
+          "A || A",
+          "cn(A, A)",
+          ~S("#{A} #{A}")
+        ] do
+      test "is read once in a chain: #{shape}", %{tmp_dir: dir} do
+        files = page(chain(unquote(shape), 40) <> assigned("v40"))
+
+        assert found(within_seconds(fn -> lint(dir, files, rules: @rules) end), dir) ==
+                 [{:no_raw_colors, "bg-pink-500"}]
+      end
+    end
+
+    test "stays linear past the limit, reporting both reads at the end", %{tmp_dir: dir} do
+      files = page(chain("if(assigns.on, do: A, else: A)", 70) <> assigned("v70"))
+
+      assert found(within_seconds(fn -> lint(dir, files, rules: @rules) end), dir) ==
+               [{:require_static_classes, "v7"}, {:require_static_classes, "v7"}]
+    end
+
+    test "stays linear when the branches differ in length", %{tmp_dir: dir} do
+      binds = for i <- 2..40, do: "v#{i} = if(assigns.on, do: v#{i - 1}, else: v#{i - 2})\n"
+      short = ~s(v0 = "bg-pink-500"\nv1 = "bg-sky-500"\n) <> Enum.join(binds)
+
+      assert found(lint(dir, page(short <> assigned("v40")), rules: @rules), dir) ==
+               [{:no_raw_colors, "bg-pink-500"}, {:no_raw_colors, "bg-sky-500"}]
+
+      binds = for i <- 2..200, do: "v#{i} = if(assigns.on, do: v#{i - 1}, else: v#{i - 2})\n"
+      long = ~s(v0 = "bg-pink-500"\nv1 = "bg-sky-500"\n) <> Enum.join(binds)
+
+      diagnostics =
+        within_seconds(fn -> lint(dir, page(long <> assigned("v200")), rules: @rules) end)
+
+      assert diagnostics != []
+      assert Enum.all?(diagnostics, &(&1.rule == :require_static_classes))
+    end
+
+    test "is one class, and no dynamic one, through both branches", %{tmp_dir: dir} do
+      variable = ~s(a = "bg-pink-500"\n) <> assigned("if(assigns.on, do: a, else: a)")
+
+      assert found(lint(dir, page(variable), rules: @rules), dir) == [
+               {:no_raw_colors, "bg-pink-500"}
+             ]
+
+      attribute = page(assigned("if(assigns.on, do: @a, else: @a)"), @class, ~s(@a "bg-pink-500"))
+      assert found(lint(dir, attribute, rules: @rules), dir) == [{:no_raw_colors, "bg-pink-500"}]
+
+      function =
+        page(
+          assigned("if(assigns.on, do: f(), else: f())"),
+          @class,
+          ~s(defp f, do: "bg-pink-500")
+        )
+
+      assert found(lint(dir, function, rules: @rules), dir) == [{:no_raw_colors, "bg-pink-500"}]
+    end
+
+    test "is one unreadable value through both branches", %{tmp_dir: dir} do
+      body = "c = assigns.d\n" <> assigned("if(assigns.on, do: c, else: c)")
+      files = page(body, @class <> "")
+      assert [%{rule: :require_static_classes}] = lint(dir, files, rules: @rules)
+    end
+
+    test "still leaves two literals of one class as two", %{tmp_dir: dir} do
+      body = assigned(~s[if(assigns.on, do: "bg-pink-500", else: "bg-pink-500")])
+
+      assert found(lint(dir, page(body), rules: @rules), dir) ==
+               [{:no_raw_colors, "bg-pink-500"}, {:no_raw_colors, "bg-pink-500"}]
+    end
+
+    test "is linear through attributes and functions", %{tmp_dir: dir} do
+      attributes = for i <- 1..40, do: "@a#{i} if(true, do: @a#{i - 1}, else: @a#{i - 1})\n"
+      extra = ~s(@a0 "bg-pink-500"\n) <> Enum.join(attributes)
+
+      assert found(
+               within_seconds(fn ->
+                 lint(dir, page(assigned("@a40"), @class, extra), rules: @rules)
+               end),
+               dir
+             ) == [{:no_raw_colors, "bg-pink-500"}]
+
+      functions =
+        for i <- 1..40, do: "defp f#{i}, do: if(true, do: f#{i - 1}(), else: f#{i - 1}())\n"
+
+      extra = ~s(defp f0, do: "bg-pink-500"\n) <> Enum.join(functions)
+
+      assert found(
+               within_seconds(fn ->
+                 lint(dir, page(assigned("f40()"), @class, extra), rules: @rules)
+               end),
+               dir
+             ) == [{:no_raw_colors, "bg-pink-500"}]
+    end
+
+    test "reports a map key once under scan_all_strings", %{tmp_dir: dir} do
+      files = %{
+        @path => """
+        defmodule AppWeb.Page do
+          use AppWeb, :html
+          import Tails, only: [cn: 1]
+
+          def classes(on) do
+        #{chain("if(on, do: A, else: A)", 40, ~s(%{"bg-pink-500" => on}))}
+            cn(v40)
+          end
+        end
+        """
+      }
+
+      diagnostics =
+        within_seconds(fn ->
+          lint(dir, files, rules: [no_raw_colors: {:error, scan_all_strings: true}])
+        end)
+
+      assert found(diagnostics, dir) == [{:no_raw_colors, "bg-pink-500"}]
+    end
+  end
+
+  describe "a cycle" do
+    test "of a variable and itself is unresolved", %{tmp_dir: dir} do
+      assert found(lint(dir, page("a = a\n" <> assigned("a")), rules: @rules), dir) ==
+               [{:require_static_classes, "a"}]
+    end
+
+    test "of two variables is unresolved where it closes", %{tmp_dir: dir} do
+      diagnostics = lint(dir, page("a = b\nb = a\n" <> assigned("a")), rules: @rules)
+
+      assert [%{rule: :require_static_classes}] = diagnostics
+      assert at(diagnostics) == [position(dir, "b = ")]
+    end
+
+    test "of attributes and functions is unresolved", %{tmp_dir: dir} do
+      attributes = page(assigned("@a"), @class, "@a @b\n@b @a")
+      assert [%{rule: :require_static_classes}] = lint(dir, attributes, rules: @rules)
+
+      functions = page(assigned("f()"), @class, "defp f, do: g()\ndefp g, do: f()")
+      assert [%{rule: :require_static_classes}] = lint(dir, functions, rules: @rules)
+    end
+
+    test "entered at two places is unresolved at each closing read", %{tmp_dir: dir} do
+      body = "a = b\nb = a\n" <> assigned("if(assigns.on, do: a, else: b)")
+      diagnostics = lint(dir, page(body), rules: @rules)
+
+      assert at(diagnostics) |> Enum.sort() ==
+               Enum.sort([position(dir, "a = "), position(dir, "b = ")])
+    end
+
+    test "keeps what it reads on the way", %{tmp_dir: dir} do
+      body = ~s[a = if(assigns.on, do: b, else: "bg-pink-500")\nb = a\n] <> assigned("a")
+
+      assert found(lint(dir, page(body), rules: @rules), dir) ==
+               [{:no_raw_colors, "bg-pink-500"}, {:require_static_classes, "a"}]
+    end
+
+    test "at the end of a branching chain stays linear", %{tmp_dir: dir} do
+      binds = for i <- 1..40, do: "v#{i} = if(assigns.on, do: v#{i - 1}, else: v#{i - 1})\n"
+      first = ~s[v0 = if(assigns.on, do: v40, else: "bg-pink-500")\n]
+      files = page(first <> Enum.join(binds) <> assigned("v40"))
+
+      assert found(within_seconds(fn -> lint(dir, files, rules: @rules) end), dir) ==
+               [{:no_raw_colors, "bg-pink-500"}, {:require_static_classes, "v40"}]
+    end
+
+    test "of bindings that all read each other finishes", %{tmp_dir: dir} do
+      names = Enum.map_join(1..20, ", ", &"v#{&1}")
+      binds = for i <- 1..20, do: "v#{i} = [#{names}]\n"
+      files = page(Enum.join(binds) <> ~s(v21 = "bg-pink-500"\n) <> assigned("[v1, v21]"))
+
+      diagnostics = within_seconds(fn -> lint(dir, files, rules: @rules) end)
+
+      assert Enum.any?(diagnostics, &(&1.rule == :require_static_classes))
+      assert Enum.count(diagnostics, &(&1.rule == :no_raw_colors)) == 1
+    end
+  end
+
+  describe "variables of two functions" do
+    test "with the same name are no cycle", %{tmp_dir: dir} do
+      extra = """
+      defp f do
+        x = "bg-pink-500"
+        x
+      end
+      """
+
+      assert found(
+               lint(dir, page("x = f()\n" <> assigned("x"), @class, extra), rules: @rules),
+               dir
+             ) ==
+               [{:no_raw_colors, "bg-pink-500"}]
+    end
+
+    test "with the same name are each read", %{tmp_dir: dir} do
+      extra = """
+      defp f do
+        x = "bg-pink-500"
+        x
+      end
+
+      defp g do
+        x = "bg-sky-500"
+        x
+      end
+      """
+
+      body = assigned("if(assigns.on, do: f(), else: g())")
+
+      assert found(lint(dir, page(body, @class, extra), rules: @rules), dir) ==
+               [{:no_raw_colors, "bg-pink-500"}, {:no_raw_colors, "bg-sky-500"}]
+    end
+
+    test "on one line are told apart", %{tmp_dir: dir} do
+      extra = ~s[defp f, do: (y = g(); y); defp g, do: (y = "bg-pink-500"; y)]
+
+      assert found(lint(dir, page(assigned("f()"), @class, extra), rules: @rules), dir) ==
+               [{:no_raw_colors, "bg-pink-500"}]
+    end
+  end
+
+  describe "a style" do
+    @styles [no_inline_styles: :error]
+
+    defp style(body), do: page(body, ~s(<div style={@s}></div>))
+    defp styled(value), do: "assigns = assign(assigns, :s, #{value})"
+    defp hole(name), do: ~s("--tone: \#{#{name}}")
+
+    test "fills each hole, even with what another hole read", %{tmp_dir: dir} do
+      body = ~s(c = "#ff0000"\n) <> styled(~S("--tone: #{c}; --other: #{c}"))
+
+      assert [_, _] = diagnostics = lint(dir, style(body), rules: @styles)
+      assert Enum.all?(diagnostics, &(&1.message =~ "hardcodes a color"))
+    end
+
+    test "fills a hole with what the style itself read", %{tmp_dir: dir} do
+      body = ~s(c = "#ff0000"\n) <> styled(~S([c, "--tone: #{c}"]))
+
+      assert [%{message: message}] = lint(dir, style(body), rules: @styles)
+      assert message =~ "--tone hardcodes a color"
+    end
+
+    test "follows a branching chain through a hole", %{tmp_dir: dir} do
+      body =
+        chain("if(assigns.on, do: A, else: A)", 40, ~s("#ff0000")) <>
+          styled(~S("--tone: #{v40}; --other: #{v40}"))
+
+      assert [_, _] = within_seconds(fn -> lint(dir, style(body), rules: @styles) end)
+    end
+
+    for links <- [63, 64, 70, 200, 5000] do
+      test "reads a raw color #{links} links from a hole", %{tmp_dir: dir} do
+        body = chain("A", unquote(links), ~s("#ff0000")) <> styled(hole("v#{unquote(links)}"))
+
+        assert [%{message: message}] =
+                 within_seconds(fn -> lint(dir, style(body), rules: @styles) end)
+
+        assert message =~ "--tone hardcodes a color"
+      end
+    end
+
+    test "reads a raw color past the limit from a hole the template writes", %{tmp_dir: dir} do
+      files = page(chain("A", 70, ~s("#ff0000")), ~S(<div style={\"--tone: #{v70}\"}></div>))
+
+      assert [%{rule: :no_inline_styles, message: message}] = lint(dir, files, rules: @styles)
+      assert message =~ "--tone hardcodes a color"
+    end
+
+    test "stays linear in a hole past the limit", %{tmp_dir: dir} do
+      body = chain("if(assigns.on, do: A, else: A)", 70, ~s("#ff0000")) <> styled(hole("v70"))
+
+      assert [%{message: message}] =
+               within_seconds(fn -> lint(dir, style(body), rules: @styles) end)
+
+      assert message =~ "--tone hardcodes a color"
+    end
+
+    test "stays linear in a hole past the limit that ends in a cycle", %{tmp_dir: dir} do
+      first = ~s[if(assigns.on, do: v200, else: "#ff0000")]
+      body = chain("if(assigns.on, do: A, else: A)", 200, first) <> styled(hole("v200"))
+
+      assert [%{message: message}] =
+               within_seconds(fn -> lint(dir, style(body), rules: @styles) end)
+
+      assert message =~ "--tone hardcodes a color"
+    end
+
+    test "reads a lookup past the limit from a hole", %{tmp_dir: dir} do
+      read = chain("A", 70, ~s(%{a: "#ff0000"})) <> styled(hole("v70[:a]"))
+      assert [%{message: message}] = lint(dir, style(read), rules: @styles)
+      assert message =~ "--tone hardcodes a color"
+
+      table = ~s(t = %{a: "#ff0000"}\n) <> chain("A", 70, "t[:a]") <> styled(hole("v70"))
+      assert [%{message: message}] = lint(dir, style(table), rules: @styles)
+      assert message =~ "--tone hardcodes a color"
+    end
+
+    test "allows a hole past the limit that holds no raw color", %{tmp_dir: dir} do
+      for first <- [~s["var(--tone)"], "unknown()", "assigns.tone"] do
+        body = chain("A", 70, first) <> styled(hole("v70"))
+        assert [] == lint(dir, style(body), rules: @styles)
+      end
+    end
+
+    test "does not report a cycle in a hole as dynamic", %{tmp_dir: dir} do
+      body = ~s[a = if(assigns.on, do: b, else: "#ff0000")\nb = a\n] <> styled(hole("a"))
+
+      assert [%{message: message}] =
+               within_seconds(fn -> lint(dir, style(body), rules: @styles) end)
+
+      assert message =~ "--tone hardcodes a color"
+    end
+
+    # @shadcn/lint's `check` keeps no route, so a chain never makes a style dynamic.
+    for links <- [63, 64, 65, 70, 200, 5000] do
+      test "reads its value #{links} links away", %{tmp_dir: dir} do
+        links = unquote(links)
+
+        clean = ~s[if(assigns.on, do: "--x: var(--y)", else: "--z: var(--y)")]
+        body = chain("A", links, clean) <> styled("v#{links}")
+        assert [] == within_seconds(fn -> lint(dir, style(body), rules: @styles) end)
+
+        raw = ~s[if(assigns.on, do: "color: red", else: "--z: #ff0000")]
+        body = chain("A", links, raw) <> styled("v#{links}")
+
+        assert [%{message: color}, %{message: custom}] =
+                 within_seconds(fn -> lint(dir, style(body), rules: @styles) end)
+
+        assert color =~ "Inline style sets color"
+        assert custom =~ "--z hardcodes a color"
+      end
+    end
+
+    test "reads its value past the limit from a variable the template reads", %{tmp_dir: dir} do
+      files = page(chain("A", 70, ~s("color: red")), ~s(<div style={v70}></div>))
+
+      assert [%{message: message}] = lint(dir, files, rules: @styles)
+      assert message =~ "Inline style sets color"
+    end
+
+    test "reads its value past the limit from a spread", %{tmp_dir: dir} do
+      files = page(chain("A", 70, ~s("color: red")), ~s(<div {%{style: v70}}></div>))
+
+      assert [%{message: message}] = lint(dir, files, rules: @styles)
+      assert message =~ "Inline style sets color"
+    end
+
+    test "reads its value past the limit through a lookup", %{tmp_dir: dir} do
+      read = chain("A", 70, ~s(%{a: "color: red"})) <> styled("v70[:a]")
+      assert [%{message: message}] = lint(dir, style(read), rules: @styles)
+      assert message =~ "Inline style sets color"
+
+      table = ~s(t = %{a: "color: red"}\n) <> chain("A", 70, "t[:a]") <> styled("v70")
+      assert [%{message: message}] = lint(dir, style(table), rules: @styles)
+      assert message =~ "Inline style sets color"
+    end
+
+    test "reads its value past the limit through attributes and functions", %{tmp_dir: dir} do
+      attributes = for i <- 1..70, do: "@a#{i} @a#{i - 1}\n"
+      functions = for i <- 1..70, do: "defp f#{i}, do: f#{i - 1}()\n"
+
+      extra =
+        ~s(@a0 "color: red"\n) <>
+          Enum.join(attributes) <> ~s(defp f0, do: "--z: #ff0000"\n) <> Enum.join(functions)
+
+      body = styled("if(assigns.on, do: @a70, else: f70())")
+
+      assert [%{message: color}, %{message: custom}] =
+               lint(dir, page(body, ~s(<div style={@s}></div>), extra), rules: @styles)
+
+      assert color =~ "Inline style sets color"
+      assert custom =~ "--z hardcodes a color"
+    end
+
+    test "allows a received style past the limit", %{tmp_dir: dir} do
+      body = chain("A", 70, "assigns.style") <> styled("v70")
+      assert [] == lint(dir, style(body), rules: @styles)
+    end
+
+    test "is dynamic only where its value is unreadable, at any length", %{tmp_dir: dir} do
+      body = chain("A", 70, "unknown()") <> styled("v70")
+
+      assert [%{message: message} = finding] = lint(dir, style(body), rules: @styles)
+      assert message =~ "cannot be checked"
+      assert at([finding]) == [position(dir, "v0 = ")]
+    end
+
+    test "stays linear past the limit", %{tmp_dir: dir} do
+      raw = ~s[if(assigns.on, do: "color: red", else: "--z: #ff0000")]
+      body = chain("if(assigns.on, do: A, else: A)", 200, raw) <> styled("v200")
+
+      assert [_, _] = within_seconds(fn -> lint(dir, style(body), rules: @styles) end)
+    end
+
+    test "stays linear past the limit in a chain that ends in a cycle", %{tmp_dir: dir} do
+      first = ~s[if(assigns.on, do: v200, else: "color: red")]
+      body = chain("if(assigns.on, do: A, else: A)", 200, first) <> styled("v200")
+
+      assert [dynamic, color] = within_seconds(fn -> lint(dir, style(body), rules: @styles) end)
+      assert dynamic.message =~ "cannot be checked"
+      assert at([dynamic]) == [position(dir, "v0 = if(assigns.on, do: ")]
+      assert color.message =~ "Inline style sets color"
+    end
+
+    test "is dynamic at a cycle past the limit", %{tmp_dir: dir} do
+      first = ~s[if(assigns.on, do: v70, else: "--x: var(--y)")]
+      body = chain("A", 70, first) <> styled("v70")
+
+      assert [%{message: message} = finding] = lint(dir, style(body), rules: @styles)
+      assert message =~ "cannot be checked"
+      assert at([finding]) == [position(dir, "v0 = if(assigns.on, do: ")]
+    end
+
+    test "reads a hole in full from a style read near the limit", %{tmp_dir: dir} do
+      us = for i <- 1..10, do: "u#{i} = u#{i - 1}\n"
+      ws = for i <- 1..60, do: "w#{i} = w#{i - 1}\n"
+
+      body =
+        "u0 = \"#ff0000\"\n" <>
+          Enum.join(us) <>
+          "w0 = #{hole("u10")}\n" <>
+          Enum.join(ws) <> styled("w60")
+
+      assert [%{message: message}] = lint(dir, style(body), rules: @styles)
+      assert message =~ "--tone hardcodes a color"
+    end
+
+    test "a hole stopped on one route does not end the read on another", %{tmp_dir: dir} do
+      body =
+        ~s[x = if(assigns.on, do: t, else: "#ff0000")\nt = #{hole("x")}\n] <>
+          styled("if(assigns.on, do: x, else: t)")
+
+      assert [%{message: message}] = lint(dir, style(body), rules: @styles)
+      assert message =~ "--tone hardcodes a color"
+    end
+  end
+
+  describe "a default that reads its own prop" do
+    @both [no_inline_styles: :error, no_raw_colors: :error, require_static_classes: :error]
+
+    # A component with one attr, whose function head is `head`.
+    defp component(attr, template, head \\ "assigns", before \\ "") do
+      %{
+        @path => """
+        defmodule AppWeb.Page do
+          use AppWeb, :html
+          #{before}
+          attr #{attr}
+          def page(#{head}) do
+            ~H"#{template}"
+          end
+        end
+        """
+      }
+    end
+
+    @attr ":class, :string, default"
+    @hole ~S(<div style={\"--tone: #{@class}\"}></div>)
+
+    for {name, default, head, before, reads} <- [
+          {"through assigns", "assigns.class", "assigns", "", "default: assigns."},
+          {"through a module's assigns", "assigns.class", "assigns",
+           ~s(assigns = %{class: "px-2"}), "default: assigns."},
+          {"through the head of its function", "class", "%{class: class} = assigns",
+           ~s(class = "px-2"), "default: "}
+        ] do
+      test "ends in a hole #{name}", %{tmp_dir: dir} do
+        files = component("#{@attr}: #{unquote(default)}", @hole, unquote(head), unquote(before))
+
+        assert [] == within_seconds(fn -> lint(dir, files, rules: @both) end)
+      end
+
+      test "says nothing more about a class #{name}", %{tmp_dir: dir} do
+        files =
+          component(
+            "#{@attr}: #{unquote(default)}",
+            ~s(<.button class={@class}>x</.button>),
+            unquote(head),
+            unquote(before)
+          )
+
+        assert [] == within_seconds(fn -> lint(dir, files, rules: @both) end)
+      end
+
+      test "leaves a style dynamic #{name}", %{tmp_dir: dir} do
+        files =
+          component(
+            ":style, :string, default: #{String.replace(unquote(default), "class", "style")}",
+            ~s(<div style={@style}></div>),
+            String.replace(unquote(head), "class", "style"),
+            String.replace(unquote(before), "class", "style")
+          )
+
+        assert [%{message: message} = finding] =
+                 within_seconds(fn -> lint(dir, files, rules: @both) end)
+
+        assert message =~ "cannot be checked"
+        assert at([finding]) == [position(dir, unquote(reads))]
+      end
+    end
+
+    test "ends through a variable of its function", %{tmp_dir: dir} do
+      body = fn template ->
+        %{
+          @path => """
+          defmodule AppWeb.Page do
+            use AppWeb, :html
+            attr :class, :string, default: v
+            attr :style, :string, default: u
+            def page(assigns) do
+              v = assigns.class
+              u = assigns.style
+              _ = {v, u}
+              ~H"#{template}"
+            end
+          end
+          """
+        }
+      end
+
+      for template <- [@hole, ~s(<.button class={@class}>x</.button>)] do
+        assert [] == within_seconds(fn -> lint(dir, body.(template), rules: @both) end)
+      end
+
+      assert [%{message: message}] =
+               within_seconds(fn ->
+                 lint(dir, body.(~s(<div style={@style}></div>)), rules: @both)
+               end)
+
+      assert message =~ "cannot be checked"
+    end
+
+    test "ends when two defaults read each other", %{tmp_dir: dir} do
+      files = %{
+        @path => """
+        defmodule AppWeb.Page do
+          use AppWeb, :html
+          attr :class, :string, default: assigns.input_class
+          attr :input_class, :string, default: assigns.class
+          def page(assigns) do
+            ~H"#{@hole}"
+          end
+        end
+        """
+      }
+
+      assert [] == within_seconds(fn -> lint(dir, files, rules: @both) end)
+    end
+
+    test "is read again on a route it is not on", %{tmp_dir: dir} do
+      body = ~s[x = if(assigns.on, do: assigns.class, else: "bg-pink-500")]
+
+      for value <- ["[@class, x]", "[x, @class]"] do
+        template = "<.button class={#{value}}>x</.button>"
+        files = page(body, template, "attr :class, :string, default: x")
+
+        assert [%{rule: :require_static_classes} = dynamic, %{rule: :no_raw_colors}] =
+                 within_seconds(fn -> lint(dir, files, rules: @both) end)
+
+        assert at([dynamic]) == [position(dir, "default: ")]
+      end
+    end
+
+    test "keeps what else the default holds", %{tmp_dir: dir} do
+      default = ~s[if(assigns.on, do: assigns.class, else: "bg-pink-500")]
+      files = component("#{@attr}: #{default}", ~s(<.button class={@class}>x</.button>))
+      assert [%{rule: :no_raw_colors}] = within_seconds(fn -> lint(dir, files, rules: @both) end)
+
+      files = component("#{@attr}: #{String.replace(default, "bg-pink-500", "#ff0000")}", @hole)
+      assert [%{message: message}] = within_seconds(fn -> lint(dir, files, rules: @both) end)
+      assert message =~ "--tone hardcodes a color"
+
+      default = ~s[if(assigns.on, do: assigns.style, else: "color: red")]
+      files = component(":style, :string, default: #{default}", ~s(<div style={@style}></div>))
+      assert [dynamic, color] = within_seconds(fn -> lint(dir, files, rules: @both) end)
+      assert dynamic.message =~ "cannot be checked"
+      assert color.message =~ "Inline style sets color"
+    end
+  end
+
+  describe "a lookup" do
+    test "of a key a computed write could replace reads nothing", %{tmp_dir: dir} do
+      table = ~S|t = %{:a => "bg-pink-500", assigns.k => Lib.compute()}|
+
+      assert [%{rule: :require_static_classes}] =
+               lint(dir, page(table <> "\n" <> assigned("t.a")), rules: @rules)
+
+      table = ~S|t = %{assigns.k => Lib.compute(), :a => "bg-pink-500"}|
+
+      assert [%{rule: :no_raw_colors}] =
+               lint(dir, page(table <> "\n" <> assigned("t.a")), rules: @rules)
+
+      # The computed key on a read keeps reading every entry.
+      table = ~S|t = %{:a => "bg-pink-500", assigns.k => "p-1"}|
+
+      assert [%{rule: :no_raw_colors}] =
+               lint(dir, page(table <> "\n" <> assigned("t[@v]")), rules: @rules)
+    end
+
+    test "that stops on a table is read again from another route", %{tmp_dir: dir} do
+      bindings = ~s(t = %{a: m, b: "bg-pink-500"}\nm = t.b\n)
+
+      assert [%{rule: :no_raw_colors}, %{rule: :require_static_classes}] =
+               dir
+               |> lint(page(bindings <> assigned("[t.a, m]")), rules: @rules)
+               |> Enum.sort_by(& &1.rule)
+    end
+
+    test "cut at the limit on a table is read again from a shorter route", %{tmp_dir: dir} do
+      links = for i <- 1..62, do: "v#{i} = v#{i - 1}\n"
+      bindings = ~s(t = %{a: "bg-pink-500"}\nm = t.a\nv0 = m\n) <> Enum.join(links)
+
+      assert [%{rule: :no_raw_colors}, %{rule: :require_static_classes}] =
+               dir
+               |> lint(page(bindings, "<.button class={[v62, m]}>x</.button>"), rules: @rules)
+               |> Enum.sort_by(& &1.rule)
+    end
+
+    for {table, read, rule} <- [
+          {~S|%{-1 => "bg-pink-500", 1 => "p-1"}|, "t[-1]", :no_raw_colors},
+          {~S|%{-1 => "p-1", 1 => "bg-pink-500"}|, "t[-1]", nil},
+          {~S|%{~s(a) => "bg-pink-500", ~s(b) => "p-1"}|, "t[~s(a)]", :no_raw_colors},
+          # A sigil is no literal key, so it reads every entry.
+          {~S|%{~s(a) => "p-1", ~s(b) => "bg-pink-500"}|, "t[~s(a)]", :no_raw_colors}
+        ] do
+      test "#{read} on #{table}", %{tmp_dir: dir} do
+        files = page("t = #{unquote(table)}\n" <> assigned(unquote(read)))
+        expected = Enum.map(List.wrap(unquote(rule)), &%{rule: &1})
+
+        assert dir |> lint(files, rules: @rules) |> Enum.map(&Map.take(&1, [:rule])) == expected
+      end
+    end
+
+    test "of a table that names itself is unresolved", %{tmp_dir: dir} do
+      assert [%{rule: :require_static_classes}] =
+               within_seconds(fn ->
+                 lint(dir, page("t = t\n" <> assigned("t[:a]")), rules: @rules)
+               end)
+
+      assert [%{rule: :require_static_classes}] =
+               within_seconds(fn ->
+                 lint(dir, page("t = u\nu = t\n" <> assigned("t[:a]")), rules: @rules)
+               end)
+    end
+
+    test "of an attribute that names itself is unresolved", %{tmp_dir: dir} do
+      assert [%{rule: :require_static_classes}] =
+               within_seconds(fn ->
+                 lint(dir, page(assigned("@t[:a]"), @class, "@t @t"), rules: @rules)
+               end)
+
+      assert [%{rule: :require_static_classes}] =
+               within_seconds(fn ->
+                 lint(dir, page(assigned("@t[:a]"), @class, "@t @u\n@u @t"), rules: @rules)
+               end)
+    end
+
+    test "inside its own table is unresolved", %{tmp_dir: dir} do
+      assert [%{rule: :require_static_classes}] =
+               within_seconds(fn ->
+                 lint(dir, page("t = %{a: t[:a]}\n" <> assigned("t[:a]")), rules: @rules)
+               end)
+    end
+
+    test "keeps its default when the table names itself", %{tmp_dir: dir} do
+      body = "t = t\n" <> assigned(~s|Map.get(t, :a, "bg-pink-500")|)
+
+      assert [%{rule: :require_static_classes}, %{rule: :no_raw_colors}] =
+               within_seconds(fn -> lint(dir, page(body), rules: @rules) end)
+    end
+
+    test "keeps its default past the limit", %{tmp_dir: dir} do
+      body =
+        chain("A", 70, ~s(%{a: "px-2"})) <> assigned(~s|Map.get(v70, :a, "bg-pink-500")|)
+
+      assert [%{rule: :require_static_classes}, %{rule: :no_raw_colors}] =
+               within_seconds(fn -> lint(dir, page(body), rules: @rules) end)
+    end
+
+    test "is followed through aliases, to the limit", %{tmp_dir: dir} do
+      short = chain("A", 8, ~s(%{a: "bg-pink-500"})) <> assigned("v8[:a]")
+
+      assert found(lint(dir, page(short), rules: @rules), dir) == [
+               {:no_raw_colors, "bg-pink-500"}
+             ]
+
+      long = chain("A", 70, ~s(%{a: "bg-pink-500"})) <> assigned("v70[:a]")
+      assert [%{rule: :require_static_classes}] = lint(dir, page(long), rules: @rules)
+    end
+
+    test "reads each entry a site asks for", %{tmp_dir: dir} do
+      body =
+        ~s(t = %{a: "bg-pink-500", b: "bg-sky-500"}\n) <>
+          assigned("if(assigns.on, do: t[:a], else: t[:b])")
+
+      assert found(lint(dir, page(body), rules: @rules), dir) ==
+               [{:no_raw_colors, "bg-pink-500"}, {:no_raw_colors, "bg-sky-500"}]
+    end
+
+    test "is read once in a branching chain", %{tmp_dir: dir} do
+      binds =
+        for i <- 1..40,
+            do: "t#{i} = %{a: if(assigns.on, do: t#{i - 1}[:a], else: t#{i - 1}[:a])}\n"
+
+      body = ~s(t0 = %{a: "bg-pink-500"}\n) <> Enum.join(binds) <> assigned("t40[:a]")
+
+      assert found(within_seconds(fn -> lint(dir, page(body), rules: @rules) end), dir) ==
+               [{:no_raw_colors, "bg-pink-500"}]
+    end
+  end
+
+  describe "a read past the limit or on a cycle, read again" do
+    # `count` bindings that all read each other, spending the re-reads a site has.
+    defp fan(prefix, count, literals \\ "") do
+      for i <- 1..count, into: "" do
+        others = for j <- 1..count, j != i, do: "#{prefix}#{j}"
+        "#{prefix}#{i} = [#{Enum.join(others, ", ")}#{literals}]\n"
+      end
+    end
+
+    defp named_chain(prefix, links, first) do
+      binds = for i <- 1..links, do: "#{prefix}#{i} = #{prefix}#{i - 1}\n"
+      Enum.join(["#{prefix}0 = #{first}\n" | binds])
+    end
+
+    # `aa` reached at the same distance from the limit by two routes: on `w39` it runs
+    # past the limit, on `r13` it ends in a cycle through `xx`, which is on that route.
+    defp two_routes do
+      ~s[aa = if(assigns.on, do: p, else: "bg-red-500")\np = xx\nxx = q25\nq1 = aa\n] <>
+        Enum.map_join(2..25, &"q#{&1} = q#{&1 - 1}\n") <>
+        named_chain("w", 39, "aa") <> named_chain("r", 13, "xx")
+    end
+
+    test "a skip by distance does not lose a cycle only another route has", %{tmp_dir: dir} do
+      for value <- ["[w39, r13]", "[r13, w39]"] do
+        files = page(two_routes(), "<.button class={#{value}}>x</.button>")
+
+        assert [%{rule: :require_static_classes}, %{rule: :require_static_classes}] =
+                 lint(dir, files, rules: [require_static_classes: :error])
+      end
+    end
+
+    test "a skip by distance still keeps a branching chain linear", %{tmp_dir: dir} do
+      binds =
+        for i <- 1..200, into: "" do
+          "b#{i} = v#{i - 1}\nc#{i} = v#{i - 1}\nv#{i} = [b#{i}, c#{i}]\n"
+        end
+
+      files = page(~s(v0 = "bg-pink-500"\n) <> binds <> assigned("v200"))
+
+      assert [%{rule: :require_static_classes} | _] =
+               within_seconds(fn -> lint(dir, files, rules: @rules) end)
+    end
+
+    test "the cycles of a site cost it no class", %{tmp_dir: dir} do
+      bindings =
+        fan("b", 20) <> named_chain("u", 20, ~s("bg-pink-500")) <> named_chain("w", 50, "u20")
+
+      findings = lint(dir, page(bindings, ~s(<div class={[b1, w50, u20]} />)), rules: @rules)
+
+      assert Enum.any?(findings, &(&1.rule == :no_raw_colors))
+    end
+
+    test "what a cycle reads again keeps each literal's finding", %{tmp_dir: dir} do
+      literals = Enum.map_join(1..3, &~s(, "bg-pink-#{&1}00"))
+      bindings = fan("b", 12, literals)
+
+      findings = lint(dir, page(bindings, ~s(<div class={b1} />)), rules: [no_raw_colors: :error])
+
+      assert length(findings) == 36
+    end
+  end
+
+  describe "a prop's default at the end of a chain" do
+    defp default_chain(links) do
+      binds = for i <- 1..links, do: "v#{i} = v#{i - 1}\n"
+
+      %{
+        @path => """
+        defmodule AppWeb.Page do
+          use AppWeb, :html
+
+          attr :class, :any, default: "bg-red-500"
+
+          def page(%{class: class} = assigns) do
+            v0 = class
+            #{Enum.join(binds)}
+            ~H"<.button class={v#{links}}>x</.button>"
+          end
+        end
+        """
+      }
+    end
+
+    test "the default takes no link of its own", %{tmp_dir: dir} do
+      for links <- [62, 63] do
+        assert [%{rule: :no_raw_colors}] = lint(dir, default_chain(links), rules: @rules)
+      end
+    end
+
+    test "past the limit it is unreadable", %{tmp_dir: dir} do
+      assert [%{rule: :no_raw_colors}, %{rule: :require_static_classes}] =
+               dir |> lint(default_chain(64), rules: @rules) |> Enum.sort_by(& &1.rule)
+    end
+  end
+
+  describe "a cycle in a hole" do
+    test "does not spend what its style has to read", %{tmp_dir: dir} do
+      bindings = fan("b", 30) <> ~S|s = "--tone: #{b1}"| <> "\na = s\n"
+
+      assert lint(dir, page(bindings, ~s(<div style={[a, s]} />)),
+               rules: [no_inline_styles: :error]
+             ) ==
+               []
+
+      assert lint(dir, page(bindings, ~s(<div style={s} />)), rules: [no_inline_styles: :error]) ==
+               []
+    end
+
+    test "still finds a raw color past it", %{tmp_dir: dir} do
+      bindings =
+        fan("b", 30, ~S|, "#ff0000"|) <> ~S|s = "--tone: #{b1}"| <> "\na = s\n"
+
+      assert [_] =
+               lint(dir, page(bindings, ~s(<div style={[a, s]} />)),
+                 rules: [no_inline_styles: :error]
+               )
+    end
+  end
+
+  describe "an attribute that reads itself through another" do
+    test "is read again from the route it did not stop on", %{tmp_dir: dir} do
+      files = page("x = @a\ny = @b\n" <> assigned("[x, y]"), @class, "@a @b\n@b @a")
+
+      assert [_, _] = lint(dir, files, rules: @rules)
+    end
+  end
+
+  describe "a name a loop or a clause binds" do
+    @shadowed ~s(c = "bg-pink-500"\n)
+
+    for template <- [
+          ~S|<.button :for={c <- @classes} class={c}>x</.button>|,
+          ~S|<.button :for={{c, _} <- @classes} class={c}>x</.button>|,
+          ~S|<.button :for={a <- @a, c <- a} class={c}>x</.button>|,
+          ~S|<ul :for={c <- @classes}><li><.button class={c}>x</.button></li></ul>|,
+          ~S|<.card :let={c}><.button class={c}>x</.button></.card>|,
+          ~S|<.card :let={%{tone: c}}><.button class={c}>x</.button></.card>|,
+          ~S|<.button class={case @x do c -> c end}>x</.button>|,
+          ~S|<.button class={case @x do {c, _} when c != 1 -> c end}>x</.button>|,
+          ~S|<.button class={with c <- @x do c end}>x</.button>|,
+          ~S|<.button class={with {:ok, _} <- @y do nil else c -> c end}>x</.button>|,
+          ~S'<.button class={@x |> case do c -> c end}>x</.button>',
+          ~S|<.button :for={c <- @classes} {%{class: c}}>x</.button>|,
+          ~S|<.button :for={c <- @classes} class={c.tone}>x</.button>|
+        ] do
+      test "#{template} is unreadable, not the body's value", %{tmp_dir: dir} do
+        assert [%{rule: :require_static_classes}] =
+                 lint(dir, page(@shadowed, unquote(template)), rules: @rules)
+      end
+    end
+
+    for template <- [
+          ~S|<.card :let={c} class={c}>x</.card>|,
+          ~S|<ul :for={c <- @classes}></ul><.button class={c}>x</.button>|,
+          ~S|<.card :let={c}></.card><.button class={c}>x</.button>|,
+          ~S|<.button class={cond do c -> c end}>x</.button>|,
+          ~S|<.button class={case @x do ^c -> c end}>x</.button>|,
+          ~S|<.button class={case @x do @c -> c end}>x</.button>|,
+          ~S|<.button class={case @x do d -> c end}>x</.button>|
+        ] do
+      test "#{template} still reads the body's value", %{tmp_dir: dir} do
+        assert [%{rule: :no_raw_colors}] =
+                 lint(dir, page(@shadowed, unquote(template)), rules: @rules)
+      end
+    end
+
+    test "a name the clause binds again is read", %{tmp_dir: dir} do
+      bindings = ~s(x = case assigns.y do c -> c = "bg-pink-500"; c end\n)
+
+      assert [%{rule: :no_raw_colors}] =
+               lint(dir, page(bindings, "<.button class={x}>x</.button>"), rules: @rules)
+    end
+
+    test "what the clause reads through a binding is the body's", %{tmp_dir: dir} do
+      template = ~S|<.button class={case @x do c -> d end}>x</.button>|
+      bindings = ~s(c = "bg-pink-500"\nd = c\n)
+
+      assert [%{rule: :no_raw_colors}] = lint(dir, page(bindings, template), rules: @rules)
+    end
+
+    test "a head's name stays a prop's, and a clause's hides it", %{tmp_dir: dir} do
+      files = fn value ->
+        %{
+          @path => """
+          defmodule AppWeb.Page do
+            use AppWeb, :html
+            attr :class, :any, default: nil
+
+            def page(%{class: class} = assigns) do
+              ~H"<.button class={#{value}}>x</.button>"
+            end
+          end
+          """
+        }
+      end
+
+      assert lint(dir, files.("class"), rules: @rules) == []
+
+      assert [%{rule: :require_static_classes}] =
+               lint(dir, files.("case @x do class -> class end"), rules: @rules)
+    end
+
+    test "a function's parameter is not the body's value", %{tmp_dir: dir} do
+      bindings = ~S"""
+      t = %{b: "color: red"}
+      assigns = update(assigns, :x, fn t -> %{t | a: "--y: 1"} end)
+      """
+
+      style = fn read -> ~s(<div style={#{read}} />) end
+      rules = [no_inline_styles: :error]
+
+      assert [%{message: "Dynamic style" <> _}] =
+               lint(dir, page(bindings, style.("@x.b")), rules: rules)
+
+      assert lint(dir, page(bindings, style.("@x.a")), rules: rules) == []
+    end
+
+    test "a function's own binding is still read", %{tmp_dir: dir} do
+      bindings = ~S"""
+      assigns = update(assigns, :c, fn c ->
+        c = "bg-pink-500"
+        c
+      end)
+      """
+
+      assert [%{rule: :no_raw_colors}] = lint(dir, page(bindings), rules: @rules)
+    end
+  end
+
+  describe "an assign set another way" do
+    for set <- [
+          ~S|Phoenix.Component.assign(assigns, :c, "bg-pink-500")|,
+          ~S'%{assigns | c: "bg-pink-500"}'
+        ] do
+      test "#{set} is read at a class site", %{tmp_dir: dir} do
+        files = page("assigns = #{unquote(set)}")
+
+        assert [%{rule: :no_raw_colors}] = lint(dir, files, rules: @rules)
+      end
+    end
+
+    test "another module's assign sets nothing", %{tmp_dir: dir} do
+      files = page(~S|assigns = Other.assign(assigns, :c, "bg-pink-500")|)
+
+      assert [%{rule: :require_static_classes}] = lint(dir, files, rules: @rules)
+    end
+  end
+
+  describe "a variable a template reads" do
+    test "is reported where the function binds it", %{tmp_dir: dir} do
+      files = page(~s(v = "bg-pink-500"), "<.button class={v}>x</.button>")
+      diagnostics = lint(dir, files, rules: @rules)
+
+      assert found(diagnostics, dir) == [{:no_raw_colors, "bg-pink-500"}]
+      assert at(diagnostics) == [position(dir, ~s(v = "))]
+    end
+
+    test "is a function's code, where @name is a module attribute", %{tmp_dir: dir} do
+      files = page("v = @tone", "<.button class={v}>x</.button>", ~s(@tone "bg-pink-500"))
+
+      assert found(lint(dir, files, rules: @rules), dir) == [{:no_raw_colors, "bg-pink-500"}]
+    end
+
+    test "as a table reads the function's code", %{tmp_dir: dir} do
+      files = page(~s(t = %{a: "bg-pink-500"}), "<.button class={t[:a]}>x</.button>")
+
+      assert found(lint(dir, files, rules: @rules), dir) == [{:no_raw_colors, "bg-pink-500"}]
+    end
+
+    test "gets its fix where the function binds it", %{tmp_dir: dir} do
+      files = page(~s(v = "flex p-[12px]"), "<.button class={v}>x</.button>")
+
+      result = run(dir, files, rules: [no_arbitrary_values: :error])
+
+      assert HeexLint.Fixer.apply(result.diagnostics) == 1
+      assert File.read!(Path.join(dir, @path)) =~ ~s(v = "flex p-3")
+    end
+  end
+end

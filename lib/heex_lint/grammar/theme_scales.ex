@@ -39,7 +39,10 @@ defmodule HeexLint.Grammar.ThemeScales do
     {names, reset} =
       declarations
       |> Enum.filter(& &1.theme)
+      |> Enum.with_index()
       |> Enum.reduce({%{}, MapSet.new()}, &apply_declaration/2)
+
+    names = Map.new(names, fn {scale, declared} -> {scale, in_declared_order(declared)} end)
 
     %{
       extend: Map.reject(names, fn {scale, _names} -> MapSet.member?(reset, scale) end),
@@ -47,18 +50,23 @@ defmodule HeexLint.Grammar.ThemeScales do
     }
   end
 
-  defp apply_declaration(%{name: "*", value: value}, read) do
+  # A scale's names as `%{name => when it was declared}` while they are read.
+  defp in_declared_order(declared) do
+    declared |> Enum.sort_by(&elem(&1, 1)) |> Enum.map(&elem(&1, 0))
+  end
+
+  defp apply_declaration({%{name: "*", value: value}, _at}, read) do
     if initial?(value), do: Enum.reduce(@namespaces, read, &reset_scale/2), else: read
   end
 
   # `--spacing` is the base Tailwind multiplies for `p-4` and the rest of the
   # numeric scale, so setting it after a reset brings that scale back. Named
   # spacing values declared after it still extend.
-  defp apply_declaration(%{name: "spacing", value: value}, {names, reset}) do
+  defp apply_declaration({%{name: "spacing", value: value}, _at}, {names, reset}) do
     if initial?(value), do: {names, reset}, else: {names, MapSet.delete(reset, "spacing")}
   end
 
-  defp apply_declaration(%{name: property, value: value}, read) do
+  defp apply_declaration({%{name: property, value: value}, at}, read) do
     case Enum.find(@namespaces, &String.starts_with?(property, &1 <> "-")) do
       nil ->
         read
@@ -68,26 +76,26 @@ defmodule HeexLint.Grammar.ThemeScales do
           scale,
           String.replace_prefix(property, scale <> "-", ""),
           initial?(value),
+          at,
           read
         )
     end
   end
 
-  defp apply_name(scale, "*", true, read), do: reset_scale(scale, read)
-  defp apply_name(_scale, "*", false, read), do: read
-  defp apply_name(_scale, "", _initial, read), do: read
+  defp apply_name(scale, "*", true, _at, read), do: reset_scale(scale, read)
+  defp apply_name(_scale, "*", false, _at, read), do: read
+  defp apply_name(_scale, "", _initial, _at, read), do: read
 
-  defp apply_name(scale, name, initial, {names, reset} = read) do
+  defp apply_name(scale, name, initial, at, {names, reset} = read) do
     declared = Map.get(names, scale)
 
     cond do
       # `--text-display--line-height` is a sub-property of `display`.
       String.contains?(name, "--") -> read
       initial and declared == nil -> read
-      initial -> {Map.put(names, scale, List.delete(declared, name)), reset}
-      declared == nil -> {Map.put(names, scale, [name]), reset}
-      name in declared -> read
-      true -> {Map.put(names, scale, declared ++ [name]), reset}
+      initial -> {Map.put(names, scale, Map.delete(declared, name)), reset}
+      declared == nil -> {Map.put(names, scale, %{name => at}), reset}
+      true -> {Map.put(names, scale, Map.put_new(declared, name, at)), reset}
     end
   end
 

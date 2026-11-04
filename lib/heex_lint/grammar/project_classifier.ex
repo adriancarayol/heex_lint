@@ -8,12 +8,13 @@ defmodule HeexLint.Grammar.ProjectClassifier do
   `@utility` answers from its body in both cases: the properties it sets are
   categorized the way an arbitrary property is, so `@utility heading-2xs {
   font-size: 0.75rem }` is typography for the same reason `[font-size:1rem]`
-  is.
+  is. A theme that loads an `@config` or `@plugin` can add a font size its CSS
+  never names, and there the theme's own Tailwind answers for `text-*`.
   Ported from @shadcn/lint's `src/project/namespaces.ts` (MIT).
   """
 
   alias HeexLint.Grammar.{Categories, Classes, Classifier}
-  alias HeexLint.Theme
+  alias HeexLint.{Tailwind, Theme}
 
   # {class prefix, the @theme namespace it reads, the group it gives}. A
   # --color-* of the same name wins over the namespace, the way Tailwind reads
@@ -23,7 +24,9 @@ defmodule HeexLint.Grammar.ProjectClassifier do
   @doc "The class group of `token` in a project with `theme`."
   @spec group_of(Theme.t() | nil, String.t()) :: String.t() | nil
   def group_of(theme, token) do
-    key = {__MODULE__, Theme.signature(theme), token}
+    # JavaScript can change without the stylesheets changing, and each run has its
+    # own oracle, so such a theme's answers last no longer than the run.
+    key = {__MODULE__, Theme.signature(theme), theme && theme.oracle, token}
 
     case Process.get(key, :miss) do
       :miss ->
@@ -36,6 +39,50 @@ defmodule HeexLint.Grammar.ProjectClassifier do
     end
   end
 
+  @doc """
+  Says `tokens` may be classified with `theme`, so that the first of them that needs
+  the theme's own Tailwind asks about them all: with the standalone binary, each
+  question is a build. Asks nothing yet, and a miss only costs its own question.
+  """
+  @spec expect(Theme.t() | nil, [String.t()]) :: :ok
+  def expect(%Theme{oracle: {oracle, entry}} = theme, tokens) do
+    questions = tokens |> Enum.uniq() |> Enum.filter(&asks_tailwind?(theme, &1))
+    Tailwind.expect(oracle, entry, questions)
+  end
+
+  def expect(_theme, _tokens), do: :ok
+
+  @doc """
+  The words of source code that could be `text-*` classes, for `expect/2`. A word
+  that turns out to be no class costs only its place in the question.
+  """
+  @spec text_words(String.t()) :: [String.t()]
+  def text_words(code) do
+    if String.contains?(code, "text-") do
+      code
+      |> String.split(~r/[\s"'`]+|~[a-zA-Z]\(/, trim: true)
+      |> Enum.map(&before_unopened_paren/1)
+      |> Enum.filter(&String.contains?(&1, "text-"))
+    else
+      []
+    end
+  end
+
+  # A `)` the word did not open is the code's, as in `~w(text-body)`, where the one in
+  # `text-[var(--brand)]` or `text-(--brand)` is the class's.
+  defp before_unopened_paren(word), do: binary_part(word, 0, word_length(word, 0, 0))
+
+  defp word_length(<<")", _::binary>>, 0, length), do: length
+
+  defp word_length(<<")", rest::binary>>, open, length),
+    do: word_length(rest, open - 1, length + 1)
+
+  defp word_length(<<"(", rest::binary>>, open, length),
+    do: word_length(rest, open + 1, length + 1)
+
+  defp word_length(<<_, rest::binary>>, open, length), do: word_length(rest, open, length + 1)
+  defp word_length(<<>>, _open, length), do: length
+
   @doc "The category of `token`, or nil for layout and unknown classes."
   @spec category_of(Theme.t() | nil, String.t()) :: String.t() | nil
   def category_of(theme, token), do: Categories.category_of(group_of(theme, token))
@@ -44,10 +91,33 @@ defmodule HeexLint.Grammar.ProjectClassifier do
     group = Classifier.group_of(token, Theme.grammar(theme))
 
     cond do
-      group == nil -> animation_group(theme, token) || utility_group(theme, token)
-      Categories.category_of(group) != "color" -> group
-      true -> theme_group(theme, token) || utility_group(theme, token) || group
+      group == nil ->
+        animation_group(theme, token) || utility_group(theme, token)
+
+      Categories.category_of(group) != "color" ->
+        group
+
+      true ->
+        theme_group(theme, token) || utility_group(theme, token) || module_group(theme, token) ||
+          group
     end
+  end
+
+  # The grammar reads text-body as a color, knowing only the name.
+  defp module_group(%Theme{oracle: {oracle, entry}}, token) do
+    if text_class?(token) and Tailwind.font_size?(oracle, entry, token) == true,
+      do: "font-size"
+  end
+
+  defp module_group(_theme, _token), do: nil
+
+  defp text_class?(token), do: String.starts_with?(Classes.normalize(token), "text-")
+
+  # Whether classifying `token` would reach module_group/2.
+  defp asks_tailwind?(theme, token) do
+    text_class?(token) and
+      Categories.category_of(Classifier.group_of(token, Theme.grammar(theme))) == "color" and
+      theme_group(theme, token) == nil and utility_group(theme, token) == nil
   end
 
   defp theme_group(nil, _token), do: nil
