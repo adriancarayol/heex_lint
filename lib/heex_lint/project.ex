@@ -865,7 +865,8 @@ defmodule HeexLint.Project do
 
   defp handoff(_attribute, _component), do: nil
 
-  # The class props an expression reads: `@name`, `assigns.name`, `assigns[:name]`.
+  # The class props an expression reads: `@name`, `assigns.name`, `assigns[:name]`,
+  # `Map.get(assigns, :name)` and `Map.fetch!(assigns, :name)`.
   defp class_props_read(code) do
     case Code.parse(code) do
       {:ok, ast} ->
@@ -888,6 +889,12 @@ defmodule HeexLint.Project do
 
   defp assign_read({{:., _, [Access, :get]}, _, [{:assigns, _, context}, name]})
        when is_atom(name) and is_atom(context),
+       do: [Atom.to_string(name)]
+
+  defp assign_read(
+         {{:., _, [{:__aliases__, _, [:Map]}, fun]}, _, [{:assigns, _, context}, name | _default]}
+       )
+       when fun in [:get, :fetch!] and is_atom(name) and is_atom(context),
        do: [Atom.to_string(name)]
 
   defp assign_read(_node), do: []
