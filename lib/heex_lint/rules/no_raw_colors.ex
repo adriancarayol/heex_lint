@@ -49,6 +49,7 @@ defmodule HeexLint.Rules.NoRawColors do
 
   alias HeexLint.Grammar.{Categories, Classes, Colors, ProjectClassifier, Similar}
   alias HeexLint.Policy.ConfigError
+  alias HeexLint.Project.Source
 
   # No theme can get these wrong: they turn a color off or pass one down.
   @named MapSet.new(~w(transparent current inherit))
@@ -301,6 +302,14 @@ defmodule HeexLint.Rules.NoRawColors do
           key <- Collector.map_keys(call, context, opts),
           do: key
 
+    # A module attribute reads from its module, whether or not a function holds the call.
+    in_modules =
+      for {module, body} <- Enum.zip(source.modules, Source.module_bodies(source.ast)),
+          call <- merge_calls(body, merge),
+          context = Map.put(context, :module, module.name),
+          key <- Collector.map_keys(call, context, opts),
+          do: key
+
     in_templates =
       for module <- source.modules,
           template_source <- Map.values(file.project.sources),
@@ -313,7 +322,7 @@ defmodule HeexLint.Rules.NoRawColors do
           key <- Collector.template_map_keys(call, expression, context, opts),
           do: key
 
-    in_functions ++ anywhere ++ in_templates
+    in_functions ++ anywhere ++ in_modules ++ in_templates
   end
 
   defp merge_calls(ast, merge) do
@@ -322,9 +331,9 @@ defmodule HeexLint.Rules.NoRawColors do
         {:sigil_H, _, _}, acc ->
           {nil, acc}
 
-        # A function head is a pattern, not a call.
-        {kind, meta, [_head | body]}, acc when kind in [:def, :defp, :defmacro, :defmacrop] ->
-          {{kind, meta, [nil | body]}, acc}
+        # A function head is a pattern, not a call, but for its default arguments.
+        {kind, meta, [head | body]}, acc when kind in [:def, :defp, :defmacro, :defmacrop] ->
+          {{kind, meta, [HeexLint.Sites.head_defaults(head) | body]}, acc}
 
         # `@cn %{...}` sets an attribute of that name, and what it holds can be a call.
         {:@, meta, [{name, _, args}]}, acc when is_atom(name) and is_list(args) ->

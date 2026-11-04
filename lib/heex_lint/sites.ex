@@ -312,12 +312,14 @@ defmodule HeexLint.Sites do
     end
   end
 
-  defp head_defaults({:when, _, [head | _guard]}), do: head_defaults(head)
+  @doc false
+  # The default arguments of a function head, which are code where the rest is a pattern.
+  def head_defaults({:when, _, [head | _guard]}), do: head_defaults(head)
 
-  defp head_defaults({_name, _, args}) when is_list(args),
+  def head_defaults({_name, _, args}) when is_list(args),
     do: for({:\\, _, [_pattern, default]} <- args, do: default)
 
-  defp head_defaults(_head), do: []
+  def head_defaults(_head), do: []
 
   defp code_site(source, collected) do
     %__MODULE__{

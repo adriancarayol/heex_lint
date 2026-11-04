@@ -679,6 +679,29 @@ defmodule HeexLint.Rules.NoRawColorsTest do
       )
     end
 
+    for {shape, code} <- [
+          {"an attribute's call", [~S|@tones %{"bg-pink-500" => true}|, "@x cn(@tones)"]},
+          {"a default argument",
+           [~S|@tones %{"bg-pink-500" => true}|, ~S|def d(a \\ cn(@tones)), do: a|]},
+          {"a literal default argument", [~S|def d(a \\ cn(%{"bg-pink-500" => true})), do: a|]}
+        ] do
+      test "a map read outside a function body: #{shape}", %{tmp_dir: dir} do
+        module = """
+        defmodule AppWeb.Outside do
+          import AppWeb.Cn
+          #{Enum.join(unquote(code), "\n  ")}
+        end
+        """
+
+        helper = "defmodule AppWeb.Cn do\n  def cn(value), do: value\nend\n"
+
+        assert [_one] =
+                 lint(dir, %{"lib/app_web/outside.ex" => module, "lib/app_web/cn.ex" => helper},
+                   rules: [no_raw_colors: {:error, scan_all_strings: true}]
+                 )
+      end
+    end
+
     test "a plain map key names a field", %{tmp_dir: dir} do
       assert scanned(dir, ~S|%{"bg-pink-500" => tone, "text-pink-500" => on}|) == []
       assert scanned(dir, ~S(%{map | "bg-pink-500" => tone})) == []
