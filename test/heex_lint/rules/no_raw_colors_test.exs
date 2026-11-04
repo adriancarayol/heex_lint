@@ -1168,6 +1168,43 @@ defmodule HeexLint.Rules.NoRawColorsTest do
     end
   end
 
+  describe "SVG attributes in braces" do
+    test "report a literal, as a quoted value does", %{tmp_dir: dir} do
+      assert [finding] = colors(dir, ~S|<svg fill={"#ec4899"} />|)
+      assert finding.message =~ ~s|fill="#ec4899" hardcodes a color|
+
+      assert [finding] = colors(dir, ~S|<svg stroke={"red"} />|)
+      assert finding.message =~ ~s|stroke="red" hardcodes a color|
+
+      assert [finding] = colors(dir, ~S|<svg><path stop-color={ "blue" } /></svg>|)
+      assert finding.message =~ ~s|stop-color="blue" hardcodes a color|
+    end
+
+    test "report at the literal", %{tmp_dir: dir} do
+      assert [quoted] = colors(dir, ~S|<svg fill="#ec4899" />|)
+      assert [braced] = colors(dir, ~S|<svg fill={"#ec4899"} />|)
+      assert [spaced] = colors(dir, ~S|<svg fill={ "#ec4899" } />|)
+
+      assert {braced.line, braced.column} == {quoted.line, quoted.column + 1}
+      assert {spaced.line, spaced.column} == {quoted.line, quoted.column + 2}
+    end
+
+    test "read nothing but a literal, and pass what a quoted value passes", %{tmp_dir: dir} do
+      for template <- [
+            ~S|<svg fill={@color} />|,
+            ~S|<svg fill={if @on, do: "red", else: "blue"} />|,
+            ~S|<svg fill={"#{@color}"} />|,
+            ~S|<svg fill={"red" <> @rest} />|,
+            ~S|<svg fill={"currentColor"} />|,
+            ~S|<svg fill={"none"} />|,
+            ~S|<svg fill={"var(--color-primary)"} />|,
+            ~S|<.icon fill={"red"} />|
+          ] do
+        assert colors(dir, template) == [], template
+      end
+    end
+  end
+
   test "SVG attributes over one theme variable pass, literals are reported", %{tmp_dir: dir} do
     template = """
     <svg><path fill="oklch(var(--primary-oklch))" stroke="oklch(var(--border-oklch) / 0.2)" /></svg>

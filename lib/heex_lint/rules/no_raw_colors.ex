@@ -543,12 +543,14 @@ defmodule HeexLint.Rules.NoRawColors do
   defp attribute_findings(file, context, options) do
     values = Theme.color_values(context.theme)
 
-    for {_template, elements} <- file.elements,
+    for {template, elements} <- file.elements,
+        context = Map.merge(context, %{source: file.source, template: template}),
         element <- elements,
         element.type == :tag,
         Regex.match?(~r/^[a-z]/, element.name),
-        %{name: name, value: {:string, value, position}} <- element.attributes,
+        %{name: name, value: attribute} <- element.attributes,
         is_binary(name) and MapSet.member?(@color_attributes, name),
+        {value, position} <- static_value(attribute, context),
         raw_color_value?(value) do
       lab = if values && map_size(values) > 0, do: Colors.parse(value)
 
@@ -559,6 +561,19 @@ defmodule HeexLint.Rules.NoRawColors do
       data = %{"attribute" => name, "value" => value, "suggestion" => suggestion || ""}
       # Attribute findings report at the value, like the class ones.
       %{position: position, message: Rule.message(@messages[id], data, nil, options, file)}
+    end
+  end
+
+  # A quoted value, or `{"#f00"}`, which says the same. Nothing else in braces is read.
+  defp static_value({:string, value, position}, _context), do: [{value, position}]
+
+  defp static_value({:expr, code, _} = expression, context) do
+    with {:ok, {:__block__, _, [value]} = node} when is_binary(value) <- Code.parse(code),
+         %{strings: [%{literal: %{from: position}}]} <-
+           Collector.template_expression(node, expression, context) do
+      [{value, position}]
+    else
+      _ -> []
     end
   end
 
