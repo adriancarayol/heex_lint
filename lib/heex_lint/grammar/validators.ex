@@ -135,7 +135,9 @@ defmodule HeexLint.Grammar.Validators do
   defp radix_number(<<_prefix::binary-size(2), digits::binary>>, radix) do
     String.to_integer(digits, radix) * 1.0
   rescue
+    # Past the float range, and past the VM's largest integer.
     ArithmeticError -> :infinity
+    SystemLimitError -> :infinity
   end
 
   # Float.parse needs digits on both sides of the point.

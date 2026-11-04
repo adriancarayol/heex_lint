@@ -463,6 +463,16 @@ defmodule HeexLint.HostileInputTest do
       assert Validators.js_number("1e-999") == 0.0
       assert Validators.js_number(String.duplicate("0", 400) <> "1") == 1.0
       assert Validators.js_number("0xff") == 255.0
+
+      # Past the VM's largest integer, and not only past the float range.
+      for {prefix, digit, length} <- [
+            {"0x", "f", 1_048_561},
+            {"0o", "7", 1_398_081},
+            {"0b", "1", 4_194_241}
+          ] do
+        assert Validators.js_number(prefix <> String.duplicate(digit, length)) == :infinity
+      end
+
       assert Validators.check("isInteger", "1e300")
     end
 
