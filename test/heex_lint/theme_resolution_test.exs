@@ -64,6 +64,18 @@ defmodule HeexLint.ThemeResolutionTest do
                "default" => "./x.css"
              }
            }, %{"s.css" => "s", "d.css" => "d", "x.css" => "x"}, ["d"]},
+          {"require reads before node", "kit",
+           %{"." => %{"node" => "./n.css", "require" => "./r.css"}},
+           %{"n.css" => "n", "r.css" => "r"}, ["r"]},
+          {"require reads before types", "kit",
+           %{"." => %{"types" => "./t.css", "require" => "./r.css"}},
+           %{"t.css" => "t", "r.css" => "r"}, ["r"]},
+          {"node reads before types", "kit",
+           %{"." => %{"types" => "./t.css", "node" => "./n.css"}},
+           %{"t.css" => "t", "n.css" => "n"}, ["n"]},
+          {"types reads before any other", "kit",
+           %{"." => %{"other" => "./o.css", "types" => "./t.css"}},
+           %{"o.css" => "o", "t.css" => "t"}, ["t"]},
           {"a style condition alone is read like any other", "kit/theme.css",
            %{"./theme.css" => %{"style" => "./s.css"}}, %{"s.css" => "s"}, ["s"]},
           {"a preferred condition with no target falls to the next", "kit/theme.css",
@@ -223,6 +235,16 @@ defmodule HeexLint.ThemeResolutionTest do
                  "theme.css" => color("t")
                })
              ) == ["t"]
+    end
+
+    test "a wildcard key answers for a directory outside src", %{tmp_dir: dir} do
+      manifest = %{"exports" => %{"./components/*" => "./lib/*.css"}}
+
+      assert tokens(
+               dir,
+               "kit/components",
+               kit(%{"package.json" => manifest, "lib/index.css" => color("alias")})
+             ) == ["alias"]
     end
 
     test "the longest key is tried first, and a missing target tries the next", %{tmp_dir: dir} do
@@ -615,6 +637,46 @@ defmodule HeexLint.ThemeResolutionTest do
       assert Theme.resolve_stylesheet(dir, "gone") == nil
       assert Theme.resolve_stylesheet(dir, "https://example.com/x.css") == nil
       assert Theme.resolve_stylesheet(dir, "data:text/css,x") == nil
+    end
+
+    test "a package naming itself comes before one installed under that name", %{tmp_dir: dir} do
+      write(dir, %{
+        "package.json" => ~s({"name":"kit"}),
+        "theme.css" => color("self"),
+        "node_modules/kit/theme.css" => color("installed")
+      })
+
+      assert Theme.resolve_stylesheet(dir, "kit/theme.css") == Path.join(dir, "theme.css")
+    end
+
+    test "an imports map is the nearest package.json's, above the importer", %{tmp_dir: dir} do
+      write(dir, %{
+        "package.json" => ~s({"imports":{"#tokens":"./tokens.css"}}),
+        "tokens.css" => color("t"),
+        "styles/app.css" => ""
+      })
+
+      assert Theme.resolve_stylesheet(Path.join(dir, "styles"), "#tokens") ==
+               Path.join(dir, "tokens.css")
+    end
+
+    test "the package root's node_modules comes before the importer's", %{tmp_dir: dir} do
+      write(dir, %{
+        "package.json" => ~s({"name":"app"}),
+        "node_modules/kit/theme.css" => color("root"),
+        "styles/node_modules/kit/theme.css" => color("near")
+      })
+
+      assert Theme.resolve_stylesheet(Path.join(dir, "styles"), "kit/theme.css") ==
+               Path.join(dir, "node_modules/kit/theme.css")
+    end
+
+    test "a relative link's `..` is taken from where a link inside it leads", %{tmp_dir: dir} do
+      write(dir, %{"other/deep/keep.css" => "", "other/real.css" => color("real")})
+      File.ln_s!(Path.join(dir, "other/deep"), Path.join(dir, "lnk"))
+      File.ln_s!("lnk/../real.css", Path.join(dir, "link.css"))
+
+      assert Theme.resolve_stylesheet(dir, "./link.css") == Path.join(dir, "other/real.css")
     end
   end
 end

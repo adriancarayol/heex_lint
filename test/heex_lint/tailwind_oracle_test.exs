@@ -272,6 +272,17 @@ defmodule HeexLint.TailwindOracleTest do
       assert gone?(os_pid)
     end
 
+    test "keeps a plugin's write with no newline out of the answer", %{tmp_dir: dir} do
+      fake_tailwind(dir, ~s|fs.writeSync(1, "chatty")|)
+      css = write(dir, "app.css", ~s(@import "tailwindcss";\n))
+      {port, os_pid} = start_worker(dir)
+      request(port, css)
+
+      assert %{"id" => 1, "ok" => true} = worker_answer(port, "")
+      Port.close(port)
+      assert gone?(os_pid)
+    end
+
     test "says so when a plugin ends its thread, and takes the next question", %{tmp_dir: dir} do
       fake_tailwind(dir, ~s|process.exit(3)|)
       css = write(dir, "app.css", ~s(@import "tailwindcss";\n))
@@ -688,8 +699,20 @@ defmodule HeexLint.TailwindOracleTest do
     end
   end
 
+  defp worker_answer(port, buffer) do
+    assert_receive {^port, {:data, data}}, 5_000
+    {lines, rest} = (buffer <> data) |> String.split("\n") |> Enum.split(-1)
+
+    Enum.find_value(lines, fn line ->
+      case JSON.decode(line) do
+        {:ok, answer} -> answer
+        _ -> nil
+      end
+    end) || worker_answer(port, List.first(rest))
+  end
+
   describe "a VM that dies without stopping anything" do
-    defp die_during_lint(dir, pid_file, started, settings) do
+    defp die_during_lint(dir, pid_file, started, settings, env \\ []) do
       ebin = Path.wildcard(Path.expand("../../_build/test/lib/*/ebin", __DIR__))
 
       script =
@@ -731,7 +754,7 @@ defmodule HeexLint.TailwindOracleTest do
 
       {_output, 0} =
         System.cmd("sh", ["-c", Enum.join(command, " ")],
-          env: [{"HEEX_LINT_TAILWIND_TIMEOUT", "#{@give_up_ms}"}]
+          env: [{"HEEX_LINT_TAILWIND_TIMEOUT", "#{@give_up_ms}"} | env]
         )
     end
 
@@ -760,10 +783,69 @@ defmodule HeexLint.TailwindOracleTest do
     test "leaves no standalone build behind", %{tmp_dir: dir} do
       {bin, pid_file} = hung_binary(dir)
       project_files(dir, page())
-      die_during_lint(dir, pid_file, 2, tailwind_bin: bin)
+      temp = Path.join(dir, "temp")
+      File.mkdir_p!(temp)
+      die_during_lint(dir, pid_file, 2, [tailwind_bin: bin], [{"TMPDIR", temp}])
 
       assert [_shell, _sleep] = started = pids(pid_file)
       assert Enum.all?(started, &gone?/1)
+      assert dir |> Path.join("input.path") |> File.read!() |> String.starts_with?(temp)
+      assert eventually(fn -> Path.wildcard(Path.join(temp, "heex_lint_*")) == [] end)
+    end
+  end
+
+  describe "questions waiting their turn" do
+    test "each gets its answer, past the wait for any one of them", %{tmp_dir: dir} do
+      bin =
+        script(dir, "fake/tailwind", """
+        #!/bin/sh
+        sleep 0.5
+        while [ "$#" -gt 0 ]; do
+          [ "$1" = "--output" ] && : > "$2"
+          shift
+        done
+        """)
+
+      deadline(1_500)
+      write(dir, "assets/css/app.css", ~s(@import "tailwindcss";\n))
+      project = Project.load(dir, [], %{})
+      {:ok, oracle} = Tailwind.start(%{project | settings: [tailwind_bin: bin]})
+
+      # A caller's wait is 9.5 s here, for 10 s of questions.
+      answers =
+        for number <- 1..20 do
+          entry = write(dir, "assets/css/app#{number}.css", ~s(@import "tailwindcss";\n))
+          project = %{project | entry: entry, oracle: oracle}
+          Task.async(fn -> Tailwind.unknown(project, ["flex"]) end)
+        end
+        |> Task.await_many(:infinity)
+
+      assert Enum.all?(answers, &is_list/1)
+      assert Tailwind.warnings(oracle) == []
+      Tailwind.stop(oracle)
+    end
+  end
+
+  describe "two linters at once" do
+    test "name their build directories apart", %{tmp_dir: dir} do
+      bin =
+        script(dir, "fake/tailwind", """
+        #!/bin/sh
+        while [ "$#" -gt 0 ]; do
+          [ "$1" = "--input" ] && dirname "$2" >> "#{dir}/dirs"
+          [ "$1" = "--output" ] && : > "$2"
+          shift
+        done
+        """)
+
+      write(dir, "assets/css/app.css", ~s(@import "tailwindcss";\n))
+      project = Project.load(dir, [], %{})
+      {:ok, oracle} = Tailwind.start(%{project | settings: [tailwind_bin: bin]})
+      assert is_list(Tailwind.unknown(%{project | oracle: oracle}, ["flex"]))
+      Tailwind.stop(oracle)
+
+      name = dir |> Path.join("dirs") |> File.read!() |> String.trim() |> Path.basename()
+      assert name =~ ~r/^heex_lint_#{System.pid()}_[0-9a-f]{16}$/
     end
   end
 
@@ -798,8 +880,23 @@ defmodule HeexLint.TailwindOracleTest do
       deadline(5_000)
       assert [warning] = Tailwind.warnings(oracle)
       assert warning =~ "did not answer"
+      # Two waits of five seconds, and not the one the message used to name.
+      assert warning =~ ~r/timed out after (9|1\d) s/
       assert warning =~ "rules checked a file with the class grammar"
       Tailwind.stop(oracle)
+    end
+
+    @tag :capture_log
+    test "stopped with a timeout of its own answers nil", %{tmp_dir: dir} do
+      project = bare_project(dir)
+      {:ok, oracle} = Tailwind.start(project)
+      :sys.suspend(oracle)
+      Process.exit(oracle, {:timeout, {GenServer, :call, [self(), :x, 5_000]}})
+      asking = Task.async(fn -> Tailwind.unknown(%{project | oracle: oracle}, ["flex"]) end)
+      Process.sleep(100)
+      :sys.resume(oracle)
+
+      assert Task.await(asking, 15_000) == nil
     end
 
     @tag :capture_log
@@ -1746,6 +1843,58 @@ defmodule HeexLint.TailwindOracleTest do
     end
   end
 
+  describe "the standalone binary and undeclared colors" do
+    # A build gives no suggestion, so it cannot change what no_raw_colors says.
+    for {name, theme} <- [
+          plain: ~s(@import "tailwindcss";\n@theme { --color-primary: red; }\n),
+          module:
+            ~s(@import "tailwindcss";\n@plugin "./plugin.js";\n@theme { --color-primary: red; }\n)
+        ] do
+      @tag :standalone
+      test "take no build on a #{name} theme", %{tmp_dir: dir} do
+        counter = Path.join(dir, "builds")
+
+        bin =
+          script(dir, "fake/tailwind", """
+          #!/bin/sh
+          echo x >> "#{counter}"
+          exec "#{standalone_bin()}" "$@"
+          """)
+
+        classes = Enum.map_join(1..15, " ", &"bg-und#{&1}")
+
+        files =
+          Map.merge(page(~s(<div class="#{classes}" />)), %{
+            "assets/css/app.css" => unquote(theme),
+            "assets/css/plugin.js" => "module.exports = function () {}\n"
+          })
+
+        result = run(dir, files, rules: [no_raw_colors: :error], settings: [tailwind_bin: bin])
+
+        assert length(result.diagnostics) == 15
+        assert Enum.all?(result.diagnostics, &(&1.message =~ "is not a declared theme color"))
+        refute File.exists?(counter)
+      end
+    end
+
+    @tag :tailwind
+    test "stay quiet through Node when the typo is another utility's", %{tmp_dir: dir} do
+      with_tailwind(dir)
+
+      files =
+        Map.put(
+          page(~s(<div class="text-smal bg-undeclared" />)),
+          "assets/css/app.css",
+          ~s(@import "tailwindcss";\n@theme { --color-primary: red; }\n)
+        )
+
+      result = run(dir, files, rules: [no_raw_colors: :error])
+
+      assert [finding] = result.diagnostics
+      assert finding.message =~ ~s("bg-undeclared")
+    end
+  end
+
   describe "the standalone binary and contract entries" do
     @tag :standalone
     test "takes one build for all of them", %{tmp_dir: dir} do
@@ -1817,7 +1966,17 @@ defmodule HeexLint.TailwindOracleTest do
     end
 
     test "anything else keeps the defaults" do
-      for value <- ["", "0", "-5", "soon", "Infinity", "NaN", "10s", "1e400"] do
+      for value <- [
+            "",
+            "0",
+            "-5",
+            "soon",
+            "Infinity",
+            "NaN",
+            "10s",
+            "1e400",
+            String.duplicate("1", 400)
+          ] do
         System.put_env("HEEX_LINT_TAILWIND_TIMEOUT", value)
         assert Tailwind.timeout_for(true) == 60_000
         assert Tailwind.timeout_for(false) == 30_000

@@ -141,12 +141,13 @@ the shared settings of the same name:
 | `component_imports` | Regexes on module names that are also the design system.       |
 | `ignore_imports`    | Regexes on module names that never are. Takes precedence.      |
 | `merge_functions`   | Adds functions whose arguments contain classes.                |
-| `variant_functions` | Adds functions whose map or keyword values contain classes.    |
+| `variant_functions` | Adds functions whose config holds classes: `base`, `slots`, `class`, `variants` and more. |
 
 The built-in merge functions are `cn`, `Tails.classes`, `TwMerge.merge` and
-`Twix.tw`. Inside class values, `Enum.join`, `Enum.filter`, `Enum.reject`,
-`Enum.uniq`, `Enum.concat`, `List.flatten`, `List.wrap` and `String.trim`
-are read through as well.
+`Twix.tw`. A call to one is checked wherever the file has it, inside a class value
+or not: see [where it looks](how-it-works.md#where-it-looks). Inside class values,
+`Enum.join`, `Enum.filter`, `Enum.reject`, `Enum.uniq`, `Enum.concat`,
+`List.flatten`, `List.wrap` and `String.trim` are read through as well.
 
 ### Your own words
 
@@ -179,7 +180,7 @@ Additional `no_restyle` placeholders:
 | `{{category}}` | The class category, including `layout` or `unclassified`.        |
 | `{{variants}}` | Comma-separated variant names, or empty.                         |
 | `{{wrapper}}`  | The forwarding component, or empty.                              |
-| `{{prop}}`     | The class attribute the classes were written in, such as `class` or `title_class`. |
+| `{{prop}}`     | The class attribute the classes were written in, such as `class` or `title_class`. On a slot it is `class`. |
 | `{{sizes}}`    | Comma-separated size names on every finding, or empty.           |
 | `{{where}}`    | Where to add a variant or size: `in lib/app_web/components/button.ex`, or `to <.button>` for a component from `deps/`. |
 | `{{around}}`   | Where spacing can go instead, on spacing findings.               |
@@ -290,6 +291,8 @@ What the name holds decides the rest:
   `t = %{assigns.base | a: "color: red"}` reports `color` for `t.a` under `t.a`. `t.b`
   is whatever the base holds, so it stays dynamic when the base cannot be read or does
   not have the key, and is exempt under `t.b`. A computed key on it stays dynamic too.
+  So does a computed or missing key on a table assigned with `assign/3`, as in
+  `@styles[@tone]`.
 - Any other value is exempt along with everything it goes on to read, literals
   included: `floating_styles = if assigns.open, do: "color: red", else: Floating.compute()`
   and an alias of another name both report nothing under `floating_styles`. So does a
@@ -306,7 +309,7 @@ What the name holds decides the rest:
   anywhere else, such as `assign(socket, :floating_styles, "color: red")` in `mount/3`
   or in a helper the function calls, cannot be read: it is reported as dynamic, and
   exempt when named, whatever it holds. In a function body, `assigns.floating_styles`
-  is what came in, whatever the function goes on to assign.
+  is what came in, whatever the function assigns before or after it.
 
 The option does not reach holes or forwarded styles. A hole, as in
 `"--tone: #{tone}"`, is never reported for being unreadable, and a raw color in one is
@@ -316,4 +319,5 @@ unreadable default goes by its own name.
 
 Entries must be strings shaped like these names. Anything else, such as
 `assigns[:floating_styles]` or `Floating.styles()`, is a configuration error, since it
-would match nothing. The option applies to the whole rule; a contract cannot set it.
+would match nothing. The option applies to the whole rule: a contract cannot set it, and
+one that writes it is a configuration error.

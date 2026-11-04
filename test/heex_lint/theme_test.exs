@@ -83,7 +83,12 @@ defmodule HeexLint.ThemeTest do
     @describetag :tmp_dir
 
     defp load(dir, files) do
-      for {name, css} <- files, do: File.write!(Path.join(dir, name), css)
+      for {path, css} <- files do
+        full = Path.join(dir, path)
+        File.mkdir_p!(Path.dirname(full))
+        File.write!(full, css)
+      end
+
       Theme.load(Path.join(dir, "app.css"))
     end
 
@@ -146,6 +151,92 @@ defmodule HeexLint.ThemeTest do
       assert Enum.frequencies(theme.files) |> Map.values() |> Enum.uniq() == [1]
     end
 
+    test "two case spellings are one stylesheet only on a disk that has one", %{tmp_dir: dir} do
+      File.write!(Path.join(dir, "shared.css"), "@utility sym { color: red }")
+      one_file? = File.exists?(Path.join(dir, "SHARED.css"))
+
+      files = %{
+        "b.css" => ~s(@import "#{dir}/Shared.css";),
+        "c.css" => ~s(@utility sym { padding: 1px }\n@import "#{dir}/shared.css";),
+        "app.css" => ~s(@import "./b.css";\n@import "./c.css";)
+      }
+
+      if one_file? do
+        theme = load(dir, files)
+
+        assert Theme.utility_properties_of(theme, "sym") == ["padding"]
+        assert length(theme.files) == 4
+      else
+        theme = load(dir, Map.put(files, "Shared.css", "@utility sym { margin: 0 }"))
+
+        assert Theme.utility_properties_of(theme, "sym") == ["color"]
+        assert length(theme.files) == 5
+      end
+    end
+
+    test "two hard links are read as two stylesheets, as their paths differ", %{tmp_dir: dir} do
+      File.write!(Path.join(dir, "one.css"), "@utility sym { color: red }")
+      File.ln!(Path.join(dir, "one.css"), Path.join(dir, "two.css"))
+
+      theme =
+        load(dir, %{
+          "c.css" => ~s(@utility sym { padding: 1px }\n@import "./two.css";),
+          "app.css" => ~s(@import "./one.css";\n@import "./c.css";)
+        })
+
+      assert Theme.utility_properties_of(theme, "sym") == ["color"]
+    end
+
+    defp numbered(count, first_import \\ "") do
+      imports = Enum.map_join(1..count, "\n", &~s(@import "./n#{&1}.css";))
+
+      Map.new(1..count, &{"n#{&1}.css", "@theme { --radius-n#{&1}: 1px; }"})
+      |> Map.put("app.css", first_import <> imports)
+    end
+
+    defp last_step(theme), do: theme |> Theme.scale(:radius) |> List.last() |> elem(0)
+
+    test "the limit reads a 65th stylesheet and no 66th", %{tmp_dir: dir} do
+      assert dir |> load(numbered(64)) |> last_step() == "n64"
+      assert dir |> load(numbered(65)) |> last_step() == "n64"
+    end
+
+    @entry %{
+      "node_modules/tailwindcss/package.json" => ~s({"name":"tailwindcss"}),
+      "node_modules/tailwindcss/index.css" => ~s(@import "./gone.css";)
+    }
+
+    test "a bare Tailwind import takes a slot of the limit", %{tmp_dir: dir} do
+      files = 70 |> numbered(~s(@import "tailwindcss";\n)) |> Map.merge(@entry)
+
+      assert dir |> load(files) |> last_step() == "n63"
+    end
+
+    test "a repeated bare Tailwind import walks the entry once", %{tmp_dir: dir} do
+      theme =
+        load(
+          dir,
+          Map.put(@entry, "app.css", ~s(@import "tailwindcss";\n@import "tailwindcss";))
+        )
+
+      assert theme.missing_imports == ["./gone.css"]
+    end
+
+    test "a second Tailwind in another package is walked as well", %{tmp_dir: dir} do
+      theme =
+        load(
+          dir,
+          Map.merge(@entry, %{
+            "node_modules/kit/package.json" => ~s({"name":"kit"}),
+            "node_modules/kit/index.css" => ~s(@import "tailwindcss";),
+            "node_modules/kit/node_modules/tailwindcss/index.css" => ".kit-tailwind {}",
+            "app.css" => ~s(@import "tailwindcss";\n@import "kit";)
+          })
+        )
+
+      assert MapSet.member?(theme.classes, "kit-tailwind")
+    end
+
     test "a stylesheet read again does not undo what came after it", %{tmp_dir: dir} do
       theme =
         load(dir, %{
@@ -167,6 +258,25 @@ defmodule HeexLint.ThemeTest do
 
       assert Theme.utility_properties_of(theme, "dia") == ["color"]
       assert length(theme.files) == 2
+    end
+
+    test "a byte order mark leaves a leading :root unscoped", %{tmp_dir: dir} do
+      theme =
+        load(dir, %{
+          "base.css" => ":root { --radius: 12px; }",
+          "tokens.css" => "\uFEFF:root { --radius: 8px; } .compact { --radius: 4px; }",
+          "bare.css" => "\uFEFF--gap: 3px;",
+          "app.css" => """
+          @import "./base.css";
+          @import "./tokens.css";
+          @import "./bare.css";
+          @theme { --radius-card: var(--radius); }
+          """
+        })
+
+      assert theme.values["radius"] == "8px"
+      assert theme.values["gap"] == "3px"
+      assert Map.new(Theme.scale(theme, :radius))["card"] == 8.0
     end
 
     test "a color token reads its variable from :root", %{tmp_dir: dir} do

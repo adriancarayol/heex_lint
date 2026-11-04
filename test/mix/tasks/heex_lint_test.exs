@@ -139,6 +139,23 @@ defmodule Mix.Tasks.HeexLintTest do
     assert File.read!(Path.join(dir, "lib/app_web/live/page_live.ex")) =~ ~s(class="p-3")
   end
 
+  test "--fix keeps a variant that starts with a digit", %{tmp_dir: dir} do
+    setup_project(dir, ~s(<div class="flex 2xl:p-[12px]" />), no_arbitrary_values: :error)
+    assert {:ok, output, _} = task(dir, ["--fix"])
+    assert output =~ "Applied 1 fix."
+    assert File.read!(Path.join(dir, "lib/app_web/live/page_live.ex")) =~ ~s(class="flex 2xl:p-3")
+  end
+
+  test "--fix takes a class too long to be a regex", %{tmp_dir: dir} do
+    variant = String.duplicate("a", 100_000)
+    setup_project(dir, ~s(<div class="flex #{variant}:p-[12px]" />), no_arbitrary_values: :error)
+    assert {:ok, output, _} = task(dir, ["--fix"])
+    assert output =~ "Applied 1 fix."
+
+    assert File.read!(Path.join(dir, "lib/app_web/live/page_live.ex")) =~
+             ~s(class="flex #{variant}:p-3")
+  end
+
   test "--fix keeps a Tailwind prefix", %{tmp_dir: dir} do
     setup_project(dir, ~s(<div class="tw:hover:p-[12px]" />), no_arbitrary_values: :error)
 

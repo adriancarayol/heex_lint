@@ -40,6 +40,211 @@ defmodule HeexLint.DynamicIdentifiersTest do
   defp styled(dir, body, value, names),
     do: findings(dir, page(body, "<div style={#{value}} />"), names)
 
+  describe "a table in a variable" do
+    for {table, value, expected} <- [
+          {~S|%{1 => "--x: 1", 1 => "color: red"}|, "t[1]", :color},
+          {~S|%{1 => "color: red", 1 => "--x: 1"}|, "t[1]", :clean},
+          {~S|%{"a" => "color: red", "a" => "--x: 1"}|, ~S|t["a"]|, :clean},
+          {~S|%{1 => "color: red", 1.0 => "--x: 1"}|, "t[1.0]", :clean},
+          {~S|%{1 => "--x: 1", 1.0 => "color: red"}|, "t[1]", :clean},
+          {~S|%{false => "--x: 1", a: "color: red"}|, "t[false]", :clean},
+          {~S|%{false => "color: red", a: "--x: 1"}|, "t[false]", :color},
+          {~S|%{nil => "--x: 1", a: "color: red"}|, "t[nil]", :clean},
+          {~S|[a: "--x: 1", a: "color: red"]|, "t[:a]", :clean},
+          {~S|%{:a => "--x: 1", assigns.k => Lib.compute()}|, "t.a", :dynamic},
+          {~S|%{:a => "color: red", assigns.k => "--x: 1"}|, "t.a", :dynamic},
+          {~S|%{:a => "--x: 1", assigns.k => "--y: 1"}|, ~S|Map.get(t, :a)|, :dynamic},
+          {~S|%{assigns.k => "--y: 1", :a => "color: red"}|, "t.a", :color},
+          {~S|%{assigns.k => "--y: 1", :a => "--x: 1"}|, "t.a", :clean},
+          {~S|%{:a => "--x: 1", -1 => "--y: 1"}|, "t.a", :clean},
+          # A key no entry writes, or one only known at runtime, reads every entry.
+          {~S|%{:a => "color: red", assigns.k => "--y: 1"}|, "t.b", :color},
+          {~S|%{:a => "color: red", assigns.k => "--y: 1"}|, "t[@v]", :color}
+        ] do
+      test "#{table} under #{value}", %{tmp_dir: dir} do
+        expected =
+          case unquote(expected) do
+            :dynamic -> [@dynamic]
+            :color -> [@color]
+            :clean -> []
+          end
+
+        assert styled(dir, "t = #{unquote(table)}", unquote(value), []) == expected
+      end
+    end
+
+    for {table, key} <- [
+          {~S|%{a: "#ec4899", b: "1"}|, "t.b"},
+          {~S|%{1 => "1", 1 => "#ec4899"}|, "t[1]"},
+          {~S|%{1 => "#ec4899", 1.0 => "1"}|, "t[1.0]"},
+          {~S|%{false => "1", a: "#ec4899"}|, "t[false]"}
+        ] do
+      test "a hole reads every entry of #{table} under #{key}", %{tmp_dir: dir} do
+        value = ~s|"--x: \#{#{unquote(key)}}"|
+        assert [finding] = styled(dir, "t = #{unquote(table)}", value, [])
+        assert finding =~ "color"
+      end
+    end
+  end
+
+  describe "a table assigned in the rendering function" do
+    defp assigned(table), do: "assigns = assign(assigns, :t, #{table})"
+
+    for {table, value, expected} <- [
+          {~S|%{primary: "--x: 1", ghost: "--y: 1"}|, "@t[@v]", :dynamic},
+          {~S|%{primary: "--x: 1", ghost: "--y: 1"}|, "Map.fetch!(@t, @v)", :dynamic},
+          {~S|%{primary: "--x: 1", ghost: "--y: 1"}|, "Map.get(@t, @v)", :dynamic},
+          {~S|%{primary: "color: red"}|, "@t[@v]", :dynamic},
+          {~S|%{primary: "color: red"}|, "assigns.t[@v]", :dynamic},
+          {~S|%{a: "--x: 1"}|, "@t[:b]", :dynamic},
+          {"%{}", "@t[:b]", :dynamic},
+          {"[]", "@t[:b]", :dynamic},
+          {~S|%{:a => "--x: 1", assigns.k => Lib.compute()}|, "@t.a", :dynamic},
+          {~S|%{a: "--x: 1", a: "color: red"}|, "@t.a", :color},
+          {~S|%{a: "color: red", a: "--x: 1"}|, "@t.a", :clean},
+          {~S|%{:a => "color: red", -1 => "--x: 1"}|, "@t.a", :color},
+          {~S|%{:a => "color: red", -1.5 => "--x: 1"}|, "@t.a", :color},
+          {~S|%{:a => "color: red", +1 => "--x: 1"}|, "@t.a", :color},
+          {~S|%{-1 => "color: red", 1 => "--x: 1"}|, "@t[-1]", :color},
+          {~S|%{-1 => "--x: 1", 1 => "color: red"}|, "@t[-1]", :clean},
+          {~S|%{1 => "--x: 1", +1 => "color: red"}|, "@t[1]", :color},
+          {~S|%{{:x, -1} => "color: red", {:x, 1} => "--x: 1"}|, "@t[{:x, -1}]", :color},
+          {~S|%{:a => "color: red", -x => "--x: 1"}|, "@t.a", :dynamic},
+          {~S|%{popper: "color: red"}|, "@t.popper", :color},
+          {~S|%{popper: "color: red"}|, "assigns.t.popper", :color},
+          {~S|%{popper: "--x: 1"}|, "@t.popper", :clean},
+          {~S|%{popper: "color: red"}|, "@t[:popper]", :color},
+          {~S|[popper: "color: red"]|, "@t[:popper]", :color}
+        ] do
+      test "#{table} under #{value}", %{tmp_dir: dir} do
+        expected =
+          case unquote(expected) do
+            :dynamic -> [@dynamic]
+            :color -> [@color]
+            :clean -> []
+          end
+
+        assert styled(dir, assigned(unquote(table)), unquote(value), []) == expected
+      end
+    end
+
+    test "answers the same through a variable", %{tmp_dir: dir} do
+      body = ~s|table = %{a: "color: red"}\nassigns = assign(assigns, :t, table)|
+
+      assert styled(dir, body, "@t.a", []) == [@color]
+      assert styled(dir, body, "@t[@v]", []) == [@dynamic]
+    end
+
+    defp classes(dir, table, template, rules) do
+      files = page(assigned(table), template)
+      for d <- lint(dir, files, rules: rules), do: d.rule
+    end
+
+    @rules [no_raw_colors: :error, require_static_classes: :error]
+
+    test "a signed number is a key, and hides no other", %{tmp_dir: dir} do
+      table = ~S|%{:a => "bg-pink-500", -1 => "p-1"}|
+
+      assert classes(dir, table, ~S|<div class={@t.a} />|, @rules) == [:no_raw_colors]
+
+      assert classes(dir, table, ~S|<.button class={@t.a}>x</.button>|, @rules) == [
+               :no_raw_colors
+             ]
+    end
+
+    test "a computed key is dynamic on a class, and reads no entry", %{tmp_dir: dir} do
+      assert classes(
+               dir,
+               ~S|%{a: "p-2", b: "p-4"}|,
+               ~S|<.button class={@t[@v]}>x</.button>|,
+               @rules
+             ) ==
+               [:require_static_classes]
+
+      assert classes(
+               dir,
+               ~S|%{a: "bg-pink-500", b: "p-4"}|,
+               ~S|<.button class={@t[@v]}>x</.button>|,
+               @rules
+             ) ==
+               [:require_static_classes]
+
+      assert classes(dir, ~S|%{a: "bg-pink-500"}|, ~S|<div class={@t[@v]} />|, @rules) == []
+    end
+
+    for {table, read} <- [
+          {~S|%{1 => "bg-pink-500"}|, "@t[1]"},
+          {~S|%{1 => "bg-pink-500"}|, "Map.get(@t, 1)"},
+          {~S|%{nil => "bg-pink-500"}|, "@t[nil]"},
+          {~S|%{Foo => "bg-pink-500"}|, "@t[Foo]"},
+          {~S|%{{:x, 1} => "bg-pink-500"}|, "@t[{:x, 1}]"},
+          {~S|%{:a => "bg-pink-500", 1 => "p-1"}|, "@t.a"},
+          {~S|%{:a => "bg-pink-500", nil => "p-1"}|, "@t.a"},
+          {~S|%{:a => "bg-pink-500", Foo => "p-1"}|, "@t.a"},
+          {~S|%{:a => "bg-pink-500", {:x, 1} => "p-1"}|, "@t.a"},
+          {~S|%{1 => "p-1", :a => "bg-pink-500"}|, "@t.a"}
+        ] do
+      test "a key that is no atom or string answers: #{table} under #{read}", %{tmp_dir: dir} do
+        template = "<div class={#{unquote(read)}} />"
+        assert classes(dir, unquote(table), template, @rules) == [:no_raw_colors]
+
+        template = "<.button class={#{unquote(read)}}>x</.button>"
+        assert classes(dir, unquote(table), template, @rules) == [:no_raw_colors]
+      end
+    end
+
+    test "a key that is no atom or string is not the one read", %{tmp_dir: dir} do
+      for {table, read} <- [
+            {~S|%{1 => "bg-pink-500"}|, "@t[2]"},
+            {~S|%{1 => "bg-pink-500"}|, ~S|@t["1"]|},
+            {~S|%{{:x, 1} => "bg-pink-500"}|, "@t[{:x, 2}]"}
+          ] do
+        assert classes(dir, table, "<div class={#{read}} />", @rules) == [], read
+      end
+    end
+
+    test "a keyword list answers with a key's first value", %{tmp_dir: dir} do
+      for read <- ["@t[:a]", "Keyword.get(@t, :a)", "Keyword.fetch!(@t, :a)"] do
+        template = "<.button class={#{read}}>x</.button>"
+
+        assert classes(dir, ~S|[a: "bg-pink-500", a: "p-1"]|, template, @rules) ==
+                 [:no_raw_colors],
+               read
+
+        assert classes(dir, ~S|[a: "p-1", a: "bg-pink-500"]|, template, @rules) == [], read
+      end
+    end
+
+    test "what the troubleshooting guide offers instead is read", %{tmp_dir: dir} do
+      body = ~S|assigns = assign(assigns, :c, %{a: "bg-pink-500"}[assigns.v])|
+      files = page(body, ~S|<.button class={@c}>x</.button>|)
+      assert [%{rule: :no_raw_colors}] = lint(dir, files, rules: @rules)
+    end
+
+    test "a key it writes reaches the class rules", %{tmp_dir: dir} do
+      assert classes(dir, ~S|%{a: "bg-pink-500"}|, ~S|<div class={@t.a} />|, @rules) ==
+               [:no_raw_colors]
+    end
+
+    test "a module attribute or a variable still reads every entry", %{tmp_dir: dir} do
+      attribute =
+        page("", ~S|<div class={tone(@v)} />|, ~S"""
+          @variants %{primary: "bg-pink-500", ghost: "p-4"}
+          defp tone(v), do: Map.fetch!(@variants, v)
+        """)
+
+      assert [%{rule: :no_raw_colors}] = lint(dir, attribute, rules: @rules)
+
+      variable =
+        page(
+          ~S|variants = %{primary: "bg-pink-500", ghost: "p-4"}|,
+          ~S|<div class={variants[@v]} />|
+        )
+
+      assert [%{rule: :no_raw_colors}] = lint(dir, variable, rules: @rules)
+    end
+  end
+
   describe "upstream's table" do
     test "an allowed name is exempt", %{tmp_dir: dir} do
       assert styled(dir, "", "@floating_styles", ["@floating_styles"]) == []
@@ -180,6 +385,15 @@ defmodule HeexLint.DynamicIdentifiersTest do
       assert findings(dir, files, ["unrelated"]) == [@dynamic]
     end
 
+    test "two :for at one position, as in two files, bind their own names" do
+      element = fn code ->
+        %HeexLint.Element{attributes: [%{name: ":for", value: {:expr, code, {1, 1}}}]}
+      end
+
+      assert Collector.bound_names(element.("a <- @list"), []) == [:a]
+      assert Collector.bound_names(element.("b <- @list"), []) == [:b]
+    end
+
     test "a :let variable is that variable", %{tmp_dir: dir} do
       files = page("", ~s|<.card :let={styles}><div style={styles} /></.card>|)
 
@@ -315,6 +529,21 @@ defmodule HeexLint.DynamicIdentifiersTest do
         assert styled(dir, "", unquote(value), [unquote(name)]) == [@color]
         assert styled(dir, "", unquote(value), ["unrelated"]) == [@dynamic, @color]
       end
+    end
+
+    test "that is an empty map is no value", %{tmp_dir: dir} do
+      for value <- ["Map.get(@t, :a, %{})", "Keyword.get(@t, :a, %{})", "@t |> Map.get(:a, %{})"] do
+        assert styled(dir, "", value, ["@t.a"]) == []
+        assert styled(dir, "", value, ["unrelated"]) == [@dynamic]
+      end
+
+      assert styled(dir, "", ~s|Map.get(@t, :a, %{b: "1"})|, ["@t.a"]) == [@dynamic]
+    end
+
+    test "that is an empty map stays dynamic on a class", %{tmp_dir: dir} do
+      files = page("", "<.button class={Map.get(@t, :a, %{})}>x</.button>")
+
+      assert [_, _] = lint(dir, files, rules: [require_static_classes: :error])
     end
 
     test "is checked beside a table a library computes", %{tmp_dir: dir} do
@@ -1029,6 +1258,35 @@ defmodule HeexLint.DynamicIdentifiersTest do
       end
     end
 
+    test "a map keeps a key's last value, and a keyword list its first", %{tmp_dir: dir} do
+      read = fn root ->
+        findings(dir, page("", "<div {#{root}} />"), [])
+      end
+
+      assert read.(~S|%{style: "--x: 1", style: "color: red"}|) == [@color]
+      assert read.(~S|%{style: "color: red", style: "--x: 1"}|) == []
+      assert read.(~S|[style: "color: red", style: "--x: 1"]|) == [@color]
+      assert read.(~S|[style: "--x: 1", style: "color: red"]|) == []
+    end
+
+    test "a class in a map keeps its last value too", %{tmp_dir: dir} do
+      read = fn root ->
+        lint(dir, page("", "<.button {#{root}}>x</.button>"), rules: [no_raw_colors: :error])
+      end
+
+      assert [_] = read.(~S|%{class: "p-1", class: "bg-pink-500"}|)
+      assert read.(~S|%{class: "bg-pink-500", class: "p-1"}|) == []
+    end
+
+    test "an entry that is no pair does not end the run", %{tmp_dir: dir} do
+      assert findings(
+               dir,
+               page("", ~S|<div {%{unquote_splicing(y), style: "color: red"}} />|),
+               []
+             ) ==
+               [@color]
+    end
+
     test "reports the rest at the same position as before", %{tmp_dir: dir} do
       files = page("", "<div {%{style: @other}} />")
 
@@ -1190,7 +1448,16 @@ defmodule HeexLint.DynamicIdentifiersTest do
           {[".popper"], "is not a name as written"},
           {["color: red"], "is not a name as written"},
           {["bad\nname"], "is not a name as written"},
-          {["floating_styles\n"], "is not a name as written"}
+          {["floating_styles\n"], "is not a name as written"},
+          {["nil"], "is not a name as written"},
+          {["@nil"], "is not a name as written"},
+          {["true"], "is not a name as written"},
+          {["do"], "is not a name as written"},
+          {["end.popper"], "is not a name as written"},
+          {["Map.get"], "is not a name as written"},
+          {["Map.fetch!"], "is not a name as written"},
+          {["Keyword.get"], "is not a name as written"},
+          {["Keyword.fetch!"], "is not a name as written"}
         ] do
       test "#{inspect(value)} is a configuration error", %{tmp_dir: dir} do
         value = unquote(Macro.escape(value))
@@ -1219,22 +1486,29 @@ defmodule HeexLint.DynamicIdentifiersTest do
           "Floating.styles",
           "MyApp.Floating.styles",
           "Floating.styles!",
-          "estilós"
+          "estilós",
+          "nil?",
+          "styles.nil",
+          "Map.put"
         ] do
       test "#{name} is a name", %{tmp_dir: dir} do
         assert styled(dir, "", ~s("--gap: 4px"), [unquote(name)]) == []
       end
     end
 
-    test "a name in a contract does nothing, as upstream has none there", %{tmp_dir: dir} do
+    test "a name in a contract is a configuration error, as upstream's schema has it", %{
+      tmp_dir: dir
+    } do
       options = [
         contracts: [[pattern: "^card$", allow_dynamic_identifiers: ["@floating_styles"]]]
       ]
 
       files = page("", "<.card style={@floating_styles} />")
 
-      assert [%{message: @dynamic}] =
+      assert [%{line: 1, column: 1, message: message} | _] =
                lint(dir, files, rules: [no_inline_styles: {:error, options}])
+
+      assert message =~ "a contract cannot set it"
     end
 
     test "a file override can set it", %{tmp_dir: dir} do
