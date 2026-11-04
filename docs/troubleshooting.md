@@ -94,9 +94,8 @@ a cycle of `@import`s does this. On a machine that is only slow, raise the wait 
   directory itself, `lib`, which is expanded.
 - **`literal_alloc: Cannot allocate ... bytes`.** The VM ran out of room for the project it
   keeps while linting, at about 1 GB. Generated code gets there first: an ordinary project
-  needs about 20 MB of source, more or less by how it is written, and a file binding a value
-  through a very long
-  `a = b = c = ...` gets there alone. Take the generated files out of `inputs`.
+  needs about 20 MB of source, more or less by how it is written. Take the generated files
+  out of `inputs`.
 - **An exception from a class or value** is a bug: please report it. One shape that still
   stops a run is a number past the VM's integer limit, which is about 1 MB of hexadecimal,
   1.4 million octal digits or 4.2 million binary ones, such as `p-0xfff...`. In

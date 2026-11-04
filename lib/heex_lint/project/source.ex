@@ -198,7 +198,7 @@ defmodule HeexLint.Project.Source do
           body: body,
           line: meta[:line],
           column: meta[:column],
-          bindings: bindings(body)
+          id: System.unique_integer([:positive])
         }
 
         key = {name, length(args)}
@@ -268,21 +268,6 @@ defmodule HeexLint.Project.Source do
         line: meta[:line]
       }
     end
-  end
-
-  # `name = value` anywhere in a function body, every one of them. Kept with the
-  # clause: a route reads these once per link, and a function can be long.
-  defp bindings(body) do
-    {_, found} =
-      Macro.prewalk(body, %{}, fn
-        {:=, _, [{name, _, ctx}, value]} = node, acc when is_atom(name) and is_atom(ctx) ->
-          {node, Map.update(acc, name, [value], &[value | &1])}
-
-        node, acc ->
-          {node, acc}
-      end)
-
-    Map.new(found, fn {name, values} -> {name, Enum.reverse(values)} end)
   end
 
   # A def is a function component when attrs or slots precede it or its

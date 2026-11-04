@@ -1218,9 +1218,42 @@ defmodule HeexLint.Collector do
     found
   end
 
-  # `name = value` anywhere in the clause body, every one of them.
+  # `name = value` anywhere in the clause body, every one of them. A route reads these
+  # once per link and a function can be long, so each file's task indexes a clause
+  # once. The clause does not keep the index: the project is in :persistent_term, which
+  # copies without sharing, so a value there costs its size again, and once more for
+  # each `=` around it.
   defp bound_values(nil, _name), do: nil
-  defp bound_values(%{bindings: bindings}, name), do: Map.get(bindings, name)
+
+  defp bound_values(%{id: id, body: body}, name) do
+    key = {__MODULE__, :bindings, id}
+
+    index =
+      case Process.get(key) do
+        nil ->
+          index = bindings(body)
+          Process.put(key, index)
+          index
+
+        index ->
+          index
+      end
+
+    Map.get(index, name)
+  end
+
+  defp bindings(body) do
+    {_, found} =
+      Macro.prewalk(body, %{}, fn
+        {:=, _, [{name, _, ctx}, value]} = node, acc when is_atom(name) and is_atom(ctx) ->
+          {node, Map.update(acc, name, [value], &[value | &1])}
+
+        node, acc ->
+          {node, acc}
+      end)
+
+    Map.new(found, fn {name, values} -> {name, Enum.reverse(values)} end)
+  end
 
   # The values `assign(assigns, :name, value)` and friends give an assign.
   defp assigned_values(nil, _name), do: []

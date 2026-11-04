@@ -25,7 +25,7 @@ defmodule HeexLint.Project.ModuleInfo do
           body: Macro.t() | nil,
           line: pos_integer(),
           column: pos_integer(),
-          bindings: %{atom() => [Macro.t()]}
+          id: pos_integer()
         }
 
   @type t :: %__MODULE__{

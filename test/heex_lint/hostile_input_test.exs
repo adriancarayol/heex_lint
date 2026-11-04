@@ -1018,6 +1018,30 @@ defmodule HeexLint.HostileInputTest do
       assert :erts_debug.flat_size(source.modules) < 1.5 * :erts_debug.flat_size(source.ast)
     end
 
+    test "holds a value bound through many names once", %{tmp_dir: dir} do
+      names = Enum.map_join(1..300, " = ", &"a#{&1}")
+      code = "defmodule A do\n  def f, do: (#{names} = \"p-1\")\nend\n"
+      source = Source.parse("a.ex", code)
+
+      assert :erts_debug.flat_size(source.modules) < 3 * :erts_debug.flat_size(source.ast)
+
+      # 3,000 of these asked for over 1 GB, past what the VM has for this, which aborted it.
+      names = Enum.map_join(1..3000, " = ", &"a#{&1}")
+      code = "defmodule A do\n  def f, do: (#{names} = \"p-1\")\nend\n"
+      assert lint(dir, %{"lib/app_web/a.ex" => code}, rules: [no_raw_colors: :error]) == []
+    end
+
+    test "tells a clause from one parsed again at the same place" do
+      id = fn ->
+        %{modules: [%{functions: %{{"f", 0} => [clause]}}]} =
+          Source.parse("a.ex", "defmodule A do\n  def f, do: 1\nend\n")
+
+        clause.id
+      end
+
+      assert id.() != id.()
+    end
+
     test "still answers for each module of a file" do
       source =
         Source.parse("a.ex", """
