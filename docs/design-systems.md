@@ -144,15 +144,18 @@ umbrella it applies to every app's theme.
 
 Tokens come from the file the import resolves to, as in @shadcn/lint: the package's
 `exports`, by the conditions `import`, `default`, `require`, `node`, `types` and then
-the others as written, and otherwise its own files, under `src/` too. Tailwind's build
-prefers a `style` condition, so the two can read different files. With this package:
+the others as written, and otherwise its own files, under `src/` too. A target has to
+be `./` relative and stay inside the package, as in Node: one that walks out, reaches
+into `node_modules` or encodes a separator is passed over for the next condition.
+Tailwind's build prefers a `style` condition, so the two can read different files. With
+this package:
 
 ```json
 { "exports": { ".": { "style": "./theme.css", "import": "./index.js" } } }
 ```
 
-`@import "@acme/ui"` builds `theme.css` but reads `index.js`, which declares nothing,
-so the package's colors stay undeclared. Import the stylesheet itself instead: a
+`@import "@acme/ui"` builds `theme.css` but reads `index.js`, which has no `@theme`, so
+the package's colors stay undeclared. Import the stylesheet itself instead: a
 subpath the package exports with one target, or a path with a pattern that matches it.
 
 ```css
@@ -173,7 +176,9 @@ and whatever it imports by path, already counts as your own:
 ```
 
 The same goes for a dependency linked from `assets/package.json` with
-`"my_kit": "file:../deps/my_kit"`, which resolves to `deps/my_kit`.
+`"my_kit": "file:../deps/my_kit"` under npm, which links it to `deps/my_kit`. pnpm
+keeps a copy under `node_modules/.pnpm` instead, so there it is an installed package:
+name it with `theme_imports`.
 
 ## Share a policy
 

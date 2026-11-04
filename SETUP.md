@@ -23,7 +23,11 @@ Read the [configuration docs](https://github.com/adriancarayol/heex_lint#configu
 first. Create `.heex_lint.exs` only if the defaults do not fit:
 
 - **Theme.** The linter finds the stylesheet that imports Tailwind. Set
-  `settings: [theme: "..."]` only if it picks the wrong one.
+  `settings: [theme: "..."]` only if it picks the wrong one. If the design
+  system's tokens come from an npm package, the linter does not know them until
+  `settings: [theme_imports: ["^@acme/ui/"]]` names its `@import`. A theme that declares a
+  token of its own reports the package's colors as undeclared until then. A theme with none
+  checks no color against tokens at all, so nothing tells you.
 - **Design system.** Modules under a `components/` directory are the design
   system. Add `ui:` prefixes or `component_imports:` if components live
   elsewhere.
@@ -31,11 +35,14 @@ first. Create `.heex_lint.exs` only if the defaults do not fit:
   (`classes/1`, `cx/1`...), add it to `merge_functions`.
 - **Tailwind.** `no_unknown_classes` asks the project's Tailwind through Node
   (`node_modules/tailwindcss`) or the standalone binary Phoenix installs in
-  `_build/`. If neither is found, it warns and uses the class grammar; set
-  `tailwind_bin` if the binary lives elsewhere.
+  `_build/`. If neither is found, it uses the class grammar, which checks less,
+  **with no warning**, so check that one of them is there: run `mix tailwind.install`,
+  or set `tailwind_bin` if the binary lives elsewhere. A warning means Tailwind was
+  found and could not answer; read it, as the rules then use the grammar too.
 
-Do not change rule policies (`allow`, `deny`, `contracts`) or turn rules off
-to hide findings. Leave those decisions to the user.
+Do not change rule policies (`allow`, `deny`, `contracts`,
+`allow_dynamic_identifiers`) or turn rules off to hide findings. Leave those
+decisions to the user.
 
 ## Hand off
 

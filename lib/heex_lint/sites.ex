@@ -3,15 +3,17 @@ defmodule HeexLint.Sites do
   Finds every place a class or style enters a file and resolves each to
   the component it belongs to.
 
-  A site is one attribute value (or one piece of Elixir code, such as a
-  merge-function call or an `attr :class` default) with the strings it can
-  produce, the parts that cannot be read, and the design-system component
-  wearing the classes, directly or through a wrapper. A style's `reads` say what
-  those were called, for `HeexLint.Collector.outside_names/2`.
+  A site is one attribute value, or one merge-function call or `attr :class`
+  default read for itself, with the strings it can produce, the parts that
+  cannot be read, and the design-system component wearing the classes, directly
+  or through a wrapper. A style's `reads` say what those were called, for
+  `HeexLint.Collector.outside_names/2`.
   """
 
   alias HeexLint.{Code, Collector, Element, Project, Template}
   alias HeexLint.Project.{Component, Source}
+
+  @def_kinds [:def, :defp, :defmacro, :defmacrop]
 
   defstruct [
     :file,
@@ -28,12 +30,13 @@ defmodule HeexLint.Sites do
     :reads,
     strings: [],
     unresolved: [],
+    calls: [],
     parents: []
   ]
 
   @type t :: %__MODULE__{}
 
-  # class, className, input_class, classes, class:list... but a data-* or
+  # class, className, input_class, classNames, class:list... but a data-* or
   # aria-* attribute is never a class list: `data-class` is a selector hook.
   @class_attribute ~r/^(class:list|(?!data-|aria-)[^:]*class(name)?s?)$/i
 
@@ -67,7 +70,10 @@ defmodule HeexLint.Sites do
       end)
 
     %{
-      sites: template_sites ++ code_sites(project, source, opts),
+      sites:
+        template_sites ++
+          template_call_sites(project, source, parsed, template_sites, opts) ++
+          code_sites(project, source, opts),
       elements: parsed,
       errors: errors
     }
@@ -77,12 +83,8 @@ defmodule HeexLint.Sites do
     component = component_of(project, template, element)
     parents = parents(element, by_index)
 
-    context = %{
-      project: project,
-      source: source,
-      template: template,
-      component: owner_component(project, template)
-    }
+    context = template_context(project, source, template)
+    opts = Keyword.put(opts, :bound, Collector.bound_names(element, parents))
 
     element.attributes
     |> Enum.flat_map(fn
@@ -122,9 +124,19 @@ defmodule HeexLint.Sites do
         strings: collected.strings,
         unresolved: collected.unresolved,
         reads: collected.reads,
+        calls: collected.calls,
         parents: Enum.map(parents, &{&1, resolution(project, template, &1, by_index)})
       }
     end)
+  end
+
+  defp template_context(project, source, template) do
+    %{
+      project: project,
+      source: source,
+      template: template,
+      component: owner_component(project, template)
+    }
   end
 
   defp attribute_kind("style"), do: :style
@@ -194,44 +206,118 @@ defmodule HeexLint.Sites do
 
   ## Code sites
 
-  # Merge-function calls in function bodies and class attr defaults.
+  # A merge-function call in a template that no class site has read is a site of
+  # its own, on no component: in another attribute, in text, in a condition, or
+  # inside a call nothing follows. What a class site did read stays that site's.
+  defp template_call_sites(project, source, parsed, template_sites, opts) do
+    helpers = helpers(opts)
+    names = Enum.map(helpers, &(&1 |> String.split(".") |> List.last()))
+
+    read =
+      for site <- template_sites,
+          site.kind == :class,
+          call <- site.calls,
+          into: MapSet.new(),
+          do: call
+
+    for {template, _elements} <- parsed,
+        # Finding the expressions tokenizes the template again.
+        String.contains?(template.source, names),
+        context = template_context(project, source, template),
+        {:expr, code, _position} = expression <- Element.expressions(template),
+        {:ok, ast} <- [Code.parse(code)],
+        calls = helper_calls(ast, helpers),
+        collected <- Collector.template_calls(calls, expression, read, context, opts),
+        do: code_site(source, collected)
+  end
+
+  # Merge-function calls in Elixir code, wherever the file has them, and class attr
+  # defaults. A call in a function can read that function's variables.
   defp code_sites(project, source, opts) do
+    helpers = helpers(opts)
+    site = fn call, context -> code_site(source, Collector.expression(call, context, opts)) end
+
+    call_sites = fn ast, context ->
+      for collected <- Collector.calls(helper_calls(ast, helpers), context, opts),
+          do: code_site(source, collected)
+    end
+
+    file = %{project: project, source: source}
+
+    modules =
+      source.modules
+      |> Enum.zip(Source.module_bodies(source.ast))
+      |> Enum.flat_map(fn {module, body} ->
+        context = Map.put(file, :module, module.name)
+
+        function_sites =
+          for {_key, clauses} <- module.functions,
+              clause <- clauses,
+              clause.body != nil,
+              found <- call_sites.(clause.body, Map.put(context, :clause, clause)),
+              do: found
+
+        outside_sites = call_sites.(outside_functions(body, module.functions), context)
+
+        default_sites =
+          for {_name, component} <- module.components,
+              attr <- component.attrs,
+              class_attribute?(attr.name),
+              attr.default not in [:none, nil],
+              do: site.(attr.default, context)
+
+        function_sites ++ outside_sites ++ default_sites
+      end)
+
+    modules ++ call_sites.(outside_functions(source.ast, %{}), file)
+  end
+
+  defp helpers(opts) do
     merge = MapSet.new(Keyword.get(opts, :merge_functions, []))
     variant = MapSet.new(Keyword.get(opts, :variant_functions, []))
-    helpers = MapSet.union(merge, variant)
+    MapSet.union(merge, variant)
+  end
 
-    Enum.flat_map(source.modules, fn module ->
-      calls =
-        for {_key, clauses} <- module.functions,
-            clause <- clauses,
-            clause.body != nil,
-            call <- helper_calls(clause.body, helpers),
-            do: {clause, call}
+  # Code without what is read on its own: the `do` of `functions`, and the modules
+  # and implementations in it. What is left is a module attribute, a default argument, a module's or a
+  # script's body, a function's `rescue` and the like, and a function a block
+  # defines. A head is a pattern, as in `def cn(value)`, and no call, but for its
+  # defaults.
+  defp outside_functions(ast, functions) do
+    read =
+      for clauses <- Map.values(functions),
+          clause <- clauses,
+          into: MapSet.new(),
+          do: {clause.line, clause.column}
 
-      call_sites =
-        Enum.map(calls, fn {clause, call} ->
-          context = %{project: project, source: source, module: module.name, clause: clause}
-          code_site(source, Collector.expression(call, context, opts))
-        end)
+    ast
+    |> Code.statements()
+    |> Enum.reject(&match?({kind, _, _} when kind in [:defmodule, :defimpl], &1))
+    |> Macro.prewalk(fn
+      {kind, meta, [head | body]} when kind in @def_kinds ->
+        body = if {meta[:line], meta[:column]} in read, do: other_sections(body), else: body
+        {kind, meta, [head_defaults(head) | body]}
 
-      default_sites =
-        for {_name, component} <- module.components,
-            attr <- component.attrs,
-            class_attribute?(attr.name),
-            attr.default not in [:none, nil],
-            do:
-              code_site(
-                source,
-                Collector.expression(
-                  attr.default,
-                  %{project: project, source: source, module: module.name},
-                  opts
-                )
-              )
-
-      call_sites ++ default_sites
+      node ->
+        node
     end)
   end
+
+  # A clause's body is its `do`. Its `rescue`, `catch`, `else` and `after` are not.
+  defp other_sections(body) do
+    for sections <- body, is_list(sections) do
+      Enum.reject(sections, &match?({:do, _}, &1))
+    end
+  end
+
+  @doc false
+  # The default arguments of a function head, which are code where the rest is a pattern.
+  def head_defaults({:when, _, [head | _guard]}), do: head_defaults(head)
+
+  def head_defaults({_name, _, args}) when is_list(args),
+    do: for({:\\, _, [_pattern, default]} <- args, do: default)
+
+  def head_defaults(_head), do: []
 
   defp code_site(source, collected) do
     %__MODULE__{
@@ -243,22 +329,33 @@ defmodule HeexLint.Sites do
     }
   end
 
-  defp helper_calls(body, helpers) do
+  defp helper_calls(ast, helpers) do
     {_, calls} =
-      Macro.prewalk(body, [], fn
+      Macro.prewalk(ast, [], fn
         {:sigil_H, _, _} = _node, acc ->
           # Templates are read through their elements.
           {nil, acc}
 
-        {callee, _, args} = node, acc when is_list(args) ->
-          if helper_name(callee) in helpers, do: {node, acc ++ [node]}, else: {node, acc}
+        # "a" |> cn() is cn("a").
+        {:|>, _, [left, {callee, meta, args}]}, acc when is_list(args) ->
+          helper_call({callee, meta, [left | args]}, helpers, acc)
+
+        # `@cn "a"` sets an attribute of that name, and what it holds can be a call.
+        {:@, meta, [{name, _, args}]}, acc when is_atom(name) and is_list(args) ->
+          {{:__block__, meta, args}, acc}
+
+        {_callee, _, args} = node, acc when is_list(args) ->
+          helper_call(node, helpers, acc)
 
         node, acc ->
           {node, acc}
       end)
 
-    calls
+    Enum.reverse(calls)
   end
+
+  defp helper_call({callee, _, _} = node, helpers, acc),
+    do: {node, if(helper_name(callee) in helpers, do: [node | acc], else: acc)}
 
   @doc false
   # The name a call matches merge and variant functions by.

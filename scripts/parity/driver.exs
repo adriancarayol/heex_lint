@@ -7,6 +7,8 @@
 
 here = Path.expand(".", __DIR__)
 dir = Path.join(System.tmp_dir!(), "heex_lint_parity_#{System.unique_integer([:positive])}")
+# The number repeats between runs, and a run that crashed leaves its directory.
+File.rm_rf!(dir)
 File.mkdir_p!(dir)
 
 cases =

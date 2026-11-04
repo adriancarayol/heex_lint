@@ -32,7 +32,7 @@ defmodule HeexLint.Rules.NoRestyle do
 
   @behaviour HeexLint.Rule
 
-  alias HeexLint.{Policy, Project, Rule, Theme}
+  alias HeexLint.{Policy, Project, Rule, Tailwind, Theme}
   alias HeexLint.Policy.ConfigError
   alias HeexLint.Project.Component
 
@@ -75,7 +75,9 @@ defmodule HeexLint.Rules.NoRestyle do
 
   @impl true
   def prepare(options, project) do
-    {policy, warnings} = Policy.compile(options, project.theme, "no_restyle")
+    {policy, warnings} =
+      Policy.compile(options, project.theme, "no_restyle", &Tailwind.known(project, &1))
+
     {:ok, policy, warnings}
   rescue
     error in ConfigError -> {:error, error.message}
@@ -222,8 +224,9 @@ defmodule HeexLint.Rules.NoRestyle do
       if resolution && accepts.(resolution.name) do
         %{
           # As written, like the name it is shown by: a wrapper's target is
-          # still a place to offer.
-          name: element.name,
+          # still a place to offer. A slot is no component, and its owner is
+          # the place already named.
+          name: if(element.type == :slot, do: resolution.name, else: element.name),
           display: HeexLint.Element.display_name(element),
           direct: index == 0
         }

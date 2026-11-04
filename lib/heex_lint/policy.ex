@@ -40,25 +40,32 @@ defmodule HeexLint.Policy do
   Options: `:allow`, `:deny`, `:contracts`, `:message`, and
   `unchecked_entries: true` for rules whose entries may name external
   classes.
+
+  `generated` says which of the entries nothing else knows the theme's Tailwind
+  build generates, such as a plugin's `prose`. Those are known like any other class.
+  It is only called when there are such entries, and a build that cannot answer
+  should name none, so that they still warn.
   """
-  @spec compile(keyword(), Theme.t() | nil, String.t()) :: {t :: %__MODULE__{}, [String.t()]}
-  def compile(options, theme, rule) do
+  @spec compile(keyword(), Theme.t() | nil, String.t(), ([String.t()] -> MapSet.t(String.t()))) ::
+          {t :: %__MODULE__{}, [String.t()]}
+  def compile(options, theme, rule, generated \\ fn _entries -> MapSet.new() end) do
     unchecked = Keyword.get(options, :unchecked_entries, false)
     contracts = options |> Keyword.get(:contracts, []) |> Enum.map(&normalize_contract/1)
     allow = fetch_list(options, :allow)
     deny = fetch_list(options, :deny)
+    lists = [allow, deny | Enum.flat_map(contracts, &[&1.allow, &1.deny])]
+    expect_entries(lists, theme)
 
     warnings =
       if unchecked do
         []
       else
-        Enum.flat_map(
-          [allow, deny | Enum.flat_map(contracts, &[&1.allow, &1.deny])],
-          fn entries ->
-            check_allow_entries(entries, theme, rule)
-            check_entries(entries, theme)
-          end
-        )
+        built = entries_built(lists, theme, generated)
+
+        Enum.flat_map(lists, fn entries ->
+          if rule != "no_restyle", do: check_allow_entries(entries, theme, rule)
+          check_entries(entries, theme, built)
+        end)
       end
 
     top_allow = allow_list(%{allow: allow, deny: deny}, nil)
@@ -83,6 +90,13 @@ defmodule HeexLint.Policy do
 
     policy = %__MODULE__{id: make_ref(), theme: theme, baseline: baseline, contracts: compiled}
     {policy, Enum.uniq(warnings)}
+  end
+
+  # Classifying them below takes them one at a time.
+  defp expect_entries(lists, theme) do
+    entries = lists |> Enum.flat_map(&List.wrap/1) |> Enum.filter(&is_binary/1)
+    bases = Enum.map(entries, &(&1 |> Classes.normalize() |> String.replace(~r/\/[\w.%]+$/, "")))
+    ProjectClassifier.expect(theme, entries ++ bases)
   end
 
   defp fetch_list(options, key) do
@@ -308,32 +322,35 @@ defmodule HeexLint.Policy do
   ## Validation
 
   # An entry that matches nothing enforces nothing, silently. A near-miss
-  # of a real name (spacig) is an error; any other unknown literal may be
-  # a plugin's class (prose, btn), so it warns and matches by name.
-  defp check_entries(nil, _theme), do: []
+  # of a real name (spacig) is an error. A plugin's class is in no CSS, but the
+  # theme's build generates it (prose); any other literal may be an external
+  # class (btn), so it warns and matches by name.
+  defp check_entries(nil, _theme, _built), do: []
 
-  defp check_entries(entries, theme) do
+  defp check_entries(entries, theme, built) do
     Enum.flat_map(entries, fn entry ->
-      cond do
-        entry == "layout" or String.contains?(entry, "*") or String.contains?(entry, ":") ->
-          []
-
-        entry in Categories.categories() ->
-          []
-
-        entry in Classifier.groups() ->
-          []
-
-        ProjectClassifier.group_of(theme, entry) ->
-          []
-
-        theme && (MapSet.member?(theme.utilities, entry) or MapSet.member?(theme.classes, entry)) ->
-          []
-
-        true ->
-          unknown_entry(entry)
-      end
+      if known_entry?(entry, theme) or MapSet.member?(built, entry),
+        do: [],
+        else: unknown_entry(entry)
     end)
+  end
+
+  defp known_entry?(entry, theme) do
+    entry == "layout" or String.contains?(entry, "*") or String.contains?(entry, ":") or
+      entry in Categories.categories() or entry in Classifier.groups() or
+      ProjectClassifier.group_of(theme, entry) != nil or
+      (theme != nil and
+         (MapSet.member?(theme.utilities, entry) or MapSet.member?(theme.classes, entry)))
+  end
+
+  # One question for all of them: with the standalone binary, each is a build.
+  defp entries_built(lists, theme, generated) do
+    entries = lists |> Enum.flat_map(&List.wrap/1) |> Enum.uniq()
+
+    case Enum.reject(entries, &known_entry?(&1, theme)) do
+      [] -> MapSet.new()
+      unknown -> generated.(unknown)
+    end
   end
 
   defp unknown_entry(entry) do

@@ -85,8 +85,17 @@ defmodule HeexLint.Rules.NoUnknownVariables do
         element <- elements,
         %{name: "style", value: {kind, text, _}} <- element.attributes,
         kind in [:string, :expr],
-        [variable] <- Regex.scan(~r/--[\w-]+(?=\s*:)/, text),
+        variable <- declared_variables(text),
         into: MapSet.new(),
         do: variable
+  end
+
+  # What `--[\w-]+(?=\s*:)` finds, read once per name: searching for it restarts
+  # at every dash of a long name that no colon follows. A bare `--` comes along,
+  # which no class can read.
+  defp declared_variables(text) do
+    for [name] <- Regex.scan(~r/(?<![\w-])[\w-]++(?=\s*:)/, text),
+        {at, 2} <- [:binary.match(name, "--")],
+        do: binary_part(name, at, byte_size(name) - at)
   end
 end
