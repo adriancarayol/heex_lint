@@ -125,7 +125,8 @@ plugin throw is not judged by `no_unknown_classes`. The other rules still read i
 
 `require_static_classes` reports class values it cannot read on components:
 socket assigns in a LiveView's `render/1`, calls to functions in other
-modules, text glued to a runtime value (`"bg-#{@tone}"`). Write complete
-class names, move the choice into the rendering function with `assign/3`, a
-local helper or a map lookup, or register a class helper in
-`merge_functions`.
+modules, text glued to a runtime value (`"bg-#{@tone}"`), and a computed key on an
+assigned table (`@tones[@tone]`). Write complete class names, move the choice into the
+rendering function with a local helper, a map lookup on a variable or `assign/3` of the
+class it picks, as in `assign(assigns, :tone_class, %{a: "p-1"}[assigns.tone])`, or
+register a class helper in `merge_functions`.

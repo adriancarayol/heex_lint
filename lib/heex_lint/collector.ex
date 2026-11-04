@@ -1136,8 +1136,11 @@ defmodule HeexLint.Collector do
 
   defp table(_state, {:%{}, _, pairs}, route), do: {literal_pairs(pairs), route}
 
+  # A keyword list answers with a key's first value, where a map keeps its last.
   defp table(_state, list, route) when is_list(list) do
-    if Keyword.keyword?(list), do: {literal_pairs(list), route}, else: nil
+    if Keyword.keyword?(list),
+      do: {list |> Enum.uniq_by(&elem(&1, 0)) |> literal_pairs(), route},
+      else: nil
   end
 
   defp table(state, {name, _, ctx}, route) when is_atom(name) and is_atom(ctx) do
@@ -1202,9 +1205,21 @@ defmodule HeexLint.Collector do
     end)
   end
 
+  # What a key names, or nil for one only known at runtime. So `nil` as a key is wrapped,
+  # and a key such as `1`, `Foo` or `{:x, 1}` is compared without its position.
+  defp literal_key(nil), do: {:literal, nil}
   defp literal_key(key) when is_atom(key), do: key
   defp literal_key({:__block__, _, [text]}) when is_binary(text), do: text
-  defp literal_key(_), do: nil
+
+  defp literal_key(key) do
+    key =
+      Macro.prewalk(key, fn
+        {:__block__, _, [inner]} -> inner
+        node -> Macro.update_meta(node, fn _meta -> [] end)
+      end)
+
+    if Macro.quoted_literal?(key), do: {:literal, key}
+  end
 
   ## Bindings in a function clause
 

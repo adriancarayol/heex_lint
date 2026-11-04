@@ -107,6 +107,55 @@ defmodule HeexLint.DynamicIdentifiersTest do
       assert classes(dir, ~S|%{a: "bg-pink-500"}|, ~S|<div class={@t[@v]} />|, @rules) == []
     end
 
+    for {table, read} <- [
+          {~S|%{1 => "bg-pink-500"}|, "@t[1]"},
+          {~S|%{1 => "bg-pink-500"}|, "Map.get(@t, 1)"},
+          {~S|%{nil => "bg-pink-500"}|, "@t[nil]"},
+          {~S|%{Foo => "bg-pink-500"}|, "@t[Foo]"},
+          {~S|%{{:x, 1} => "bg-pink-500"}|, "@t[{:x, 1}]"},
+          {~S|%{:a => "bg-pink-500", 1 => "p-1"}|, "@t.a"},
+          {~S|%{:a => "bg-pink-500", nil => "p-1"}|, "@t.a"},
+          {~S|%{:a => "bg-pink-500", Foo => "p-1"}|, "@t.a"},
+          {~S|%{:a => "bg-pink-500", {:x, 1} => "p-1"}|, "@t.a"},
+          {~S|%{1 => "p-1", :a => "bg-pink-500"}|, "@t.a"}
+        ] do
+      test "a key that is no atom or string answers: #{table} under #{read}", %{tmp_dir: dir} do
+        template = "<div class={#{unquote(read)}} />"
+        assert classes(dir, unquote(table), template, @rules) == [:no_raw_colors]
+
+        template = "<.button class={#{unquote(read)}}>x</.button>"
+        assert classes(dir, unquote(table), template, @rules) == [:no_raw_colors]
+      end
+    end
+
+    test "a key that is no atom or string is not the one read", %{tmp_dir: dir} do
+      for {table, read} <- [
+            {~S|%{1 => "bg-pink-500"}|, "@t[2]"},
+            {~S|%{1 => "bg-pink-500"}|, ~S|@t["1"]|},
+            {~S|%{{:x, 1} => "bg-pink-500"}|, "@t[{:x, 2}]"}
+          ] do
+        assert classes(dir, table, "<div class={#{read}} />", @rules) == [], read
+      end
+    end
+
+    test "a keyword list answers with a key's first value", %{tmp_dir: dir} do
+      for read <- ["@t[:a]", "Keyword.get(@t, :a)", "Keyword.fetch!(@t, :a)"] do
+        template = "<.button class={#{read}}>x</.button>"
+
+        assert classes(dir, ~S|[a: "bg-pink-500", a: "p-1"]|, template, @rules) ==
+                 [:no_raw_colors],
+               read
+
+        assert classes(dir, ~S|[a: "p-1", a: "bg-pink-500"]|, template, @rules) == [], read
+      end
+    end
+
+    test "what the troubleshooting guide offers instead is read", %{tmp_dir: dir} do
+      body = ~S|assigns = assign(assigns, :c, %{a: "bg-pink-500"}[assigns.v])|
+      files = page(body, ~S|<.button class={@c}>x</.button>|)
+      assert [%{rule: :no_raw_colors}] = lint(dir, files, rules: @rules)
+    end
+
     test "a key it writes reaches the class rules", %{tmp_dir: dir} do
       assert classes(dir, ~S|%{a: "bg-pink-500"}|, ~S|<div class={@t.a} />|, @rules) ==
                [:no_raw_colors]
