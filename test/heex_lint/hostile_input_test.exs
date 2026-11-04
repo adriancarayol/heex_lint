@@ -1000,6 +1000,17 @@ defmodule HeexLint.HostileInputTest do
     end
   end
 
+  describe "scale steps naming a long value" do
+    test "parse it once", %{tmp_dir: dir} do
+      big = "calc(1px" <> repeat(" + 1px", 16_000) <> ")"
+      steps = Enum.map_join(1..500, "\n", &"--radius-s#{&1}: var(--big);")
+
+      theme = quick(fn -> load(dir, ":root { --big: #{big}; }\n@theme {\n#{steps}\n}") end)
+
+      assert Map.new(Theme.scale(theme, :radius))["s500"] == 16_001.0
+    end
+  end
+
   describe "an @import with no `;`" do
     @unterminated String.duplicate("@import 'a' ", 421_000)
     @tailwind String.duplicate(~S|@import "tailwindcss" |, 230_000)

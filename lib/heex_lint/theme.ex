@@ -1083,22 +1083,22 @@ defmodule HeexLint.Theme do
       |> Enum.with_index(fn {name, px}, order -> {name, {order, px}} end)
       |> Map.new()
 
-    {steps, _next, _known} =
-      Enum.reduce(theme.declarations, {declared, map_size(declared), %{}}, fn
+    {steps, _next, _known, _lengths} =
+      Enum.reduce(theme.declarations, {declared, map_size(declared), %{}, %{}}, fn
         %{theme: false}, read ->
           read
 
-        %{name: "*", value: value}, {_steps, next, known} = read ->
-          if String.trim(value) == "initial", do: {%{}, next, known}, else: read
+        %{name: "*", value: value}, {_steps, next, known, lengths} = read ->
+          if String.trim(value) == "initial", do: {%{}, next, known, lengths}, else: read
 
-        %{name: name, value: value}, {steps, next, known} = read ->
+        %{name: name, value: value}, {steps, next, known, lengths} = read ->
           if String.starts_with?(name, prefix) and not String.contains?(name, "--") do
             step = String.slice(name, String.length(prefix)..-1//1)
             reset = String.trim(value) == "initial"
 
             cond do
-              step == "*" -> if reset, do: {%{}, next, known}, else: read
-              reset -> {Map.delete(steps, step), next, known}
+              step == "*" -> if reset, do: {%{}, next, known, lengths}, else: read
+              reset -> {Map.delete(steps, step), next, known, lengths}
               true -> scale_step(read, step, value, theme.values)
             end
           else
@@ -1111,14 +1111,36 @@ defmodule HeexLint.Theme do
     |> Enum.map(fn {name, {_order, px}} -> {name, px} end)
   end
 
-  defp scale_step({steps, next, known}, step, value, values) do
+  defp scale_step({steps, next, known, lengths}, step, value, values) do
     {resolved, known} = resolve_known(value, values, known)
-    px = resolved && Lengths.px(resolved)
+    {px, lengths} = length_of(resolved, lengths)
 
     case {px, steps} do
-      {nil, steps} -> {Map.delete(steps, step), next, known}
-      {px, %{^step => {order, _old}}} -> {Map.put(steps, step, {order, px}), next, known}
-      {px, steps} -> {Map.put(steps, step, {next, px}), next + 1, known}
+      {nil, steps} ->
+        {Map.delete(steps, step), next, known, lengths}
+
+      {px, %{^step => {order, _old}}} ->
+        {Map.put(steps, step, {order, px}), next, known, lengths}
+
+      {px, steps} ->
+        {Map.put(steps, step, {next, px}), next + 1, known, lengths}
+    end
+  end
+
+  # Parsed once per value: steps naming a long one would each parse all of it. By digest,
+  # since keeping hundreds of values of 100 KB makes each parse a third slower.
+  defp length_of(nil, lengths), do: {nil, lengths}
+
+  defp length_of(resolved, lengths) do
+    key = :erlang.md5(resolved)
+
+    case lengths do
+      %{^key => px} ->
+        {px, lengths}
+
+      _ ->
+        px = Lengths.px(resolved)
+        {px, Map.put(lengths, key, px)}
     end
   end
 
