@@ -239,6 +239,10 @@ Each of these reports something that passed before.
 
 ### Findings that change
 
+- A map spread onto a tag reads a repeated key's last value, as `%{class: "p-1", class:
+  "bg-pink-500"}` holds at runtime. A table read by a literal key is dynamic when a computed
+  key is written after it, as in `%{:a => "--x: 1", assigns.k => v}` with `t.a`, on a variable
+  as already on an assign. `Map.get(@t, :a, %{})` on a `style` says nothing about its `%{}`.
 - A name bound by `:for`, `:let`, a `case`, `with` or `fn` clause head is what is only known
   at runtime, not a variable of the same name in the function body. `c = "bg-pink-500"` with
   `<.button :for={c <- @classes} class={c}>` is now dynamic, not `no_raw_colors`, and the
@@ -307,7 +311,8 @@ Each of these reports something that passed before.
   none holds Tailwind or when `node` exits before its first answer, as a version manager's
   shim with no version set does. What such a `node` prints still reaches the terminal. A
   plugin's `console.log` no longer corrupts the answers.
-- **Runs that ended with an exception** and now finish: a number past the float range in a
+- **Runs that ended with an exception** and now finish: `<div {%{unquote_splicing(y), style:
+  "..."}} />`; a number past the float range in a
   class, such as `p-1e999`, `z-1e999` or a 400-digit class, or in a theme value, such as
   `--radius-x: 1e999px` or `--color-x: oklab(1e200 0 0)`; a class past about 32 KB with a
   suggestion; a stylesheet with a byte that is not UTF-8; an `.ex` or `.heex` file with such

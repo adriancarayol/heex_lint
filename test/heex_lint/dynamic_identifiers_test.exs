@@ -50,11 +50,21 @@ defmodule HeexLint.DynamicIdentifiersTest do
           {~S|%{false => "--x: 1", a: "color: red"}|, "t[false]", :clean},
           {~S|%{false => "color: red", a: "--x: 1"}|, "t[false]", :color},
           {~S|%{nil => "--x: 1", a: "color: red"}|, "t[nil]", :clean},
-          {~S|[a: "--x: 1", a: "color: red"]|, "t[:a]", :clean}
+          {~S|[a: "--x: 1", a: "color: red"]|, "t[:a]", :clean},
+          {~S|%{:a => "--x: 1", assigns.k => Lib.compute()}|, "t.a", :dynamic},
+          {~S|%{:a => "color: red", assigns.k => "--x: 1"}|, "t.a", :dynamic},
+          {~S|%{:a => "--x: 1", assigns.k => "--y: 1"}|, ~S|Map.get(t, :a)|, :dynamic},
+          {~S|%{assigns.k => "--y: 1", :a => "color: red"}|, "t.a", :color},
+          {~S|%{assigns.k => "--y: 1", :a => "--x: 1"}|, "t.a", :clean},
+          {~S|%{:a => "--x: 1", -1 => "--y: 1"}|, "t.a", :clean},
+          # A key no entry writes, or one only known at runtime, reads every entry.
+          {~S|%{:a => "color: red", assigns.k => "--y: 1"}|, "t.b", :color},
+          {~S|%{:a => "color: red", assigns.k => "--y: 1"}|, "t[@v]", :color}
         ] do
       test "#{table} under #{value}", %{tmp_dir: dir} do
         expected =
           case unquote(expected) do
+            :dynamic -> [@dynamic]
             :color -> [@color]
             :clean -> []
           end
@@ -510,6 +520,21 @@ defmodule HeexLint.DynamicIdentifiersTest do
         assert styled(dir, "", unquote(value), [unquote(name)]) == [@color]
         assert styled(dir, "", unquote(value), ["unrelated"]) == [@dynamic, @color]
       end
+    end
+
+    test "that is an empty map is no value", %{tmp_dir: dir} do
+      for value <- ["Map.get(@t, :a, %{})", "Keyword.get(@t, :a, %{})", "@t |> Map.get(:a, %{})"] do
+        assert styled(dir, "", value, ["@t.a"]) == []
+        assert styled(dir, "", value, ["unrelated"]) == [@dynamic]
+      end
+
+      assert styled(dir, "", ~s|Map.get(@t, :a, %{b: "1"})|, ["@t.a"]) == [@dynamic]
+    end
+
+    test "that is an empty map stays dynamic on a class", %{tmp_dir: dir} do
+      files = page("", "<.button class={Map.get(@t, :a, %{})}>x</.button>")
+
+      assert [_, _] = lint(dir, files, rules: [require_static_classes: :error])
     end
 
     test "is checked beside a table a library computes", %{tmp_dir: dir} do
@@ -1222,6 +1247,35 @@ defmodule HeexLint.DynamicIdentifiersTest do
         files = page("", spread.(~s([@floating_styles, "color: red"])))
         assert findings(dir, files, ["@floating_styles"]) == [@color]
       end
+    end
+
+    test "a map keeps a key's last value, and a keyword list its first", %{tmp_dir: dir} do
+      read = fn root ->
+        findings(dir, page("", "<div {#{root}} />"), [])
+      end
+
+      assert read.(~S|%{style: "--x: 1", style: "color: red"}|) == [@color]
+      assert read.(~S|%{style: "color: red", style: "--x: 1"}|) == []
+      assert read.(~S|[style: "color: red", style: "--x: 1"]|) == [@color]
+      assert read.(~S|[style: "--x: 1", style: "color: red"]|) == []
+    end
+
+    test "a class in a map keeps its last value too", %{tmp_dir: dir} do
+      read = fn root ->
+        lint(dir, page("", "<.button {#{root}}>x</.button>"), rules: [no_raw_colors: :error])
+      end
+
+      assert [_] = read.(~S|%{class: "p-1", class: "bg-pink-500"}|)
+      assert read.(~S|%{class: "bg-pink-500", class: "p-1"}|) == []
+    end
+
+    test "an entry that is no pair does not end the run", %{tmp_dir: dir} do
+      assert findings(
+               dir,
+               page("", ~S|<div {%{unquote_splicing(y), style: "color: red"}} />|),
+               []
+             ) ==
+               [@color]
     end
 
     test "reports the rest at the same position as before", %{tmp_dir: dir} do

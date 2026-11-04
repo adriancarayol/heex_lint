@@ -774,6 +774,24 @@ defmodule HeexLint.VariableChainsTest do
   end
 
   describe "a lookup" do
+    test "of a key a computed write could replace reads nothing", %{tmp_dir: dir} do
+      table = ~S|t = %{:a => "bg-pink-500", assigns.k => Lib.compute()}|
+
+      assert [%{rule: :require_static_classes}] =
+               lint(dir, page(table <> "\n" <> assigned("t.a")), rules: @rules)
+
+      table = ~S|t = %{assigns.k => Lib.compute(), :a => "bg-pink-500"}|
+
+      assert [%{rule: :no_raw_colors}] =
+               lint(dir, page(table <> "\n" <> assigned("t.a")), rules: @rules)
+
+      # The computed key on a read keeps reading every entry.
+      table = ~S|t = %{:a => "bg-pink-500", assigns.k => "p-1"}|
+
+      assert [%{rule: :no_raw_colors}] =
+               lint(dir, page(table <> "\n" <> assigned("t[@v]")), rules: @rules)
+    end
+
     test "that stops on a table is read again from another route", %{tmp_dir: dir} do
       bindings = ~s(t = %{a: m, b: "bg-pink-500"}\nm = t.b\n)
 

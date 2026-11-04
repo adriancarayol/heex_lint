@@ -235,7 +235,7 @@ defmodule HeexLint.Collector do
   def root({:expr, code, position}, key, context, opts) do
     with {:ok, ast} <- Code.parse(code),
          pairs when is_list(pairs) <- root_pairs(ast),
-         {_key, value} <- Enum.find(pairs, fn {k, _v} -> Code.name(k) == key end) do
+         {_key, value} <- root_entry(ast, pairs, key) do
       context
       |> state(opts, expression_text(code, position, context), :template)
       |> visit(bound(value, Keyword.get(opts, :bound, [])))
@@ -246,6 +246,16 @@ defmodule HeexLint.Collector do
   end
 
   def root(_value, _key, _context, _opts), do: nil
+
+  # A map keeps a key's last value, and a keyword list spread onto a tag its first.
+  defp root_entry(ast, pairs, key) do
+    pairs = if is_list(ast), do: pairs, else: Enum.reverse(pairs)
+
+    Enum.find(pairs, fn
+      {written, _value} -> Code.name(written) == key
+      _not_a_pair -> false
+    end)
+  end
 
   defp root_pairs({:%{}, _, pairs}), do: pairs
   defp root_pairs(list) when is_list(list), do: if(Keyword.keyword?(list), do: list)
@@ -1243,15 +1253,23 @@ defmodule HeexLint.Collector do
             end
 
           # A key the table does not have reads every entry, none of them its value.
+          # A key a computed write could replace has no value to read.
           whole = if entry, do: values, else: []
-          state |> named(written, whole) |> entries(values, route, key, meta)
+
+          if entry && match?({nil, _}, last_write(pairs, key)),
+            do: unreadable(state, nil, meta, written),
+            else: state |> named(written, whole) |> entries(values, route, key, meta)
 
         unread ->
           unreadable(state, unread, meta, written)
       end
 
-    if default, do: visit(state, default), else: state
+    if default && not empty_style?(state, default), do: visit(state, default), else: state
   end
+
+  # A style of `%{}` sets nothing, as `t.a ?? {}` does in @shadcn/lint.
+  defp empty_style?(%{kind: :style}, {:%{}, _, []}), do: true
+  defp empty_style?(_state, _default), do: false
 
   # A map keeps a key's last value, and `1` and `1.0` are two keys.
   defp written_entry(_pairs, nil), do: nil
