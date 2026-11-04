@@ -83,7 +83,12 @@ defmodule HeexLint.ThemeTest do
     @describetag :tmp_dir
 
     defp load(dir, files) do
-      for {name, css} <- files, do: File.write!(Path.join(dir, name), css)
+      for {path, css} <- files do
+        full = Path.join(dir, path)
+        File.mkdir_p!(Path.dirname(full))
+        File.write!(full, css)
+      end
+
       Theme.load(Path.join(dir, "app.css"))
     end
 
@@ -180,6 +185,56 @@ defmodule HeexLint.ThemeTest do
         })
 
       assert Theme.utility_properties_of(theme, "sym") == ["color"]
+    end
+
+    defp numbered(count, first_import \\ "") do
+      imports = Enum.map_join(1..count, "\n", &~s(@import "./n#{&1}.css";))
+
+      Map.new(1..count, &{"n#{&1}.css", "@theme { --radius-n#{&1}: 1px; }"})
+      |> Map.put("app.css", first_import <> imports)
+    end
+
+    defp last_step(theme), do: theme |> Theme.scale(:radius) |> List.last() |> elem(0)
+
+    test "the limit reads a 65th stylesheet and no 66th", %{tmp_dir: dir} do
+      assert dir |> load(numbered(64)) |> last_step() == "n64"
+      assert dir |> load(numbered(65)) |> last_step() == "n64"
+    end
+
+    @entry %{
+      "node_modules/tailwindcss/package.json" => ~s({"name":"tailwindcss"}),
+      "node_modules/tailwindcss/index.css" => ~s(@import "./gone.css";)
+    }
+
+    test "a bare Tailwind import takes a slot of the limit", %{tmp_dir: dir} do
+      files = 70 |> numbered(~s(@import "tailwindcss";\n)) |> Map.merge(@entry)
+
+      assert dir |> load(files) |> last_step() == "n63"
+    end
+
+    test "a repeated bare Tailwind import walks the entry once", %{tmp_dir: dir} do
+      theme =
+        load(
+          dir,
+          Map.put(@entry, "app.css", ~s(@import "tailwindcss";\n@import "tailwindcss";))
+        )
+
+      assert theme.missing_imports == ["./gone.css"]
+    end
+
+    test "a second Tailwind in another package is walked as well", %{tmp_dir: dir} do
+      theme =
+        load(
+          dir,
+          Map.merge(@entry, %{
+            "node_modules/kit/package.json" => ~s({"name":"kit"}),
+            "node_modules/kit/index.css" => ~s(@import "tailwindcss";),
+            "node_modules/kit/node_modules/tailwindcss/index.css" => ".kit-tailwind {}",
+            "app.css" => ~s(@import "tailwindcss";\n@import "kit";)
+          })
+        )
+
+      assert MapSet.member?(theme.classes, "kit-tailwind")
     end
 
     test "a stylesheet read again does not undo what came after it", %{tmp_dir: dir} do

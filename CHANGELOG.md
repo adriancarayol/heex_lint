@@ -260,7 +260,8 @@ Each of these reports something that passed before.
   two ways on a case-insensitive disk. Reading it again put
   its declarations over the ones read between the two imports, so this can change the
   category `no_restyle` reports and the values the theme resolves. The limit of 65
-  stylesheets now counts the whole import tree rather than one chain. Packages contribute
+  stylesheets now counts the whole import tree rather than one chain, and a bare
+  `@import "tailwindcss"` takes one of them, as in @shadcn/lint. Packages contribute
   the `--animate-*` names of their `@theme`, and `NODE_PATH` no longer counts for a
   stylesheet.
 - A stylesheet that starts with a byte order mark reads like one without it, as in
@@ -308,7 +309,8 @@ Each of these reports something that passed before.
   `@theme` blocks of thousands of declarations; a stylesheet of 5 MB or more with no `;` after
   its imports, as in @shadcn/lint; `var()` naming `var()` many times over, which took 15
   seconds on a kilobyte;
-  a long `var()` fallback named again and again, which is now read once per variable. No
+  a long `var()` fallback named again and again, which is now read once per variable; a
+  repeated `@import "tailwindcss"`, which read Tailwind's stylesheets each time. No
   findings change, except as listed above.
 - The standalone binary takes one build for the classes a run's files and contract entries
   name, rather than one per `text-*` class, on a theme with an `@config` or `@plugin`.

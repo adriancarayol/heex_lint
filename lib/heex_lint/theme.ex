@@ -415,7 +415,7 @@ defmodule HeexLint.Theme do
             {%{acc | missing_imports: acc.missing_imports ++ [spec]}, seen}
 
           target when spec == "tailwindcss" ->
-            {read_tailwind_entry(target, seen, acc), seen}
+            read_tailwind_entry(target, seen, acc)
 
           target ->
             read(target, seen, acc, import_walk(walk, spec, target))
@@ -450,15 +450,22 @@ defmodule HeexLint.Theme do
   # its JavaScript entry, so Tailwind's stylesheets add no animations and
   # `--animate-*: initial` removes the grammar's defaults. Any other path into
   # the package reads a stylesheet like any package's. So this walk keeps no
-  # animations and marks nothing seen: a later `tailwindcss/theme.css` still
+  # animations and marks none of them seen: a later `tailwindcss/theme.css` still
   # counts. It adds no declarations, being all inside node_modules, so that
   # later read cannot put any over the ones read in between. No `theme_imports`
   # reaches this walk, so that stays true of an index.css that imports its parts:
-  # the JavaScript entry imports none for a pattern to match.
+  # the JavaScript entry imports none for a pattern to match. What it marks is the
+  # entry, which takes a slot of the limit there and is not read twice.
   defp read_tailwind_entry(target, seen, acc) do
-    walk = %{patterns: [], from_package: true, own_package: nil}
-    {walked, _seen} = read(target, seen, acc, walk)
-    %{walked | theme_names: acc.theme_names}
+    entry = {:tailwind_entry, target}
+
+    if MapSet.member?(seen, entry) do
+      {acc, seen}
+    else
+      walk = %{patterns: [], from_package: true, own_package: nil}
+      {walked, _seen} = read(target, seen, acc, walk)
+      {%{walked | theme_names: acc.theme_names}, MapSet.put(seen, entry)}
+    end
   end
 
   # A package's own @theme animations are generated all the same:
