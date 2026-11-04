@@ -174,7 +174,7 @@ defmodule HeexLint.Tailwind do
   # not the run.
   defp ask(pid, request) do
     pending = :gen_server.send_request(pid, request)
-    await(pid, pending, answered_count(pid))
+    await(pid, pending, nil)
   catch
     :exit, reason -> gave_up(pid, reason)
   end
