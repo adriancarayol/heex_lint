@@ -1,31 +1,32 @@
 defmodule HeexLint.Grammar.ProjectClassifier do
   @moduledoc """
-  The classifier the rules use: cn's grammar, then the project's theme
-  wherever the grammar's answer was a color it could not have known was
-  something else (a declared `--text-stat-label` makes `text-stat-label` a
-  font size), or no answer for an animation the project declares.
+  The classifier the rules use: cn's grammar with the project's theme scales
+  applied (a declared `--text-stat-label` makes `text-stat-label` a font
+  size), then the project's CSS for what cn does not read. `bg-stripes` comes
+  from a `--background-image-*` the grammar has no scale for, so it reads as a
+  color, and a project's animations live in `@utility` as often as `@theme`. An
+  `@utility` answers from its body in both cases: the properties it sets are
+  categorized the way an arbitrary property is, so `@utility heading-2xs {
+  font-size: 0.75rem }` is typography for the same reason `[font-size:1rem]`
+  is. A theme that loads an `@config` or `@plugin` can add a font size its CSS
+  never names, and there the theme's own Tailwind answers for `text-*`.
   Ported from @shadcn/lint's `src/project/namespaces.ts` (MIT).
   """
 
   alias HeexLint.Grammar.{Categories, Classes, Classifier}
-  alias HeexLint.Theme
+  alias HeexLint.{Tailwind, Theme}
 
-  # Longest prefix first: text-shadow-crisp is a text-shadow, not text
-  # "shadow-crisp". `over_color`: whether the namespace wins over a
-  # --color-* of the same name (verified against Tailwind 4.3.3).
-  @namespaces [
-    {"text-shadow-", "text-shadow-", "text-shadow", true},
-    {"inset-shadow-", "inset-shadow-", "inset-shadow", true},
-    {"drop-shadow-", "drop-shadow-", "drop-shadow", true},
-    {"shadow-", "shadow-", "shadow", true},
-    {"text-", "text-", "font-size", false},
-    {"bg-", "background-image-", "bg-image", false}
-  ]
+  # {class prefix, the @theme namespace it reads, the group it gives}. A
+  # --color-* of the same name wins over the namespace, the way Tailwind reads
+  # bg-* (verified against Tailwind 4.3.3): cn's scales cover the rest.
+  @namespaces [{"bg-", "background-image-", "bg-image"}]
 
   @doc "The class group of `token` in a project with `theme`."
   @spec group_of(Theme.t() | nil, String.t()) :: String.t() | nil
   def group_of(theme, token) do
-    key = {__MODULE__, theme && theme.file, token}
+    # JavaScript can change without the stylesheets changing, and each run has its
+    # own oracle, so such a theme's answers last no longer than the run.
+    key = {__MODULE__, Theme.signature(theme), theme && theme.oracle, token}
 
     case Process.get(key, :miss) do
       :miss ->
@@ -38,18 +39,85 @@ defmodule HeexLint.Grammar.ProjectClassifier do
     end
   end
 
+  @doc """
+  Says `tokens` may be classified with `theme`, so that the first of them that needs
+  the theme's own Tailwind asks about them all: with the standalone binary, each
+  question is a build. Asks nothing yet, and a miss only costs its own question.
+  """
+  @spec expect(Theme.t() | nil, [String.t()]) :: :ok
+  def expect(%Theme{oracle: {oracle, entry}} = theme, tokens) do
+    questions = tokens |> Enum.uniq() |> Enum.filter(&asks_tailwind?(theme, &1))
+    Tailwind.expect(oracle, entry, questions)
+  end
+
+  def expect(_theme, _tokens), do: :ok
+
+  @doc """
+  The words of source code that could be `text-*` classes, for `expect/2`. A word
+  that turns out to be no class costs only its place in the question.
+  """
+  @spec text_words(String.t()) :: [String.t()]
+  def text_words(code) do
+    if String.contains?(code, "text-") do
+      code
+      |> String.split(~r/[\s"'`]+|~[a-zA-Z]\(/, trim: true)
+      |> Enum.map(&before_unopened_paren/1)
+      |> Enum.filter(&String.contains?(&1, "text-"))
+    else
+      []
+    end
+  end
+
+  # A `)` the word did not open is the code's, as in `~w(text-body)`, where the one in
+  # `text-[var(--brand)]` or `text-(--brand)` is the class's.
+  defp before_unopened_paren(word), do: binary_part(word, 0, word_length(word, 0, 0))
+
+  defp word_length(<<")", _::binary>>, 0, length), do: length
+
+  defp word_length(<<")", rest::binary>>, open, length),
+    do: word_length(rest, open - 1, length + 1)
+
+  defp word_length(<<"(", rest::binary>>, open, length),
+    do: word_length(rest, open + 1, length + 1)
+
+  defp word_length(<<_, rest::binary>>, open, length), do: word_length(rest, open, length + 1)
+  defp word_length(<<>>, _open, length), do: length
+
   @doc "The category of `token`, or nil for layout and unknown classes."
   @spec category_of(Theme.t() | nil, String.t()) :: String.t() | nil
   def category_of(theme, token), do: Categories.category_of(group_of(theme, token))
 
   defp classify(theme, token) do
-    group = Classifier.group_of(token)
+    group = Classifier.group_of(token, Theme.grammar(theme))
 
     cond do
-      group == nil -> animation_group(theme, token)
-      Categories.category_of(group) != "color" -> group
-      true -> theme_group(theme, token) || group
+      group == nil ->
+        animation_group(theme, token) || utility_group(theme, token)
+
+      Categories.category_of(group) != "color" ->
+        group
+
+      true ->
+        theme_group(theme, token) || utility_group(theme, token) || module_group(theme, token) ||
+          group
     end
+  end
+
+  # The grammar reads text-body as a color, knowing only the name.
+  defp module_group(%Theme{oracle: {oracle, entry}}, token) do
+    if text_class?(token) and Tailwind.font_size?(oracle, entry, token) == true,
+      do: "font-size"
+  end
+
+  defp module_group(_theme, _token), do: nil
+
+  defp text_class?(token), do: String.starts_with?(Classes.normalize(token), "text-")
+
+  # Whether classifying `token` would reach module_group/2.
+  defp asks_tailwind?(theme, token) do
+    text_class?(token) and
+      Categories.category_of(Classifier.group_of(token, Theme.grammar(theme))) == "color" and
+      theme_group(theme, token) == nil and utility_group(theme, token) == nil
   end
 
   defp theme_group(nil, _token), do: nil
@@ -58,10 +126,10 @@ defmodule HeexLint.Grammar.ProjectClassifier do
   defp theme_group(theme, token) do
     base = Classes.normalize(token)
 
-    with {prefix, namespace, group, over_color} <-
-           Enum.find(@namespaces, fn {prefix, _, _, _} -> String.starts_with?(base, prefix) end),
+    with {prefix, namespace, group} <-
+           Enum.find(@namespaces, fn {prefix, _, _} -> String.starts_with?(base, prefix) end),
          value when value != nil <- value_of(base, prefix),
-         false <- not over_color and MapSet.member?(theme.tokens, value),
+         false <- MapSet.member?(theme.tokens, value),
          true <- MapSet.member?(theme.theme_names, namespace <> value) do
       group
     else
@@ -84,6 +152,25 @@ defmodule HeexLint.Grammar.ProjectClassifier do
       Theme.declares_class?(theme, token) -> "animate"
       true -> nil
     end
+  end
+
+  # A body that changes more than one thing is read as the first appearance
+  # it carries, so a utility that paints and lays out is still paint. Layout
+  # ranks last: it is what a body with nothing else in it leaves. An empty
+  # body has no group.
+  defp utility_group(nil, _token), do: nil
+
+  defp utility_group(theme, token) do
+    theme
+    |> Theme.utility_properties_of(token)
+    |> List.wrap()
+    |> Enum.map(&Categories.property_group/1)
+    |> Enum.min_by(&utility_rank/1, fn -> nil end)
+  end
+
+  defp utility_rank(group) do
+    categories = Categories.categories()
+    Enum.find_index(categories, &(&1 == Categories.category_of(group))) || length(categories)
   end
 
   # The value a utility looks up, without the opacity or line-height modifier.

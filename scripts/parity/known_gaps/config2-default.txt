@@ -1,2 +1,0 @@
-> tap-target	Button	no_restyle	"tap-target" is not allowed on <Button>: your CSS declares it, and the grammar cannot tell what it changes. Use a variant, or put it on a parent element.
-> tap-target	CardTitle	no_restyle	"tap-target" is not allowed on <CardTitle>: your CSS declares it, and the grammar cannot tell what it changes. Use a variant, or put it on a parent element.

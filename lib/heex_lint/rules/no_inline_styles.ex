@@ -21,12 +21,38 @@ defmodule HeexLint.Rules.NoInlineStyles do
     * `:contracts` - property policies for components, matched on the name
       as written (`button` for `<.button>`, `Layouts.app`). HTML elements
       take the top-level policy.
+    * `:allow_dynamic_identifiers` - style values a library computes, which no
+      static read can follow, by the name the code reads them under:
+
+          no_inline_styles: {:error, allow_dynamic_identifiers: ["@floating_styles", "Floating.styles"]}
+
+          <div style={@floating_styles}>                  allowed
+          <div style={[@floating_styles, "color: red"]}>  Inline style sets color...
+
+      A name matches the read spelled the same way and nothing else:
+
+        * `"@floating_styles"`: `@floating_styles`.
+        * `"assigns.floating_styles"`: `assigns.floating_styles`,
+          `assigns[:floating_styles]`, and `Map.get/2,3` or `Map.fetch!/2` on `assigns`.
+        * `"floating_styles"`: that variable.
+        * `"styles.popper"`, `"@styles.popper"`: that exact path, also written
+          `styles[:popper]`, or with `Map.get`, `Map.fetch!`, `Keyword.get` or
+          `Keyword.fetch!`. `"styles"` does not cover it, nor does it cover a
+          default, which is checked as a value of its own.
+        * `"Floating.styles"`: a call to that function with the module as written,
+          with any arguments or piped into.
+
+      A value written out where the name is bound (a string, `<>`, a sigil, a list
+      or a map) is still checked, as is one the rendering function assigns to it.
+      Any other value is exempt along with whatever it goes on to read, which
+      includes a value assigned in another function, such as `mount/3`, since it
+      cannot be read. See `docs/rules.md`.
     * `:message` - replaces the text. `{{property}}` is the property.
   """
 
   @behaviour HeexLint.Rule
 
-  alias HeexLint.{Grammar.Colors, Policy, Rule}
+  alias HeexLint.{Collector, Grammar.Colors, Policy, Rule}
   alias HeexLint.Policy.ConfigError
 
   @messages %{
@@ -41,6 +67,15 @@ defmodule HeexLint.Rules.NoInlineStyles do
   }
 
   @color_function ~r/#[0-9a-f]{3,8}\b|\b(?:rgb|rgba|hsl|hsla|hwb|oklch|oklab|lab|lch|color|color-mix|light-dark)\(/i
+
+  # @name, name, a dotted path from either, or Module.function.
+  @dynamic_name ~r/\A(?:@?[\p{Ll}_][\p{L}\p{N}_]*[?!]?(?:\.[\p{Ll}_][\p{L}\p{N}_]*[?!]?)*|\p{Lu}[\p{L}\p{N}_]*(?:\.\p{Lu}[\p{L}\p{N}_]*)*\.[\p{Ll}_][\p{L}\p{N}_]*[?!]?)\z/u
+
+  # Words Elixir keeps for itself: nothing can be read under these.
+  @reserved_words ~w(nil true false do end fn when and or not in after catch else rescue)
+
+  # These read a path, so the path has a name and they have none.
+  @path_reads ~w(Map.get Map.fetch! Keyword.get Keyword.fetch!)
 
   @impl true
   def name, do: :no_inline_styles
@@ -78,9 +113,10 @@ defmodule HeexLint.Rules.NoInlineStyles do
 
   defp site_findings(site, policy, options, file) do
     component = site.written || ""
+    {strings, unresolved} = Collector.outside_names(site, policy.dynamic_names)
 
     dynamic =
-      for position <- site.unresolved do
+      for position <- unresolved do
         data = %{"component" => Rule.display(component)}
 
         %{
@@ -97,7 +133,7 @@ defmodule HeexLint.Rules.NoInlineStyles do
       end
 
     declarations =
-      for string <- site.strings,
+      for string <- strings,
           {property, value, filled, position} <- declarations(string),
           finding = judge(property, value, filled, position, component, policy, options, file),
           finding != nil,
@@ -167,17 +203,17 @@ defmodule HeexLint.Rules.NoInlineStyles do
         c = char(item)
 
         cond do
-          quote != nil and c == quote -> {done, current ++ [item], depth, nil}
-          quote != nil -> {done, current ++ [item], depth, quote}
-          c in [~s("), "'"] -> {done, current ++ [item], depth, c}
-          c == "(" -> {done, current ++ [item], depth + 1, nil}
-          c == ")" -> {done, current ++ [item], max(depth - 1, 0), nil}
-          c == ";" and depth == 0 -> {done ++ [current], [], depth, nil}
-          true -> {done, current ++ [item], depth, nil}
+          quote != nil and c == quote -> {done, [item | current], depth, nil}
+          quote != nil -> {done, [item | current], depth, quote}
+          c in [~s("), "'"] -> {done, [item | current], depth, c}
+          c == "(" -> {done, [item | current], depth + 1, nil}
+          c == ")" -> {done, [item | current], max(depth - 1, 0), nil}
+          c == ";" and depth == 0 -> {[Enum.reverse(current) | done], [], depth, nil}
+          true -> {done, [item | current], depth, nil}
         end
       end)
 
-    done ++ [current]
+    Enum.reverse([Enum.reverse(current) | done])
   end
 
   defp char({:char, c, _}), do: c
@@ -189,16 +225,31 @@ defmodule HeexLint.Rules.NoInlineStyles do
 
   @doc false
   # The value, or any leaf of it outside var(), read as a color. URL
-  # payloads, quoted strings and comments are not color values.
+  # payloads, quoted strings and comments are not color values, and a color
+  # function over one theme variable is a theme color.
   def raw_color?(value) do
-    text = color_value_text(value)
+    text = value |> color_value_text() |> Colors.without_variable_channel_colors()
 
     Regex.match?(@color_function, text) or Colors.parse(text) != nil or
       text
-      |> String.replace(~r/var\([^)]*\)/i, " ")
+      |> without_vars("")
       |> String.split(~r/[\s,()\/]+/)
       |> Enum.any?(&(&1 != "" and Colors.parse(&1) != nil))
   end
+
+  # `var\([^)]*\)`, case-insensitively, each replaced by a space. In one pass: a regex
+  # replace costs more for each match the more of them there are.
+  defp without_vars(<<v, a, r, ?(, rest::binary>> = text, acc)
+       when v in ~c"vV" and a in ~c"aA" and r in ~c"rR" do
+    case :binary.split(rest, ")") do
+      [_variable, rest] -> without_vars(rest, acc <> " ")
+      # No `)` ends this one, so none ends a later one either.
+      [_rest] -> acc <> text
+    end
+  end
+
+  defp without_vars(<<byte, rest::binary>>, acc), do: without_vars(rest, <<acc::binary, byte>>)
+  defp without_vars("", acc), do: acc
 
   defp color_value_text(value), do: color_text(value, "", nil, 0, nil)
 
@@ -266,11 +317,13 @@ defmodule HeexLint.Rules.NoInlineStyles do
   defp color_text(text, acc, nil, 0, prev) do
     boundary = prev == nil or not Regex.match?(~r/[\w-]/, <<prev::utf8>>)
 
-    if boundary and String.downcase(String.slice(text, 0, 4)) == "url(" do
-      color_text(String.slice(text, 4..-1//1), acc <> " ", nil, 1, ?()
-    else
-      <<c::utf8, rest::binary>> = text
-      color_text(rest, acc <> <<c::utf8>>, nil, 0, c)
+    case text do
+      <<u, r, l, ?(, rest::binary>>
+      when boundary and u in ~c"uU" and r in ~c"rR" and l in ~c"lL" ->
+        color_text(rest, acc <> " ", nil, 1, ?()
+
+      <<c::utf8, rest::binary>> ->
+        color_text(rest, acc <> <<c::utf8>>, nil, 0, c)
     end
   end
 
@@ -296,6 +349,11 @@ defmodule HeexLint.Rules.NoInlineStyles do
       |> Keyword.get(:contracts, [])
       |> Enum.map(fn contract ->
         contract = Map.new(contract)
+
+        if Map.has_key?(contract, :allow_dynamic_identifiers) do
+          raise ConfigError,
+                "no_inline_styles: allow_dynamic_identifiers applies to the whole rule, so a contract cannot set it."
+        end
 
         pattern =
           case contract[:pattern] do
@@ -327,7 +385,38 @@ defmodule HeexLint.Rules.NoInlineStyles do
         }
       end)
 
-    %{baseline: baseline, contracts: contracts}
+    %{baseline: baseline, contracts: contracts, dynamic_names: dynamic_names(options)}
+  end
+
+  # The mistake this option invites is writing the expression instead of its name,
+  # caught by shape: `assigns[:x]`, `Floating.styles()` and `nil` would match nothing.
+  defp dynamic_names(options) do
+    case Keyword.get(options, :allow_dynamic_identifiers, []) do
+      names when is_list(names) ->
+        Enum.each(names, &check_dynamic_name/1)
+        MapSet.new(names)
+
+      other ->
+        raise ConfigError,
+              "no_inline_styles: allow_dynamic_identifiers must be a list of strings, got: #{inspect(other)}"
+    end
+  end
+
+  defp check_dynamic_name(name) do
+    if not is_binary(name) do
+      raise ConfigError,
+            "no_inline_styles: allow_dynamic_identifiers must be a list of strings, got entry: #{inspect(name)}"
+    end
+
+    if not Regex.match?(@dynamic_name, name) or matches_nothing?(name) do
+      raise ConfigError,
+            ~s|no_inline_styles: entry "#{name}" in allow_dynamic_identifiers is not a name as written (@floating_styles, floating_styles, assigns.floating_styles, styles.popper, Floating.styles), so it would match nothing.|
+    end
+  end
+
+  defp matches_nothing?(name) do
+    root = name |> String.trim_leading("@") |> String.split(".") |> hd()
+    root in @reserved_words or name in @path_reads
   end
 
   defp fetch(options, key) do

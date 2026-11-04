@@ -75,7 +75,7 @@ defmodule HeexLint.IntegrationTest do
     [finding] = lint(dir, files, rules: rules, settings: [component_imports: ["^SaladUI\\."]])
 
     assert finding.message ==
-             ~s|"bg-pink-500" is not allowed on <.button>: <.button> owns its color. Use a variant: default, secondary, ghost. Add a new variant in deps/salad_ui/lib/salad_ui/button.ex only if the design explicitly calls for a treatment none of these provides.|
+             ~s|"bg-pink-500" is not allowed on <.button>: <.button> owns its color. Use a variant: default, secondary, ghost. Add a new variant to <.button> only if the design explicitly calls for a treatment none of these provides.|
   end
 
   test "suppression comments, with or without rule names", %{tmp_dir: dir} do

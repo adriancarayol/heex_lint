@@ -1,3 +1,0 @@
-> divide-line	Button	no_raw_colors	"divide-line" is not a declared theme color. Use one of: primary. To add a color, declare --color-<name> in THEME first.
-> divide-line	CardTitle	no_raw_colors	"divide-line" is not a declared theme color. Use one of: primary. To add a color, declare --color-<name> in THEME first.
-> divide-line	div	no_raw_colors	"divide-line" is not a declared theme color. Use one of: primary. To add a color, declare --color-<name> in THEME first.

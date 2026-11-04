@@ -13,6 +13,7 @@ defmodule HeexLint.Rule do
     * `:source` - the `HeexLint.Project.Source`
     * `:sites` - the file's `HeexLint.Sites`
     * `:elements` - `{template, elements}` for each template
+    * `:merge_functions` - the names of the file's class merge functions
     * `:note` - the shared note appended to messages
   """
 

@@ -8,11 +8,10 @@ defmodule HeexLint do
   """
 
   alias HeexLint.{Config, Diagnostic, Messages, Project, Rule, Sites, Suppressions, Tailwind}
+  alias HeexLint.Grammar.ProjectClassifier
 
   # Class helpers known in the Elixir ecosystem, on top of the configured ones.
   @default_merge_functions ["cn", "Tails.classes", "TwMerge.merge", "Twix.tw"]
-
-  @oracle_rules [HeexLint.Rules.NoUnknownClasses, HeexLint.Rules.NoRawColors]
 
   @type result :: %{
           diagnostics: [Diagnostic.t()],
@@ -52,13 +51,15 @@ defmodule HeexLint do
     theme_files = Map.new(targets, &{&1, Project.for_file(project, &1).theme_file})
     themes = theme_files |> Map.values() |> Enum.uniq()
 
+    # Nothing runs until a rule asks something only Tailwind can answer.
     oracle =
-      if project.entry && Enum.any?(pairs, fn {module, _} -> module in @oracle_rules end) do
-        {:ok, pid} = Tailwind.start_link(project)
+      if Enum.any?(Map.values(project.themes), & &1.entry) do
+        {:ok, pid} = Tailwind.start(project)
         pid
       end
 
     project = %{project | oracle: oracle}
+    expect_text_classes(project, theme_files)
 
     # The project is large; tasks read it from persistent_term, which never
     # copies it onto their heaps.
@@ -147,11 +148,24 @@ defmodule HeexLint do
     end
   end
 
+  # On a theme that loads JavaScript, Tailwind says which text-* classes are font
+  # sizes. Those the files name go together with the first that is asked about.
+  defp expect_text_classes(project, theme_files) do
+    theme_files
+    |> Enum.group_by(fn {_path, file} -> file end, fn {path, _file} -> path end)
+    |> Enum.each(fn {theme_file, paths} ->
+      with %{oracle: {_pid, _entry}} = theme <- themed(project, theme_file).theme do
+        words = Enum.flat_map(paths, &ProjectClassifier.text_words(project.sources[&1].contents))
+        ProjectClassifier.expect(theme, words)
+      end
+    end)
+  end
+
   # The project with a given theme: every file of an app shares its app's.
   defp themed(project, theme_file) do
     case Enum.find(Map.values(project.themes), &(&1.file == theme_file)) do
       nil -> project
-      info -> %{project | theme: info.theme, theme_file: info.file, entry: info.entry}
+      info -> Project.with_theme_info(project, info)
     end
   end
 
@@ -183,9 +197,11 @@ defmodule HeexLint do
           [{module, _, options} | _] = group
           scoped = prepared[{module, options, theme_file}].project
 
+          merge_functions = (recognition[:merge_functions] || []) ++ @default_merge_functions
+
           collected =
             Sites.collect(scoped, source,
-              merge_functions: (recognition[:merge_functions] || []) ++ @default_merge_functions,
+              merge_functions: merge_functions,
               variant_functions: recognition[:variant_functions] || []
             )
 
@@ -194,6 +210,7 @@ defmodule HeexLint do
             source: source,
             sites: collected.sites,
             elements: collected.elements,
+            merge_functions: merge_functions,
             note: config.settings[:note]
           }
 
