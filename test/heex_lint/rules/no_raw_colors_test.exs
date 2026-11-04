@@ -3,6 +3,7 @@ defmodule HeexLint.Rules.NoRawColorsTest do
 
   import HeexLint.TestProject
 
+  alias HeexLint.{Project, Sites}
   alias HeexLint.Rules.NoRawColors
 
   @moduletag :tmp_dir
@@ -1446,5 +1447,44 @@ defmodule HeexLint.Rules.NoRawColorsTest do
       assert colors(dir, ~s(<div />), [scan_all_strings: true], extra) == []
       assert [_] = colors(dir, ~s(<div />), [scan_all_strings: true, deny: ["*-white"]], extra)
     end
+  end
+
+  # A task lints one file, so only a direct call shows what its verdicts are kept under.
+  test "a verdict belongs to the theme, not to its stylesheet's path", %{tmp_dir: dir} do
+    path = "lib/app_web/live/page_live.ex"
+    template = ~s(<div class="bg-brand" />)
+
+    check = fn theme ->
+      file = Path.join(dir, path)
+      File.mkdir_p!(Path.dirname(file))
+      File.mkdir_p!(Path.join(dir, "assets/css"))
+      File.write!(file, live(template))
+      File.write!(Path.join(dir, "assets/css/app.css"), theme)
+      project = Project.load(dir, [file], [])
+      {:ok, policy, _warnings} = NoRawColors.prepare([], project)
+      collected = Sites.collect(project, project.sources[file], merge_functions: [])
+
+      NoRawColors.check(
+        %{
+          project: project,
+          source: project.sources[file],
+          sites: collected.sites,
+          elements: collected.elements,
+          merge_functions: [],
+          note: nil
+        },
+        policy,
+        []
+      )
+    end
+
+    assert check.(
+             ~s(@import "tailwindcss";\n@theme { --color-brand: red; --color-primary: blue; })
+           ) == []
+
+    assert [%{message: message}] =
+             check.(~s(@import "tailwindcss";\n@theme { --color-primary: blue; }))
+
+    assert message =~ ~s("bg-brand" is not a declared theme color)
   end
 end
