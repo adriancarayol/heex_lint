@@ -51,6 +51,14 @@ defmodule HeexLint.Rules.NoRestyleTest do
     assert finding.message =~ "or margin here or spacing on <.card_content> for space around it."
   end
 
+  test "spacing on a slot does not offer the slot's owner again", %{tmp_dir: dir} do
+    options = [allow: ["layout"], contracts: [[pattern: "^card$", allow: ["layout", "spacing"]]]]
+    template = ~s(<.card><:title><.button class="p-4">x</.button></:title></.card>)
+
+    [finding] = restyle(dir, template, options)
+    assert finding.message =~ "margin here or spacing on <:title> for space around it."
+  end
+
   test "contracts open categories per component; the last match wins", %{tmp_dir: dir} do
     options = [
       allow: ["layout"],
