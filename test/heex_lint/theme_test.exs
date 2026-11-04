@@ -146,6 +146,42 @@ defmodule HeexLint.ThemeTest do
       assert Enum.frequencies(theme.files) |> Map.values() |> Enum.uniq() == [1]
     end
 
+    test "two case spellings are one stylesheet only on a disk that has one", %{tmp_dir: dir} do
+      File.write!(Path.join(dir, "shared.css"), "@utility sym { color: red }")
+      one_file? = File.exists?(Path.join(dir, "SHARED.css"))
+
+      files = %{
+        "b.css" => ~s(@import "#{dir}/Shared.css";),
+        "c.css" => ~s(@utility sym { padding: 1px }\n@import "#{dir}/shared.css";),
+        "app.css" => ~s(@import "./b.css";\n@import "./c.css";)
+      }
+
+      if one_file? do
+        theme = load(dir, files)
+
+        assert Theme.utility_properties_of(theme, "sym") == ["padding"]
+        assert length(theme.files) == 4
+      else
+        theme = load(dir, Map.put(files, "Shared.css", "@utility sym { margin: 0 }"))
+
+        assert Theme.utility_properties_of(theme, "sym") == ["color"]
+        assert length(theme.files) == 5
+      end
+    end
+
+    test "two hard links are read as two stylesheets, as their paths differ", %{tmp_dir: dir} do
+      File.write!(Path.join(dir, "one.css"), "@utility sym { color: red }")
+      File.ln!(Path.join(dir, "one.css"), Path.join(dir, "two.css"))
+
+      theme =
+        load(dir, %{
+          "c.css" => ~s(@utility sym { padding: 1px }\n@import "./two.css";),
+          "app.css" => ~s(@import "./one.css";\n@import "./c.css";)
+        })
+
+      assert Theme.utility_properties_of(theme, "sym") == ["color"]
+    end
+
     test "a stylesheet read again does not undo what came after it", %{tmp_dir: dir} do
       theme =
         load(dir, %{

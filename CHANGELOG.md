@@ -256,7 +256,8 @@ Each of these reports something that passed before.
 - `bg-red-500/[a[b]` is an undeclared color rather than a palette class.
 - With the standalone binary, `tw:hovr:flex` is an unknown variant rather than an unknown
   class.
-- A stylesheet reached by two import paths is read once, at the first. Reading it again put
+- A stylesheet reached by two import paths is read once, at the first, as is one spelled
+  two ways on a case-insensitive disk. Reading it again put
   its declarations over the ones read between the two imports, so this can change the
   category `no_restyle` reports and the values the theme resolves. The limit of 65
   stylesheets now counts the whole import tree rather than one chain. Packages contribute

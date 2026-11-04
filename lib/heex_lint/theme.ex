@@ -360,16 +360,28 @@ defmodule HeexLint.Theme do
   # imports reach is read at the first, and reading it again at the second
   # would put its declarations over the ones read between them.
   defp read(file, seen, acc, walk) do
-    if MapSet.member?(seen, file) or MapSet.size(seen) > 64 do
+    key = seen_key(file)
+
+    if MapSet.member?(seen, key) or MapSet.size(seen) > 64 do
       {acc, seen}
     else
-      seen = MapSet.put(seen, file)
+      seen = MapSet.put(seen, key)
       acc = %{acc | files: acc.files ++ [file]}
 
       case File.read(file) do
         {:ok, css} -> read_css(without_bom(css), file, seen, acc, walk)
         {:error, _} -> {acc, seen}
       end
+    end
+  end
+
+  # @shadcn/lint's realpath gives a case-insensitive disk's own spelling, and Elixir has
+  # no such call. Two spellings of one file agree on this, where two files or two hard
+  # links, which that realpath keeps apart, do not.
+  defp seen_key(file) do
+    case File.stat(file) do
+      {:ok, stat} -> {String.downcase(file), stat.major_device, stat.inode}
+      {:error, _} -> file
     end
   end
 
