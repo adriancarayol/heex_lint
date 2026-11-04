@@ -1,0 +1,6 @@
+/* Through the package's own imports map. */
+@import "#tokens";
+
+@theme inline {
+  --color-kit-imports: oklch(0.5 0.1 200);
+}

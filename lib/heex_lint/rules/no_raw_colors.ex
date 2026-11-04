@@ -13,26 +13,50 @@ defmodule HeexLint.Rules.NoRawColors do
       <div class="bg-highlight"> "bg-highlight" is not a declared theme color...
       <path fill="#ec4899" />    fill="#ec4899" hardcodes a color...
 
-  `white`, `black`, `transparent`, `current` and `inherit` are accepted,
-  as are `fill-none` and `stroke-none`.
+  `transparent`, `current` and `inherit` are always accepted, as are
+  `fill-none` and `stroke-none`. `white` and `black` are accepted too, since
+  Tailwind declares them in every theme, until `deny` names them:
+  `no_raw_colors: {:error, deny: ["*-white", "*-black"]}`.
   Arbitrary colors such as `bg-[#333]` belong to `no_arbitrary_values`.
+
+  Under `@import "tailwindcss" prefix(tw)`, only `tw:` classes are Tailwind's:
+  `tw:bg-pink-500` is reported, and `bg-pink-500` is left to `no_unknown_classes`.
 
   ## Options
 
     * `:allow`, `:deny`, `:contracts` - exceptions, as class patterns
       (`*-amber-*`), groups or categories. See `HeexLint.Policy`.
     * `:message` - replaces the text. Also `{{tokens}}` and `{{suggestion}}`.
-    * `:scan_all_strings` - check every string literal in the file except plain
-      map keys such as `%{"fill-color" => 1}`.
+    * `:scan_all_strings` - check every string literal with a hyphen in the
+      file, in code and in templates, except plain map keys such as
+      `%{"fill-color" => 1}`.
   """
 
   @behaviour HeexLint.Rule
 
-  alias HeexLint.{Code, Collector, Element, Messages, Policy, Rule, Suggest, Theme}
+  alias HeexLint.{
+    Code,
+    Collector,
+    Element,
+    Messages,
+    Policy,
+    Project,
+    Rule,
+    Suggest,
+    Tailwind,
+    Theme
+  }
+
   alias HeexLint.Grammar.{Categories, Classes, Colors, ProjectClassifier, Similar}
   alias HeexLint.Policy.ConfigError
+  alias HeexLint.Project.Source
 
-  @named MapSet.new(~w(white black transparent current inherit))
+  # No theme can get these wrong: they turn a color off or pass one down.
+  @named MapSet.new(~w(transparent current inherit))
+
+  # Tailwind declares these in every theme, so they pass until `deny` names
+  # them: text-white on bg-primary is right in one theme and wrong in the next.
+  @fixed MapSet.new(~w(white black))
 
   # HTML and SVG attributes that take a color directly.
   @color_attributes MapSet.new(~w(
@@ -92,7 +116,9 @@ defmodule HeexLint.Rules.NoRawColors do
 
   @impl true
   def prepare(options, project) do
-    {policy, warnings} = Policy.compile(options, project.theme, "no_raw_colors")
+    {policy, warnings} =
+      Policy.compile(options, project.theme, "no_raw_colors", &Tailwind.known(project, &1))
+
     {:ok, policy, warnings}
   rescue
     error in ConfigError -> {:error, error.message}
@@ -106,9 +132,13 @@ defmodule HeexLint.Rules.NoRawColors do
     class_findings =
       for {site, string} <- class_strings(file, options),
           {token, position} <- Rule.tokens(string),
+          # Under prefix(tw), text-muted is not a Tailwind class, let alone a
+          # color: whether it exists is no_unknown_classes' question.
+          Project.tailwind_class?(file.project, token),
           verdict = verdict(context, token),
           verdict != nil,
-          (exemption = Policy.decide(policy, site_component(site), token)) != :ok do
+          (exemption = Policy.decide(policy, site_component(site), token)) != :ok,
+          reported?(verdict, exemption) do
         data = Map.put(verdict.data, "component", Rule.display(site_component(site)))
 
         %{
@@ -124,6 +154,10 @@ defmodule HeexLint.Rules.NoRawColors do
     class_findings ++ attribute_findings(file, context, options)
   end
 
+  # white or black: reported only where `deny` names it.
+  defp reported?(%{opt_in: true}, exemption), do: match?({:denied, _, _, _}, exemption)
+  defp reported?(_verdict, _exemption), do: true
+
   defp words({_, _, _, message}), do: message
   defp words(_), do: nil
 
@@ -138,53 +172,99 @@ defmodule HeexLint.Rules.NoRawColors do
       for site <- file.sites, site.kind == :class, string <- site.strings, do: {site, string}
 
     if Keyword.get(options, :scan_all_strings, false),
-      do: sites ++ Enum.map(all_strings(file), &{nil, &1}),
+      do: sites ++ Enum.map(all_strings(file, sites), &{nil, &1}),
       else: sites
   end
 
   @doc false
-  def all_strings(file) do
+  def all_strings(file, sites) do
     source = file.source
     merge = Map.get(file, :merge_functions, [])
 
     code_strings =
       if source.ast do
-        {_, strings} =
-          Macro.prewalk(source.ast, [], fn
-            {:sigil_H, _, _}, acc ->
-              {nil, acc}
+        context = %{project: file.project, source: source}
 
-            {:__block__, _, [text]} = node, acc when is_binary(text) ->
-              context = %{project: file.project, source: source}
-              {node, acc ++ Collector.expression(node, context).strings}
-
-            # A plain key names a field, not a class.
-            {:%{}, meta, entries}, acc ->
-              {{:%{}, meta, without_plain_keys(entries)}, acc}
-
-            node, acc ->
-              {node, acc}
-          end)
+        strings =
+          for node <- literals(source.ast),
+              string <- Collector.expression(node, context).strings,
+              do: string
 
         strings ++ class_map_keys(file, merge)
       else
         []
       end
 
+    # What a class site reads on a tag is that site's, as its component's
+    # contract may allow it. A string the code binds stays the code's, as in
+    # @shadcn/lint, which reaches it before the tag that reads it.
+    claimed =
+      for {_site, string} <- sites,
+          {:char, _text, position} <- string.items,
+          into: MapSet.new(),
+          do: position
+
     template_strings =
       for {template, elements} <- file.elements,
-          element <- elements,
-          %{value: {:string, _, _} = value} <- element.attributes,
-          string <-
-            Collector.attribute(value, %{
-              project: file.project,
-              source: source,
-              template: template
-            }).strings,
+          context = %{project: file.project, source: source, template: template},
+          string <- written_strings(elements, context) ++ expression_strings(template, context),
+          not claimed?(string, claimed),
           do: string
 
     code_strings ++ template_strings
   end
+
+  # A site reading "a " <> @b keeps the classes and not the space between them.
+  defp claimed?(string, claimed) do
+    Enum.any?(string.items, fn
+      {:char, text, position} -> String.trim(text) != "" and MapSet.member?(claimed, position)
+      _interpolation -> false
+    end)
+  end
+
+  # Quoted attribute values.
+  defp written_strings(elements, context) do
+    for element <- elements,
+        %{value: {:string, text, _} = value} <- element.attributes,
+        scanned?(text),
+        string <- Collector.attribute(value, context).strings,
+        do: string
+  end
+
+  # The literals of every {...} and <%= ... %>, whatever reads them. Text
+  # between tags is not a literal, as JSX text is not.
+  defp expression_strings(template, context) do
+    for {:expr, code, _position} = expression <- Element.expressions(template),
+        {:ok, ast} <- [Code.parse(code)],
+        node <- literals(ast),
+        string <- Collector.template_expression(node, expression, context).strings,
+        do: string
+  end
+
+  # The string literals of some code, without the plain keys of its maps.
+  defp literals(ast) do
+    {_, literals} =
+      Macro.prewalk(ast, [], fn
+        {:sigil_H, _, _}, acc ->
+          {nil, acc}
+
+        {:__block__, _, [text]} = node, acc when is_binary(text) ->
+          {node, if(scanned?(text), do: [node | acc], else: acc)}
+
+        # A plain key names a field, not a class.
+        {:%{}, meta, entries}, acc ->
+          {{:%{}, meta, without_plain_keys(entries)}, acc}
+
+        node, acc ->
+          {node, acc}
+      end)
+
+    Enum.reverse(literals)
+  end
+
+  # Without a hyphen, as @shadcn/lint has it, a string is left to the class sites
+  # that read it: "[padding:13px]" elsewhere is more likely text than a class.
+  defp scanned?(text), do: String.contains?(text, "-")
 
   # The entries of a map literal without their string keys, for
   # %{"fill-color" => 1} and %{map | "fill-color" => 1} alike. A key that
@@ -212,14 +292,18 @@ defmodule HeexLint.Rules.NoRawColors do
       for module <- source.modules,
           clauses <- Map.values(module.functions),
           clause <- clauses,
-          call <- merge_calls(clause.body, merge),
+          calls = merge_calls(clause.body, merge),
           context = Map.merge(context, %{module: module.name, clause: clause}),
-          key <- Collector.map_keys(call, context, opts),
+          key <- Collector.map_keys(calls, context, opts),
           do: key
 
-    anywhere =
-      for call <- merge_calls(source.ast, merge),
-          key <- Collector.map_keys(call, context, opts),
+    anywhere = Collector.map_keys(merge_calls(source.ast, merge), context, opts)
+
+    # A module attribute reads from its module, whether or not a function holds the call.
+    in_modules =
+      for {module, body} <- Enum.zip(source.modules, Source.module_bodies(source.ast)),
+          context = Map.put(context, :module, module.name),
+          key <- Collector.map_keys(merge_calls(body, merge), context, opts),
           do: key
 
     in_templates =
@@ -229,12 +313,11 @@ defmodule HeexLint.Rules.NoRawColors do
           template.module == module.name,
           {:expr, code, _position} = expression <- Element.expressions(template),
           {:ok, ast} <- [Code.parse(code)],
-          call <- merge_calls(ast, merge),
           context = Map.put(context, :template, template),
-          key <- Collector.template_map_keys(call, expression, context, opts),
+          key <- Collector.template_map_keys(merge_calls(ast, merge), expression, context, opts),
           do: key
 
-    in_functions ++ anywhere ++ in_templates
+    in_functions ++ anywhere ++ in_modules ++ in_templates
   end
 
   defp merge_calls(ast, merge) do
@@ -243,9 +326,13 @@ defmodule HeexLint.Rules.NoRawColors do
         {:sigil_H, _, _}, acc ->
           {nil, acc}
 
-        # A function head is a pattern, not a call.
-        {kind, meta, [_head | body]}, acc when kind in [:def, :defp, :defmacro, :defmacrop] ->
-          {{kind, meta, [nil | body]}, acc}
+        # A function head is a pattern, not a call, but for its default arguments.
+        {kind, meta, [head | body]}, acc when kind in [:def, :defp, :defmacro, :defmacrop] ->
+          {{kind, meta, [HeexLint.Sites.head_defaults(head) | body]}, acc}
+
+        # `@cn %{...}` sets an attribute of that name, and what it holds can be a call.
+        {:@, meta, [{name, _, args}]}, acc when is_atom(name) and is_list(args) ->
+          {{:__block__, meta, args}, acc}
 
         {:|>, _, [_left, {callee, _, args}]} = node, acc when is_list(args) ->
           {node, if(merge_function?(callee, merge), do: [node | acc], else: acc)}
@@ -257,7 +344,7 @@ defmodule HeexLint.Rules.NoRawColors do
           {node, acc}
       end)
 
-    calls
+    Enum.reverse(calls)
   end
 
   defp merge_function?(callee, merge), do: HeexLint.Sites.helper_name(callee) in merge
@@ -268,7 +355,7 @@ defmodule HeexLint.Rules.NoRawColors do
   ## Verdicts
 
   defp verdict(context, token) do
-    key = {__MODULE__, context.theme && context.theme.file, token}
+    key = {__MODULE__, Theme.signature(context.theme), token}
 
     case Process.get(key, :miss) do
       :miss ->
@@ -294,6 +381,7 @@ defmodule HeexLint.Rules.NoRawColors do
       # --background-color-surface declares bg-surface, and only that.
       parts && member?(tokens_for(theme, parts.prefix), value) -> nil
       Classes.palette_class?(token) -> palette_verdict(context, token)
+      value && MapSet.member?(@fixed, value) -> fixed_verdict(context, token)
       declared == nil -> nil
       ProjectClassifier.category_of(theme, token) != "color" -> nil
       value == nil or MapSet.member?(@named, value) -> nil
@@ -304,6 +392,9 @@ defmodule HeexLint.Rules.NoRawColors do
       true -> undeclared_verdict(context, token)
     end
   end
+
+  defp fixed_verdict(context, token),
+    do: context |> palette_verdict(token) |> Map.put(:opt_in, true)
 
   defp member?(nil, _value), do: false
   defp member?(set, value), do: MapSet.member?(set, value)
@@ -391,14 +482,14 @@ defmodule HeexLint.Rules.NoRawColors do
 
   # cn's color groups take any value, so text-smal classifies as a color.
   # When Tailwind's nearest real class is not a color, the typo belongs to
-  # no_unknown_classes and this rule stays quiet.
+  # no_unknown_classes and this rule stays quiet. Only a suggestion can say so.
   defp typo_of_another_utility?(context, token) do
-    case HeexLint.Tailwind.unknown(context.project, [token]) do
-      [%{suggestion: suggestion} | _] when is_binary(suggestion) ->
-        ProjectClassifier.category_of(context.theme, suggestion) != "color"
-
-      _ ->
-        false
+    with true <- Tailwind.suggests?(context.project),
+         [%{suggestion: suggestion} | _] when is_binary(suggestion) <-
+           Tailwind.unknown(context.project, [token]) do
+      ProjectClassifier.category_of(context.theme, suggestion) != "color"
+    else
+      _ -> false
     end
   end
 
@@ -460,12 +551,14 @@ defmodule HeexLint.Rules.NoRawColors do
   defp attribute_findings(file, context, options) do
     values = Theme.color_values(context.theme)
 
-    for {_template, elements} <- file.elements,
+    for {template, elements} <- file.elements,
+        context = Map.merge(context, %{source: file.source, template: template}),
         element <- elements,
         element.type == :tag,
         Regex.match?(~r/^[a-z]/, element.name),
-        %{name: name, value: {:string, value, position}} <- element.attributes,
+        %{name: name, value: attribute} <- element.attributes,
         is_binary(name) and MapSet.member?(@color_attributes, name),
+        {value, position} <- static_value(attribute, context),
         raw_color_value?(value) do
       lab = if values && map_size(values) > 0, do: Colors.parse(value)
 
@@ -478,6 +571,26 @@ defmodule HeexLint.Rules.NoRawColors do
       %{position: position, message: Rule.message(@messages[id], data, nil, options, file)}
     end
   end
+
+  # A quoted value, or `{"#f00"}`, which says the same. Nothing else in braces is read:
+  # not a heredoc, and not a string an escape leaves without valid UTF-8, which no
+  # message could print.
+  defp static_value({:string, value, position}, _context), do: [{value, position}]
+
+  defp static_value({:expr, code, _} = expression, context) do
+    case Code.parse(code) do
+      {:ok, {:__block__, meta, [value]}} when is_binary(value) ->
+        if meta[:delimiter] == "\"" and String.valid?(value),
+          do: [{value, Collector.template_literal_start(meta, expression, context)}],
+          else: []
+
+      _ ->
+        []
+    end
+  end
+
+  # `<svg fill />` has no value.
+  defp static_value(_other, _context), do: []
 
   @doc false
   def raw_color_value?(value) do

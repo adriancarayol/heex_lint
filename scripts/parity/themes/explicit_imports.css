@@ -1,0 +1,9 @@
+/* Tailwind by path: its animations survive a reset, unlike under a bare import. */
+@import "tailwindcss/theme.css";
+@import "tailwindcss/utilities.css";
+
+@theme {
+  --color-primary: #171717;
+  --animate-*: initial;
+  --animate-mine: mine 1s;
+}

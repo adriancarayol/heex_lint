@@ -408,14 +408,29 @@ defmodule HeexLint.Grammar.Categories do
      "shape"},
     {~S"^(?:box-shadow|text-shadow|opacity|filter|backdrop-filter|mix-blend-mode|background-blend-mode|--tw-(?:shadow|inset-shadow|drop-shadow|blur|brightness|contrast|grayscale|hue-rotate|invert|saturate|sepia|backdrop-.*)$)",
      "effects"},
-    {~S"^(?:transition|animation|--tw-(?:duration|ease|delay)$)", "motion"}
+    # tw-animate-css's fade-in and slide-in-from-top set only what its enter
+    # and exit keyframes read, so they are motion too.
+    {~S"^(?:transition|animation|--tw-(?:duration|ease|delay)$|--tw-(?:enter|exit|animation)-)",
+     "motion"}
   ]
 
+  # tailwind-merge's prefix for arbitrary properties; two dots cannot
+  # collide with a plugin group.
   @arbitrary_prefix "arbitrary.."
 
   @doc "The appearance categories. `layout` is everything else."
   @spec categories() :: [String.t()]
   def categories, do: @categories
+
+  @doc """
+  The group a CSS property carries, for a class whose category comes from the
+  property it sets rather than from its name.
+
+      iex> HeexLint.Grammar.Categories.property_group("font-size")
+      "arbitrary..font-size"
+  """
+  @spec property_group(String.t()) :: String.t()
+  def property_group(property), do: @arbitrary_prefix <> property
 
   @doc "Whether the grammar maps `group` to a category (or to layout)."
   @spec known_group?(String.t()) :: boolean()

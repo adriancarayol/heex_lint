@@ -9,7 +9,8 @@ tailwind? =
 standalone? = File.regular?(Path.expand("fixtures/bin/tailwindcss", __DIR__))
 
 exclude =
-  if(tailwind? and node?, do: [], else: [:tailwind]) ++
+  if(node?, do: [], else: [:node]) ++
+    if(tailwind? and node?, do: [], else: [:tailwind]) ++
     if(standalone?, do: [], else: [:standalone])
 
 ExUnit.start(exclude: exclude)
