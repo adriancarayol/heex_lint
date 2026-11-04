@@ -360,18 +360,35 @@ defmodule HeexLint.Theme do
   # imports reach is read at the first, and reading it again at the second
   # would put its declarations over the ones read between them.
   defp read(file, seen, acc, walk) do
-    if MapSet.member?(seen, file) or MapSet.size(seen) > 64 do
+    key = seen_key(file)
+
+    if MapSet.member?(seen, key) or MapSet.size(seen) > 64 do
       {acc, seen}
     else
-      seen = MapSet.put(seen, file)
+      seen = MapSet.put(seen, key)
       acc = %{acc | files: acc.files ++ [file]}
 
       case File.read(file) do
-        {:ok, css} -> read_css(css, file, seen, acc, walk)
+        {:ok, css} -> read_css(without_bom(css), file, seen, acc, walk)
         {:error, _} -> {acc, seen}
       end
     end
   end
+
+  # @shadcn/lint's realpath gives a case-insensitive disk's own spelling, and Elixir has
+  # no such call. Two spellings of one file agree on this, where two files or two hard
+  # links, which that realpath keeps apart, do not.
+  defp seen_key(file) do
+    case File.stat(file) do
+      {:ok, stat} -> {String.downcase(file), stat.major_device, stat.inode}
+      {:error, _} -> file
+    end
+  end
+
+  # JavaScript's `trim` and `\s` take a byte order mark for white space, and Elixir's do
+  # not: left in, a leading `:root` reads as a scoped selector.
+  defp without_bom(<<0xEF, 0xBB, 0xBF, css::binary>>), do: css
+  defp without_bom(css), do: css
 
   defp read_css(css, file, seen, acc, walk) do
     utilities = parse_utilities(css)
@@ -395,10 +412,10 @@ defmodule HeexLint.Theme do
 
         case resolve_stylesheet(dir, spec) do
           nil ->
-            {%{acc | missing_imports: acc.missing_imports ++ [spec]}, seen}
+            {%{acc | missing_imports: [spec | acc.missing_imports]}, seen}
 
           target when spec == "tailwindcss" ->
-            {read_tailwind_entry(target, seen, acc), seen}
+            read_tailwind_entry(target, seen, acc)
 
           target ->
             read(target, seen, acc, import_walk(walk, spec, target))
@@ -433,15 +450,22 @@ defmodule HeexLint.Theme do
   # its JavaScript entry, so Tailwind's stylesheets add no animations and
   # `--animate-*: initial` removes the grammar's defaults. Any other path into
   # the package reads a stylesheet like any package's. So this walk keeps no
-  # animations and marks nothing seen: a later `tailwindcss/theme.css` still
+  # animations and marks none of them seen: a later `tailwindcss/theme.css` still
   # counts. It adds no declarations, being all inside node_modules, so that
   # later read cannot put any over the ones read in between. No `theme_imports`
   # reaches this walk, so that stays true of an index.css that imports its parts:
-  # the JavaScript entry imports none for a pattern to match.
+  # the JavaScript entry imports none for a pattern to match. What it marks is the
+  # entry, which takes a slot of the limit there and is not read twice.
   defp read_tailwind_entry(target, seen, acc) do
-    walk = %{patterns: [], from_package: true, own_package: nil}
-    {walked, _seen} = read(target, seen, acc, walk)
-    %{walked | theme_names: acc.theme_names}
+    entry = {:tailwind_entry, target}
+
+    if MapSet.member?(seen, entry) do
+      {acc, seen}
+    else
+      walk = %{patterns: [], from_package: true, own_package: nil}
+      {walked, _seen} = read(target, seen, acc, walk)
+      {%{walked | theme_names: acc.theme_names}, MapSet.put(seen, entry)}
+    end
   end
 
   # A package's own @theme animations are generated all the same:
@@ -473,7 +497,15 @@ defmodule HeexLint.Theme do
 
   defp finalize(%__MODULE__{} = theme) do
     {tokens, scoped} = apply_token_declarations(theme.declarations, MapSet.new(), %{})
-    theme = %{theme | tokens: tokens, scoped: scoped, files: Enum.uniq(theme.files)}
+
+    theme = %{
+      theme
+      | tokens: tokens,
+        scoped: scoped,
+        files: Enum.uniq(theme.files),
+        # Newest first while reading: a stylesheet can miss tens of thousands of them.
+        missing_imports: Enum.reverse(theme.missing_imports)
+    }
 
     %{
       theme
@@ -589,10 +621,24 @@ defmodule HeexLint.Theme do
     do: take_string(rest, q, [byte | acc])
 
   @doc false
-  def parse_imports(css) do
-    ~r/@import\s+(?:url\(\s*)?["']([^"']+)["']\s*\)?[^;]*;/
-    |> Regex.scan(strip_comments(css), capture: :all_but_first)
-    |> List.flatten()
+  def parse_imports(css), do: css |> strip_comments() |> imports(0, [])
+
+  # A rule's end is its `;`, found with one search. A `[^;]*` after each @import reads
+  # the rest of a file that has none once per @import in it.
+  defp imports(text, offset, acc) do
+    case Regex.run(@import_head, text, offset: offset, return: :index) do
+      nil ->
+        Enum.reverse(acc)
+
+      [{start, length}, {id_start, id_length}] ->
+        head_end = start + length
+
+        case :binary.match(text, ";", scope: {head_end, byte_size(text) - head_end}) do
+          # No `;` ends this @import, so none ends a later one either.
+          :nomatch -> Enum.reverse(acc)
+          {at, _} -> imports(text, at + 1, [binary_part(text, id_start, id_length) | acc])
+        end
+    end
   end
 
   @doc false
@@ -633,9 +679,10 @@ defmodule HeexLint.Theme do
   defp tailwind_spec?(spec),
     do: spec == "tailwindcss" or String.starts_with?(spec, "tailwindcss/")
 
-  # Not in @shadcn/lint. Real bodies do not overlap, so reading them is one pass over
-  # the file. Bodies left open or nested in each other each run on to the end of it,
-  # so a file of them is quadratic. Past this many passes a body reads as setting
+  # Not in @shadcn/lint. Bodies with no other inside them cannot overlap, so reading all
+  # of them is one pass over the file. One that holds another, nested in it or left open,
+  # can run on to the end of the file, so a file of them is quadratic, and a `{` in a
+  # string counts as a brace here too. Past this many passes such a body reads as setting
   # nothing a category can be read from.
   @utility_body_passes 16
 
@@ -643,14 +690,20 @@ defmodule HeexLint.Theme do
   # Each @utility in source order, with the properties its body sets.
   def parse_utilities(css) do
     stripped = strip_comments(css)
+    heads = Regex.scan(~r/@utility\s+([\w-]+\*?)\s*\{/, stripped, return: :index)
+    closes = body_closes(stripped, heads)
+    next_heads = Enum.map(Enum.drop(heads, 1), fn [{start, _} | _] -> start end)
 
     {utilities, _left} =
-      ~r/@utility\s+([\w-]+\*?)\s*\{/
-      |> Regex.scan(stripped, return: :index)
+      heads
+      |> Enum.zip(next_heads ++ [byte_size(stripped)])
       |> Enum.map_reduce(
         @utility_body_passes * byte_size(stripped),
-        fn [{start, length}, {name_start, name_length}], left ->
-          {properties, left} = declared_properties(stripped, start + length, left)
+        fn {[{start, length}, {name_start, name_length}], next_head}, left ->
+          open = start + length
+          # An unclosed body runs to the end of the file.
+          close = Map.get(closes, open, byte_size(stripped))
+          {properties, left} = declared_properties(stripped, open, close, next_head, left)
           {{binary_part(stripped, name_start, name_length), properties}, left}
         end
       )
@@ -658,53 +711,105 @@ defmodule HeexLint.Theme do
     merge_utilities([], utilities)
   end
 
+  # Where each body closes, by where it opens, with one pass over the braces.
+  defp body_closes(css, heads) do
+    opens = MapSet.new(heads, fn [{start, length} | _] -> start + length end)
+
+    {_stack, closes} =
+      css
+      |> :binary.matches(["{", "}"])
+      |> Enum.reduce({[], %{}}, fn {at, 1}, {stack, closes} ->
+        case {:binary.at(css, at), stack} do
+          {?{, stack} ->
+            {[at + 1 | stack], closes}
+
+          {?}, []} ->
+            {[], closes}
+
+          {?}, [open | stack]} ->
+            {stack, if(MapSet.member?(opens, open), do: Map.put(closes, open, at), else: closes)}
+        end
+      end)
+
+    closes
+  end
+
   # The properties an @utility body sets, from just inside its brace to the
   # matching close, nesting included: a declaration follows a brace or a
   # semicolon, which neither a selector like &:hover nor an at-rule prelude
   # does. Custom properties stay in: a body that sets --tw-shadow-color is
   # as much a color as one that sets box-shadow.
-  defp declared_properties(_css, _start, left) when left <= 0, do: {[], left}
+  defp declared_properties(_css, _open, close, next_head, left)
+       when next_head < close and left <= 0,
+       do: {[], left}
 
-  defp declared_properties(css, start, left) do
-    rest = binary_part(css, start, byte_size(css) - start)
-    body = utility_body(rest, 1, 0)
-
+  defp declared_properties(css, open, close, next_head, left) do
     properties =
       ~r/(?:^|[;{}])\s*(-{0,2}[a-zA-Z][\w-]*)\s*:/
-      |> Regex.scan(body, capture: :all_but_first)
+      |> Regex.scan(binary_part(css, open, close - open), capture: :all_but_first)
       |> Enum.map(fn [name] -> String.downcase(name) end)
       |> Enum.uniq()
 
-    {properties, left - byte_size(body)}
-  end
-
-  # An unclosed body runs to the end of the file.
-  defp utility_body(css, depth, length) when depth == 0 or length == byte_size(css) do
-    binary_part(css, 0, if(depth == 0, do: length - 1, else: length))
-  end
-
-  defp utility_body(css, depth, length) do
-    case :binary.at(css, length) do
-      ?{ -> utility_body(css, depth + 1, length + 1)
-      ?} -> utility_body(css, depth - 1, length + 1)
-      _ -> utility_body(css, depth, length + 1)
-    end
+    {properties, if(next_head < close, do: left - (close - open), else: left)}
   end
 
   @doc false
   # A class that exists in CSS (.legacy-card) is not an unknown class. A
   # "dist/*.js" in a string is a glob, not a .js selector.
   def parse_class_selectors(css) do
-    stripped =
-      css
-      |> strip_comments()
-      |> String.replace(~r/"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'/, ~s(""))
+    stripped = css |> strip_comments() |> blank_strings()
 
     ~r/\.(-?[_a-zA-Z][\w-]*)/
     |> Regex.scan(stripped, capture: :all_but_first)
     |> List.flatten()
     |> MapSet.new()
   end
+
+  @doc false
+  # Replaces what `"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'` matches with `""`, in one pass. That
+  # regex retries from each quote of a string that never closes, so `\"` repeated is
+  # quadratic. A retry cannot do better: a quote like it before the point the read stopped
+  # was escaped, or it would have closed the string, so reading on from it stops there too.
+  def blank_strings(css), do: blank_strings(css, 0, 0, {0, 0}, [])
+
+  defp blank_strings(css, from, at, stops, acc) do
+    case :binary.match(css, ["\"", "'"], scope: {at, byte_size(css) - at}) do
+      :nomatch ->
+        [binary_part(css, from, byte_size(css) - from) | acc]
+        |> Enum.reverse()
+        |> IO.iodata_to_binary()
+
+      {open, 1} ->
+        quote = :binary.at(css, open)
+        rest = binary_part(css, open + 1, byte_size(css) - open - 1)
+
+        case open >= stop_for(stops, quote) && string_close(rest, quote, open + 1) do
+          false ->
+            blank_strings(css, from, open + 1, stops, acc)
+
+          {:closed, close} ->
+            acc = [~s(""), binary_part(css, from, open - from) | acc]
+            blank_strings(css, close + 1, close + 1, stops, acc)
+
+          {:open, stop} ->
+            blank_strings(css, from, open + 1, put_stop(stops, quote, stop), acc)
+        end
+    end
+  end
+
+  defp stop_for({double, _single}, ?"), do: double
+  defp stop_for({_double, single}, ?'), do: single
+
+  defp put_stop({_double, single}, ?", stop), do: {stop, single}
+  defp put_stop({double, _single}, ?', stop), do: {double, stop}
+
+  # `.` takes no newline, so a backslash before one, or before nothing, ends the read.
+  defp string_close(<<quote, _::binary>>, quote, at), do: {:closed, at}
+  defp string_close(<<?\\, ?\n, _::binary>>, _quote, at), do: {:open, at}
+  defp string_close(<<?\\, _, rest::binary>>, quote, at), do: string_close(rest, quote, at + 2)
+  defp string_close(<<?\\>>, _quote, at), do: {:open, at}
+  defp string_close(<<_, rest::binary>>, quote, at), do: string_close(rest, quote, at + 1)
+  defp string_close(<<>>, _quote, at), do: {:open, at}
 
   defp all_variable_names(css) do
     ~r/(?<![\w-])--([\w-]+)\s*:/
@@ -986,22 +1091,22 @@ defmodule HeexLint.Theme do
       |> Enum.with_index(fn {name, px}, order -> {name, {order, px}} end)
       |> Map.new()
 
-    {steps, _next, _known} =
-      Enum.reduce(theme.declarations, {declared, map_size(declared), %{}}, fn
+    {steps, _next, _known, _lengths} =
+      Enum.reduce(theme.declarations, {declared, map_size(declared), %{}, %{}}, fn
         %{theme: false}, read ->
           read
 
-        %{name: "*", value: value}, {_steps, next, known} = read ->
-          if String.trim(value) == "initial", do: {%{}, next, known}, else: read
+        %{name: "*", value: value}, {_steps, next, known, lengths} = read ->
+          if String.trim(value) == "initial", do: {%{}, next, known, lengths}, else: read
 
-        %{name: name, value: value}, {steps, next, known} = read ->
+        %{name: name, value: value}, {steps, next, known, lengths} = read ->
           if String.starts_with?(name, prefix) and not String.contains?(name, "--") do
             step = String.slice(name, String.length(prefix)..-1//1)
             reset = String.trim(value) == "initial"
 
             cond do
-              step == "*" -> if reset, do: {%{}, next, known}, else: read
-              reset -> {Map.delete(steps, step), next, known}
+              step == "*" -> if reset, do: {%{}, next, known, lengths}, else: read
+              reset -> {Map.delete(steps, step), next, known, lengths}
               true -> scale_step(read, step, value, theme.values)
             end
           else
@@ -1014,14 +1119,36 @@ defmodule HeexLint.Theme do
     |> Enum.map(fn {name, {_order, px}} -> {name, px} end)
   end
 
-  defp scale_step({steps, next, known}, step, value, values) do
+  defp scale_step({steps, next, known, lengths}, step, value, values) do
     {resolved, known} = resolve_known(value, values, known)
-    px = resolved && Lengths.px(resolved)
+    {px, lengths} = length_of(resolved, lengths)
 
     case {px, steps} do
-      {nil, steps} -> {Map.delete(steps, step), next, known}
-      {px, %{^step => {order, _old}}} -> {Map.put(steps, step, {order, px}), next, known}
-      {px, steps} -> {Map.put(steps, step, {next, px}), next + 1, known}
+      {nil, steps} ->
+        {Map.delete(steps, step), next, known, lengths}
+
+      {px, %{^step => {order, _old}}} ->
+        {Map.put(steps, step, {order, px}), next, known, lengths}
+
+      {px, steps} ->
+        {Map.put(steps, step, {next, px}), next + 1, known, lengths}
+    end
+  end
+
+  # Parsed once per value: steps naming a long one would each parse all of it. By digest,
+  # since keeping hundreds of values of 100 KB makes each parse a third slower.
+  defp length_of(nil, lengths), do: {nil, lengths}
+
+  defp length_of(resolved, lengths) do
+    key = :erlang.md5(resolved)
+
+    case lengths do
+      %{^key => px} ->
+        {px, lengths}
+
+      _ ->
+        px = Lengths.px(resolved)
+        {px, Map.put(lengths, key, px)}
     end
   end
 

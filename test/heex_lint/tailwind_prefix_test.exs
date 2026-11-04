@@ -473,6 +473,21 @@ defmodule HeexLint.TailwindPrefixTest do
              ]
     end
 
+    test "a variant no theme knows stands on the bare utility, with no prefix", %{tmp_dir: dir} do
+      findings =
+        standalone(
+          dir,
+          ~s(<div class="hovr:focus:bg-primary" />),
+          [no_unknown_classes: :error],
+          %{
+            "assets/css/app.css" => String.replace(@prefixed, " prefix(tw)", "")
+          }
+        )
+
+      assert [finding] = findings
+      assert finding.message =~ "uses a variant this project's Tailwind does not know"
+    end
+
     test "a prefixed color still belongs to no_raw_colors", %{tmp_dir: dir} do
       with_tailwind(dir)
 
@@ -678,5 +693,28 @@ defmodule HeexLint.TailwindPrefixTest do
 
       assert classes(findings) == [~s("zorblax"), ~s("tw:zorblax")]
     end
+  end
+
+  test "each app's files get that app's prefix", %{tmp_dir: dir} do
+    write(dir, %{
+      "mix.exs" => "",
+      "apps/web/mix.exs" => "",
+      "apps/web/assets/css/app.css" => @prefixed,
+      "apps/admin/mix.exs" => "",
+      "apps/admin/assets/css/app.css" => ~s(@import "tailwindcss";\n)
+    })
+
+    web = Path.join(dir, "apps/web/lib/page.ex")
+    admin = Path.join(dir, "apps/admin/lib/page.ex")
+
+    for file <- [web, admin] do
+      File.mkdir_p!(Path.dirname(file))
+      File.write!(file, "defmodule Page do\nend\n")
+    end
+
+    found = Project.load(dir, [web, admin], [])
+
+    assert Project.for_file(found, web).tailwind_prefix == "tw"
+    assert Project.for_file(found, admin).tailwind_prefix == nil
   end
 end

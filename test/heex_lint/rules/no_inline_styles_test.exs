@@ -20,6 +20,31 @@ defmodule HeexLint.Rules.NoInlineStylesTest do
     assert {color.line, color.column} == {6, 17}
   end
 
+  test "a map update spread onto a tag has its entries read", %{tmp_dir: dir} do
+    assert [finding] =
+             styles(dir, ~S"""
+             <div {%{assigns.param | style: "color: red"}} />
+             """)
+
+    assert finding.message =~ "Inline style sets color."
+
+    assert [finding] =
+             styles(dir, ~S"""
+             <div {%{assigns.param | style: Lib.compute()}} />
+             """)
+
+    assert finding.message =~ "cannot be checked"
+
+    assert styles(dir, ~S"""
+           <div {%{assigns.param | id: "color: red"}} />
+           """) == []
+  end
+
+  test "a ~s hole in a style is read as a string's is", %{tmp_dir: dir} do
+    assert [finding] = styles(dir, ~S|<div style={~s(color: #{@c}; --x: 1)} />|)
+    assert finding.message =~ "Inline style sets color."
+  end
+
   test "custom properties pass unless they hardcode a color", %{tmp_dir: dir} do
     template = """
     <div class="w-(--panel-width)" style={"--panel-width: \#{@width}px"} />

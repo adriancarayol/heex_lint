@@ -738,7 +738,9 @@ function relayRequests() {
 
   const answer = (message) => {
     waiting.delete(message.id)
-    process.stdout.write(JSON.stringify(message) + "\n")
+    // A plugin can write to this descriptor with no newline, and its text must not
+    // run into the answer. The linter skips a line that is no answer.
+    process.stdout.write("\n" + JSON.stringify(message) + "\n")
   }
 
   // A plugin can take the thread down: every question it held is unanswerable,

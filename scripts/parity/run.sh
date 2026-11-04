@@ -156,6 +156,9 @@ done
 # cases and drivers, and no theme or Tailwind.
 check style cases "" "$here/style_cases.txt" style_driver
 
+# The class grammar on its own, on the whole of Tailwind's class list.
+check grammar classlist "" "" grammar_driver
+
 # A gap file no run wrote belongs to a config or theme that is gone.
 for file in known_gaps/*.txt; do
   case " $checked " in

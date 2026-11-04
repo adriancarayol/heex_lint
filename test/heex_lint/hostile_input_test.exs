@@ -11,7 +11,8 @@ defmodule HeexLint.HostileInputTest do
   import HeexLint.TestProject
 
   alias HeexLint.Grammar.{Classes, Classifier, Colors, Lengths, Validators}
-  alias HeexLint.Rules.NoArbitraryValues
+  alias HeexLint.Project.Source
+  alias HeexLint.Rules.{NoArbitraryValues, NoInlineStyles}
   alias HeexLint.{Collector, Element, Suggest, Template, Theme}
 
   @moduletag :tmp_dir
@@ -21,12 +22,12 @@ defmodule HeexLint.HostileInputTest do
   @n 200_000
   @limit_ms 8_000
 
-  defp quick(fun) do
+  defp quick(fun, limit_ms \\ @limit_ms) do
     task = Task.async(fun)
 
-    case Task.yield(task, @limit_ms) || Task.shutdown(task, :brutal_kill) do
+    case Task.yield(task, limit_ms) || Task.shutdown(task, :brutal_kill) do
       {:ok, result} -> result
-      nil -> flunk("took more than #{@limit_ms} ms")
+      nil -> flunk("took more than #{limit_ms} ms")
     end
   end
 
@@ -312,21 +313,62 @@ defmodule HeexLint.HostileInputTest do
     end
 
     # The value would differ from the source, and a fix writes to the source.
-    test "with an escape on its line offers no suggestion", %{tmp_dir: dir} do
-      for template <- [
-            ~S(<div class={"p-[12px] \\n"} />),
-            ~S(<div class={["p-[12px]", "\\n"]} />)
-          ] do
-        assert [%{suggestions: []}] =
-                 lint(dir, page(template), rules: [no_arbitrary_values: :error])
-      end
+    test "a long :for is read once for what is inside it", %{tmp_dir: dir} do
+      items = Enum.map_join(1..20_000, ", ", &~s("item-#{&1}"))
+      children = String.duplicate(~S(<div class={@c}></div>), 2_000)
+      template = ~s(<section :for={x <- [#{items}]}>#{children}</section>)
+
+      quick(fn -> lint(dir, page(template), rules: [no_raw_colors: :error]) end)
     end
 
-    test "after an escape on its line still offers one", %{tmp_dir: dir} do
-      assert [%{suggestions: [_]}] =
-               lint(dir, page(~S(<div class={["\\n", "p-[12px]"]} />)),
+    # Hashing the code on each question costs seconds here, and a lint this long is
+    # too slow on a loaded machine to tell apart by time.
+    test "asking what a long :for binds does not cost its length" do
+      code = ~s(x <- ["#{repeat("a", 2_000_000)}"])
+      parent = %HeexLint.Element{attributes: [%{name: ":for", value: {:expr, code, {1, 1}}}]}
+      child = %HeexLint.Element{attributes: []}
+
+      quick(
+        fn ->
+          assert Collector.bound_names(child, [parent]) == [:x]
+          for _ <- 1..16_000, do: Collector.bound_names(child, [parent])
+        end,
+        2_000
+      )
+    end
+
+    test "one line of many literals costs its length", %{tmp_dir: dir} do
+      literals = Enum.map_join(1..60_000, ", ", &~s("p-#{&1}"))
+      code = "defmodule AppWeb.Long do\n  def x, do: [#{literals}]\nend\n"
+      template = "<div id={[#{literals}]} />"
+
+      quick(fn ->
+        lint(dir, %{"lib/app_web/long.ex" => code},
+          rules: [no_raw_colors: {:error, scan_all_strings: true}]
+        )
+      end)
+
+      quick(fn ->
+        lint(dir, page(template), rules: [no_raw_colors: {:error, scan_all_strings: true}])
+      end)
+    end
+
+    test "with an escape of its own offers no suggestion", %{tmp_dir: dir} do
+      assert [%{suggestions: []}] =
+               lint(dir, page(~S(<div class={"p-[12px] \\n"} />)),
                  rules: [no_arbitrary_values: :error]
                )
+    end
+
+    # A fix writes to its own literal, whatever is around it.
+    for template <- [
+          ~S(<div class={["\\n", "p-[12px]"]} />),
+          ~S(<div class={["p-[12px]", "\\n"]} />)
+        ] do
+      test "beside another string's escape still offers one: #{template}", %{tmp_dir: dir} do
+        assert [%{suggestions: [_]}] =
+                 lint(dir, page(unquote(template)), rules: [no_arbitrary_values: :error])
+      end
     end
 
     test "keeps its classes' positions across lines", %{tmp_dir: dir} do
@@ -462,6 +504,16 @@ defmodule HeexLint.HostileInputTest do
       assert Validators.js_number("1e-999") == 0.0
       assert Validators.js_number(String.duplicate("0", 400) <> "1") == 1.0
       assert Validators.js_number("0xff") == 255.0
+
+      # Past the VM's largest integer, and not only past the float range.
+      for {prefix, digit, length} <- [
+            {"0x", "f", 1_048_561},
+            {"0o", "7", 1_398_081},
+            {"0b", "1", 4_194_241}
+          ] do
+        assert Validators.js_number(prefix <> String.duplicate(digit, length)) == :infinity
+      end
+
       assert Validators.check("isInteger", "1e300")
     end
 
@@ -972,6 +1024,208 @@ defmodule HeexLint.HostileInputTest do
     end
   end
 
+  describe "imports that find nothing" do
+    # A URL with a package.json beside it, so the time goes to the list and not the disk:
+    # 5 s here, past 60 s when each miss copied the list. CI can take three times that.
+    test "are kept in order, in one pass", %{tmp_dir: dir} do
+      write(dir, "package.json", "{}")
+      imports = 150_000
+      css = Enum.map_join(1..imports, "\n", &~s|@import "data:m#{&1}";|)
+
+      theme = quick(fn -> load(dir, css) end, 30_000)
+
+      assert length(theme.missing_imports) == imports
+      assert hd(theme.missing_imports) == "data:m1"
+      assert List.last(theme.missing_imports) == "data:m#{imports}"
+    end
+  end
+
+  describe "scale steps naming a long value" do
+    test "parse it once", %{tmp_dir: dir} do
+      big = "calc(1px" <> repeat(" + 1px", 16_000) <> ")"
+      steps = Enum.map_join(1..500, "\n", &"--radius-s#{&1}: var(--big);")
+
+      theme = quick(fn -> load(dir, ":root { --big: #{big}; }\n@theme {\n#{steps}\n}") end)
+
+      assert Map.new(Theme.scale(theme, :radius))["s500"] == 16_001.0
+    end
+  end
+
+  describe "an @import with no `;`" do
+    @unterminated String.duplicate("@import 'a' ", 421_000)
+    @tailwind String.duplicate(~S|@import "tailwindcss" |, 230_000)
+
+    # Ported from upstream. Its 20,000 repeats do not show here: the regex engine
+    # looks for the `;` first in a file under 5 MB, so these are past that.
+    test "costs one scan" do
+      assert quick(fn -> Theme.parse_imports(@unterminated) end) == []
+      assert quick(fn -> Theme.parse_tailwind_prefix(@unterminated) end) == nil
+      assert quick(fn -> Theme.parse_imports(@tailwind) end) == []
+      assert quick(fn -> Theme.parse_tailwind_prefix(@tailwind) end) == nil
+    end
+
+    test "a stylesheet of them loads", %{tmp_dir: dir} do
+      assert load(dir, @unterminated).missing_imports == []
+    end
+
+    test "those that end are still read" do
+      css = ~S"""
+      @import "tailwindcss" prefix(tw);
+      @import url("./a.css") layer(base);
+      @import './b;c.css' supports(display: grid);
+      """
+
+      assert Theme.parse_imports(css) == ["tailwindcss", "./a.css", "./b;c.css"]
+      assert Theme.parse_imports(~S|@import "./a.css" @import "./b.css";|) == ["./a.css"]
+      assert Theme.parse_imports(~S|@import "./a.css"; @import "./b.css"|) == ["./a.css"]
+      assert Theme.parse_imports(~S|/* @import "./a.css"; */ .x { top: 0; }|) == []
+    end
+  end
+
+  describe "the code a project keeps" do
+    # :persistent_term copies without sharing, so a term kept twice costs twice, and
+    # the VM aborts on a project at about 1 GB.
+    test "holds a module's code once beside its functions" do
+      functions =
+        Enum.map_join(1..200, "\n", fn n ->
+          "def f#{n}(a), do: {Enum.map(a.items, & &1.id), %{b: \"#{n}\"}, a.other}"
+        end)
+
+      source = Source.parse("a.ex", "defmodule A do\n#{functions}\nend\n")
+
+      assert :erts_debug.flat_size(source.modules) < 1.5 * :erts_debug.flat_size(source.ast)
+    end
+
+    test "holds a value bound through many names once", %{tmp_dir: dir} do
+      names = Enum.map_join(1..300, " = ", &"a#{&1}")
+      code = "defmodule A do\n  def f, do: (#{names} = \"p-1\")\nend\n"
+      source = Source.parse("a.ex", code)
+
+      assert :erts_debug.flat_size(source.modules) < 3 * :erts_debug.flat_size(source.ast)
+
+      # 3,000 of these asked for over 1 GB, past what the VM has for this, which aborted it.
+      names = Enum.map_join(1..3000, " = ", &"a#{&1}")
+      code = "defmodule A do\n  def f, do: (#{names} = \"p-1\")\nend\n"
+      assert lint(dir, %{"lib/app_web/a.ex" => code}, rules: [no_raw_colors: :error]) == []
+    end
+
+    test "tells a clause from one parsed again at the same place" do
+      id = fn ->
+        %{modules: [%{functions: %{{"f", 0} => [clause]}}]} =
+          Source.parse("a.ex", "defmodule A do\n  def f, do: 1\nend\n")
+
+        clause.id
+      end
+
+      assert id.() != id.()
+    end
+
+    test "still answers for each module of a file" do
+      source =
+        Source.parse("a.ex", """
+        defmodule A do
+          @a 1
+
+          defmodule B do
+            @b 2
+          end
+        end
+
+        defmodule C do
+          @c 3
+        end
+        """)
+
+      bodies = Enum.zip(Enum.map(source.modules, & &1.name), Source.module_bodies(source.ast))
+
+      for {name, attribute} <- [{"A", :a}, {"A.B", :b}, {"C", :c}] do
+        {^name, body} = List.keyfind!(bodies, name, 0)
+        {_, found} = Macro.prewalk(body, false, &{&1, &2 or match?({^attribute, _, _}, &1)})
+        assert found, name
+      end
+    end
+  end
+
+  describe "a read repeated across a module" do
+    # Each call read all those inside it: 8,000 took 4.6 s, and 4,000 took 4.4 s under
+    # scan_all_strings, four times as long with each doubling.
+    for {name, rules} <- [
+          {"plain rules", [no_raw_colors: :error]},
+          {"scan_all_strings", [no_raw_colors: {:error, scan_all_strings: true}]}
+        ] do
+      test "piped merge calls are read once, under #{name}", %{tmp_dir: dir} do
+        pipes = repeat(" |> cn()", 16_000)
+
+        files = %{
+          "lib/app_web/piped.ex" => """
+          defmodule AppWeb.Piped do
+            def cn(x), do: x
+            def a, do: "bg-pink-500" #{pipes}
+          end
+          """
+        }
+
+        assert [_] = quick(fn -> lint(dir, files, rules: unquote(rules)) end)
+      end
+    end
+
+    # 20 bindings that all read each other are read again thousands of times. Each read
+    # pushed its 200 literals again, which took past 4 GB in this test's rules.
+    test "what a site reads again is not pushed again", %{tmp_dir: dir} do
+      bindings =
+        Enum.map_join(1..20, "\n", fn i ->
+          others = for j <- 1..20, j != i, do: "b#{j}"
+          literals = for k <- 1..200, do: ~s("p-#{i}#{k}")
+          "b#{i} = [#{Enum.join(others ++ literals, ", ")}]"
+        end)
+
+      files = %{
+        "lib/app_web/fan.ex" => """
+        defmodule AppWeb.Fan do
+          use AppWeb, :html
+
+          def page(assigns) do
+            #{bindings}
+            ~H"<.button class={b1}>x</.button>"
+          end
+        end
+        """
+      }
+
+      rules = [
+        no_restyle: {:error, allow: ["layout"]},
+        no_raw_colors: :error,
+        no_arbitrary_values: :error,
+        no_inline_styles: :error,
+        require_static_classes: :error,
+        no_unknown_classes: :error
+      ]
+
+      assert [_ | _] = quick(fn -> lint(dir, files, rules: rules) end)
+    end
+
+    # 6,400 components took 29 s when each read of an assign walked every clause.
+    test "an assign is read once from the module's index", %{tmp_dir: dir} do
+      components =
+        Enum.map_join(1..6400, "\n", fn n ->
+          """
+          attr :x#{n}, :any, default: nil
+          def c#{n}(assigns) do
+            assigns = assign(assigns, :t#{n}, %{"bg-pink-500" => true})
+            ~H"<div class={cn(@t#{n})} title={cn(@t#{n})} id={cn(@t#{n})} />"
+          end
+          """
+        end)
+
+      files = %{
+        "lib/app_web/big.ex" => "defmodule AppWeb.Big do\nuse AppWeb, :html\n#{components}\nend\n"
+      }
+
+      rules = [no_raw_colors: {:error, scan_all_strings: true}]
+      assert length(quick(fn -> lint(dir, files, rules: rules) end)) == 6400
+    end
+  end
+
   describe "parse_declarations" do
     defp values(css), do: css |> Theme.parse_declarations() |> elem(0)
 
@@ -1082,14 +1336,55 @@ defmodule HeexLint.HostileInputTest do
     end
   end
 
+  describe "strings in a stylesheet" do
+    test "of escaped quotes that never close cost one pass", %{tmp_dir: dir} do
+      for text <- [~S(\"), ~S(\'), ~S(\"\')] do
+        theme = quick(fn -> load(dir, repeat(text, 100_000) <> " .after {}") end)
+
+        assert MapSet.member?(theme.classes, "after"), inspect(text)
+      end
+    end
+
+    @string ~r/"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'/
+
+    test "are blanked as the regex @shadcn/lint uses reads them" do
+      pieces = [~S("), ~S('), "\\", "\n", "\r", "a", " ", ".b", "{", <<0xE9>>]
+
+      # Every text of up to five pieces.
+      texts =
+        Enum.reduce(1..5, [[]], fn _, texts ->
+          texts ++ for(text <- texts, length(text) < 5, piece <- pieces, do: [piece | text])
+        end)
+        |> Enum.uniq()
+
+      for text <- texts, css = IO.iodata_to_binary(text) do
+        assert Theme.blank_strings(css) == String.replace(css, @string, ~s("")), inspect(css)
+      end
+    end
+  end
+
   describe "@utility bodies left open or nested" do
     test "a file of them takes a few passes", %{tmp_dir: dir} do
       theme = quick(fn -> load(dir, each("@utility u# { b: c;", 40_000)) end)
 
       assert length(theme.utility_properties) == 40_000
       assert List.first(theme.utility_properties) == {"u1", ["b"]}
-      # Past the passes a body sets nothing a category can be read from.
-      assert List.last(theme.utility_properties) == {"u40000", []}
+      # Past the passes a body that holds another sets nothing a category can be read from.
+      assert Enum.at(theme.utility_properties, 39_998) == {"u39999", []}
+      # A body with none inside it costs no pass.
+      assert List.last(theme.utility_properties) == {"u40000", ["b"]}
+    end
+
+    test "those past the passes leave a body with none inside it alone" do
+      braces = Enum.map_join(1..40, "\n", &~s|@utility brace-#{&1} { content: "{"; color: red; }|)
+      healthy = Enum.map_join(1..200, "\n", &"@utility h#{&1} { color: red; top: 0; }")
+
+      utilities = Theme.parse_utilities(braces <> "\n" <> healthy)
+
+      assert Enum.all?(
+               1..200,
+               &(List.keyfind(utilities, "h#{&1}", 0) == {"h#{&1}", ["color", "top"]})
+             )
     end
 
     test "nesting of a real size reads every body" do
@@ -1112,6 +1407,32 @@ defmodule HeexLint.HostileInputTest do
 
       assert [%{rule: :no_inline_styles}] =
                quick(fn -> lint(dir, page(template), rules: [no_inline_styles: :error]) end)
+    end
+
+    for value <- ["#fff ", "var(--a) ", "url(a) "] do
+      test "of a custom property, #{value}repeated, are read in one pass", %{tmp_dir: dir} do
+        style = ~s(--x: #{repeat(unquote(value), div(800_000, byte_size(unquote(value))))})
+
+        quick(fn ->
+          lint(dir, page(~s(<div style="#{style}" />)), rules: [no_inline_styles: :error])
+        end)
+      end
+    end
+
+    test "url( is one word in any case, and only at a word's start" do
+      assert NoInlineStyles.raw_color?("URL(#fff)") == false
+      assert NoInlineStyles.raw_color?("Url(#fff)") == false
+      assert NoInlineStyles.raw_color?("xurl(#fff)") == true
+      assert NoInlineStyles.raw_color?("url(#fff) #fff") == true
+    end
+
+    test "var() holds no color, in any case, up to its first )" do
+      assert NoInlineStyles.raw_color?("var(--a, red)") == false
+      assert NoInlineStyles.raw_color?("VAR(--a, red) Var(--b, blue)") == false
+      assert NoInlineStyles.raw_color?("var(--a) red") == true
+      assert NoInlineStyles.raw_color?("var(--a, var(--b)) red") == true
+      assert NoInlineStyles.raw_color?("var(--a, red") == true
+      assert NoInlineStyles.raw_color?("var(--a) var(--b, red") == true
     end
 
     test "a value of many declarations reports each", %{tmp_dir: dir} do

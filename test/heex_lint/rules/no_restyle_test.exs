@@ -10,6 +10,126 @@ defmodule HeexLint.Rules.NoRestyleTest do
     lint(dir, files, rules: [no_restyle: {:error, options}])
   end
 
+  describe "what a wrapper hands on" do
+    @panels ~S'''
+    defmodule AppWeb.Panels do
+      use AppWeb, :html
+
+      attr :class, :any, default: nil
+      attr :title_class, :any, default: nil
+      slot :inner_block
+
+      def panel(assigns) do
+        ~H"""
+        <.card class={@class}>
+          <.card_title class={@title_class}>{render_slot(@inner_block)}</.card_title>
+        </.card>
+        """
+      end
+
+      attr :title_class, :any, default: nil
+      def renamed_map(assigns), do: ~H"<.panel {%{class: @title_class}} />"
+
+      attr :title_class, :any, default: nil
+      def data_map(assigns), do: ~H"<.card {%{\"data-x\": @title_class}}>x</.card>"
+
+      attr :a_class, :any, default: nil
+      attr :b_class, :any, default: nil
+      def dup_key(assigns), do: ~H"<.card {%{class: @a_class, class: @b_class}}>x</.card>"
+
+      attr :rest, :global
+      def rest_get(assigns), do: ~H"<.card class={@rest[:class]}>x</.card>"
+
+      attr :rest, :global
+      def rest_map_get(assigns), do: ~H"<.card class={Map.get(@rest, :class)}>x</.card>"
+
+      attr :rest, :global
+      def rest_dot(assigns), do: ~H"<.card class={@rest.class}>x</.card>"
+
+      attr :a_class, :any, default: nil
+      attr :b_class, :any, default: nil
+      def dup_list(assigns), do: ~H"<.card {[class: @a_class, class: @b_class]}>x</.card>"
+
+      attr :title_class, :any, default: nil
+      def computed_map(assigns), do: ~H"<.card {%{@k => @title_class}}>x</.card>"
+
+      attr :class, :any, default: nil
+      def updated_map(assigns), do: ~H"<.card {%{%{class: @class} | id: 1}}>x</.card>"
+
+      attr :other, :any, default: %{}
+      def other_get(assigns), do: ~H"<.card class={@other[:class]}>x</.card>"
+
+      attr :rest, :global
+      def plain_then(assigns) do
+        ~H"""
+        <.plain {@rest} /><.card data-x={@title_class} {@rest}>x</.card>
+        """
+      end
+
+      attr :rest, :global
+      def plain(assigns), do: ~H"<p {@rest}>x</p>"
+    end
+    '''
+
+    defp handed(dir, template),
+      do: restyle(dir, template, [allow: ["layout"]], %{"lib/app_web/panels.ex" => @panels})
+
+    test "a renamed map spread lands under its key", %{tmp_dir: dir} do
+      assert [finding] = handed(dir, ~S|<.renamed_map title_class="bg-red-500" />|)
+      assert finding.message =~ "forwards title_class to <.card>"
+    end
+
+    test "a map key that is no class attribute lands nowhere", %{tmp_dir: dir} do
+      assert handed(dir, ~S|<.data_map title_class="bg-red-500" />|) == []
+    end
+
+    test "a repeated map key is its last value", %{tmp_dir: dir} do
+      assert handed(dir, ~S|<.dup_key a_class="bg-red-500" b_class="mt-4" />|) == []
+      assert [_] = handed(dir, ~S|<.dup_key a_class="mt-4" b_class="bg-red-500" />|)
+    end
+
+    test "a read of a global attribute follows it", %{tmp_dir: dir} do
+      assert [finding] = handed(dir, ~S|<.rest_get class="bg-red-500" />|)
+      assert finding.message =~ "forwards class to <.card>"
+    end
+
+    test "every way to read a global attribute follows it", %{tmp_dir: dir} do
+      assert [_] = handed(dir, ~S|<.rest_map_get class="bg-red-500" />|)
+      assert [_] = handed(dir, ~S|<.rest_dot class="bg-red-500" />|)
+    end
+
+    test "a keyword list spread onto a component keeps a key's last value", %{tmp_dir: dir} do
+      assert handed(dir, ~S|<.dup_list a_class="bg-red-500" b_class="mt-4" />|) == []
+      assert [_] = handed(dir, ~S|<.dup_list a_class="mt-4" b_class="bg-red-500" />|)
+    end
+
+    test "a spread whose keys cannot all be read lands under its own name", %{tmp_dir: dir} do
+      assert [_] = handed(dir, ~S|<.computed_map title_class="bg-red-500" />|)
+      assert [_] = handed(dir, ~S|<.updated_map class="bg-red-500" />|)
+    end
+
+    test "a read of another map's member does not", %{tmp_dir: dir} do
+      assert handed(dir, ~S|<.other_get class="bg-red-500" />|) == []
+    end
+
+    test "a prop read on any attribute is named, and tries every spread", %{tmp_dir: dir} do
+      assert [finding] = handed(dir, ~S|<.plain_then title_class="bg-red-500" />|)
+      assert finding.message =~ "<.card>"
+    end
+  end
+
+  test "a bare color in allow warns, where the vocabulary rules stop", %{tmp_dir: dir} do
+    assert restyle(dir, ~s(<.button class="mt-4">Save</.button>), allow: ["layout", "blue-500"]) ==
+             []
+
+    assert %{warnings: warnings} =
+             run(dir, %{"lib/app_web/live/page_live.ex" => live(~s(<div />))},
+               rules: [no_restyle: {:error, allow: ["blue-500"]}]
+             )
+
+    assert Enum.any?(warnings, &(&1 =~ ~s(Contract entry "blue-500")))
+  end
+
   test "layout passes; appearance is reported with the component's variants", %{tmp_dir: dir} do
     assert restyle(dir, ~s(<.button class="mt-4 w-full">Save</.button>)) == []
 
@@ -49,6 +169,14 @@ defmodule HeexLint.Rules.NoRestyleTest do
 
     [finding] = restyle(dir, template, options)
     assert finding.message =~ "or margin here or spacing on <.card_content> for space around it."
+  end
+
+  test "spacing on a slot does not offer the slot's owner again", %{tmp_dir: dir} do
+    options = [allow: ["layout"], contracts: [[pattern: "^card$", allow: ["layout", "spacing"]]]]
+    template = ~s(<.card><:title><.button class="p-4">x</.button></:title></.card>)
+
+    [finding] = restyle(dir, template, options)
+    assert finding.message =~ "margin here or spacing on <:title> for space around it."
   end
 
   test "contracts open categories per component; the last match wins", %{tmp_dir: dir} do

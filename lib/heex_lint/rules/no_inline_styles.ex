@@ -71,6 +71,12 @@ defmodule HeexLint.Rules.NoInlineStyles do
   # @name, name, a dotted path from either, or Module.function.
   @dynamic_name ~r/\A(?:@?[\p{Ll}_][\p{L}\p{N}_]*[?!]?(?:\.[\p{Ll}_][\p{L}\p{N}_]*[?!]?)*|\p{Lu}[\p{L}\p{N}_]*(?:\.\p{Lu}[\p{L}\p{N}_]*)*\.[\p{Ll}_][\p{L}\p{N}_]*[?!]?)\z/u
 
+  # Words Elixir keeps for itself: nothing can be read under these.
+  @reserved_words ~w(nil true false do end fn when and or not in after catch else rescue)
+
+  # These read a path, so the path has a name and they have none.
+  @path_reads ~w(Map.get Map.fetch! Keyword.get Keyword.fetch!)
+
   @impl true
   def name, do: :no_inline_styles
 
@@ -226,10 +232,24 @@ defmodule HeexLint.Rules.NoInlineStyles do
 
     Regex.match?(@color_function, text) or Colors.parse(text) != nil or
       text
-      |> String.replace(~r/var\([^)]*\)/i, " ")
+      |> without_vars("")
       |> String.split(~r/[\s,()\/]+/)
       |> Enum.any?(&(&1 != "" and Colors.parse(&1) != nil))
   end
+
+  # `var\([^)]*\)`, case-insensitively, each replaced by a space. In one pass: a regex
+  # replace costs more for each match the more of them there are.
+  defp without_vars(<<v, a, r, ?(, rest::binary>> = text, acc)
+       when v in ~c"vV" and a in ~c"aA" and r in ~c"rR" do
+    case :binary.split(rest, ")") do
+      [_variable, rest] -> without_vars(rest, acc <> " ")
+      # No `)` ends this one, so none ends a later one either.
+      [_rest] -> acc <> text
+    end
+  end
+
+  defp without_vars(<<byte, rest::binary>>, acc), do: without_vars(rest, <<acc::binary, byte>>)
+  defp without_vars("", acc), do: acc
 
   defp color_value_text(value), do: color_text(value, "", nil, 0, nil)
 
@@ -297,11 +317,13 @@ defmodule HeexLint.Rules.NoInlineStyles do
   defp color_text(text, acc, nil, 0, prev) do
     boundary = prev == nil or not Regex.match?(~r/[\w-]/, <<prev::utf8>>)
 
-    if boundary and String.downcase(String.slice(text, 0, 4)) == "url(" do
-      color_text(String.slice(text, 4..-1//1), acc <> " ", nil, 1, ?()
-    else
-      <<c::utf8, rest::binary>> = text
-      color_text(rest, acc <> <<c::utf8>>, nil, 0, c)
+    case text do
+      <<u, r, l, ?(, rest::binary>>
+      when boundary and u in ~c"uU" and r in ~c"rR" and l in ~c"lL" ->
+        color_text(rest, acc <> " ", nil, 1, ?()
+
+      <<c::utf8, rest::binary>> ->
+        color_text(rest, acc <> <<c::utf8>>, nil, 0, c)
     end
   end
 
@@ -327,6 +349,11 @@ defmodule HeexLint.Rules.NoInlineStyles do
       |> Keyword.get(:contracts, [])
       |> Enum.map(fn contract ->
         contract = Map.new(contract)
+
+        if Map.has_key?(contract, :allow_dynamic_identifiers) do
+          raise ConfigError,
+                "no_inline_styles: allow_dynamic_identifiers applies to the whole rule, so a contract cannot set it."
+        end
 
         pattern =
           case contract[:pattern] do
@@ -362,7 +389,7 @@ defmodule HeexLint.Rules.NoInlineStyles do
   end
 
   # The mistake this option invites is writing the expression instead of its name,
-  # caught by shape: `assigns[:x]` and `Floating.styles()` would match nothing.
+  # caught by shape: `assigns[:x]`, `Floating.styles()` and `nil` would match nothing.
   defp dynamic_names(options) do
     case Keyword.get(options, :allow_dynamic_identifiers, []) do
       names when is_list(names) ->
@@ -381,10 +408,15 @@ defmodule HeexLint.Rules.NoInlineStyles do
             "no_inline_styles: allow_dynamic_identifiers must be a list of strings, got entry: #{inspect(name)}"
     end
 
-    if not Regex.match?(@dynamic_name, name) do
+    if not Regex.match?(@dynamic_name, name) or matches_nothing?(name) do
       raise ConfigError,
             ~s|no_inline_styles: entry "#{name}" in allow_dynamic_identifiers is not a name as written (@floating_styles, floating_styles, assigns.floating_styles, styles.popper, Floating.styles), so it would match nothing.|
     end
+  end
+
+  defp matches_nothing?(name) do
+    root = name |> String.trim_leading("@") |> String.split(".") |> hd()
+    root in @reserved_words or name in @path_reads
   end
 
   defp fetch(options, key) do

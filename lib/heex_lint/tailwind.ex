@@ -18,9 +18,10 @@ defmodule HeexLint.Tailwind do
   When neither works, `unknown/2` returns nil and rules fall back to the
   class grammar. Answers are cached for the run, per stylesheet.
 
-  Neither process can outlive the linter or take longer than a deadline: 60
-  seconds for a stylesheet's first answer and 30 for later ones, and
-  `HEEX_LINT_TAILWIND_TIMEOUT`, a number of milliseconds, replaces both. A
+  Neither process can outlive the linter or take longer than a deadline: through
+  Node, 60 seconds for a stylesheet's first answer and 30 for later ones, and through
+  the standalone binary 60 for each question. `HEEX_LINT_TAILWIND_TIMEOUT`, a number of
+  milliseconds, replaces these. A
   process past its deadline is killed and that stylesheet uses the grammar for
   the rest of the run, with a warning. Two such failures in a row turn the
   oracle off. Node only starts once a question needs it.
@@ -39,8 +40,9 @@ defmodule HeexLint.Tailwind do
   # The most Process.send_after and a receive take.
   @max_timeout 4_294_967_295
 
-  # A caller outwaits the deadlines ahead of it: two failures turn the oracle off,
-  # and then its own question. The margin is for an oracle that cannot answer at all.
+  # How long a caller waits for any question to be answered: a question's deadline can
+  # end in a retry through the binary. The margin is for an oracle that cannot answer
+  # at all.
   @calls_ahead 3
   @call_margin 5_000
 
@@ -59,13 +61,15 @@ defmodule HeexLint.Tailwind do
   @font_size ~r/(?:^|[;{\s])font-size\s*:/
 
   # The standalone binary reads no stdin, so nothing tells it the linter died: a
-  # build started like this is killed when stdin closes, whatever ended the VM. The
+  # build started like this is killed, and its directory removed, when stdin closes,
+  # whatever ended the VM. The removal comes first: once the build is gone, the wrapper
+  # stops this watcher. The
   # wrapper leads its process group, which takes along whatever the build started.
   @guarded_build ~S"""
   exec 3<&0
   "$@" </dev/null 3<&- &
   build=$!
-  { while read -r _ <&3; do :; done; kill -KILL "$build"; kill -KILL -$$; } >/dev/null 2>&1 &
+  { while read -r _ <&3; do :; done; rm -rf "$HEEX_LINT_BUILD_DIR"; kill -KILL "$build"; kill -KILL -$$; } >/dev/null 2>&1 &
   watcher=$!
   wait "$build"
   status=$?
@@ -143,6 +147,15 @@ defmodule HeexLint.Tailwind do
   def expect(_pid, _entry, []), do: :ok
   def expect(pid, entry, tokens), do: GenServer.cast(pid, {:expect, entry, tokens})
 
+  @doc """
+  Whether a question about the project's current theme can come back with a suggestion.
+  Only Node's answers have them, so through the standalone binary a question asked for
+  one is a build that can say nothing. This starts nothing.
+  """
+  @spec suggests?(HeexLint.Project.t()) :: boolean()
+  def suggests?(%{entry: nil}), do: false
+  def suggests?(project), do: match?({:node, _}, status(project.oracle, project.entry))
+
   @doc "The strategy the oracle uses for `entry`, and why, for diagnostics."
   def status(nil, _entry), do: {:none, "not started"}
 
@@ -164,22 +177,60 @@ defmodule HeexLint.Tailwind do
       ]
   end
 
-  # Every deadline ends in an answer, so this only fires for an oracle that cannot
-  # give one. That costs the caller's file its project classes, not the run.
+  # Every deadline ends in an answer, so a caller waits as long as questions are being
+  # answered, however many are ahead of it. A whole wait with none answered is an
+  # oracle that cannot answer, which costs the caller's file its project classes and
+  # not the run.
   defp ask(pid, request) do
-    GenServer.call(pid, request, call_timeout())
-  catch
-    :exit, reason ->
-      GenServer.cast(
-        pid,
-        {:warn,
-         "The Tailwind oracle did not answer (#{exit_reason(reason)}); the Tailwind build was unavailable, so rules checked a file with the class grammar and may report project classes as unknown."}
-      )
+    started = System.monotonic_time(:millisecond)
 
-      nil
+    try do
+      await(pid, :gen_server.send_request(pid, request), nil, started)
+    catch
+      :exit, {:timeout, _call} -> gave_up(pid, {:timeout, waited(started)})
+      :exit, reason -> gave_up(pid, reason)
+    end
   end
 
-  defp exit_reason({:timeout, _call}), do: "timed out after #{seconds(call_timeout())} s"
+  # Nothing is known of the count before the first wait, so a question that gets no
+  # answer waits twice.
+  defp await(pid, pending, seen, started) do
+    case :gen_server.wait_response(pending, call_timeout()) do
+      {:reply, answer} ->
+        answer
+
+      {:error, {reason, _server}} ->
+        gave_up(pid, reason)
+
+      :timeout ->
+        case answered_count(pid) do
+          count when seen == nil or count != seen ->
+            await(pid, pending, count, started)
+
+          _ ->
+            :gen_server.receive_response(pending, 0)
+            gave_up(pid, {:timeout, waited(started)})
+        end
+    end
+  end
+
+  defp waited(started), do: System.monotonic_time(:millisecond) - started
+
+  defp answered_count(pid), do: GenServer.call(pid, :answered, @call_margin)
+
+  defp gave_up(pid, reason) do
+    GenServer.cast(
+      pid,
+      {:warn,
+       "The Tailwind oracle did not answer (#{exit_reason(reason)}); the Tailwind build was unavailable, so rules checked a file with the class grammar and may report project classes as unknown."}
+    )
+
+    nil
+  end
+
+  defp exit_reason({:timeout, waited}) when is_number(waited),
+    do: "timed out after #{round(waited / 1000)} s"
+
   defp exit_reason({reason, _call}), do: inspect(reason)
   defp exit_reason(reason), do: inspect(reason)
 
@@ -226,6 +277,7 @@ defmodule HeexLint.Tailwind do
        # The one question being worked on, and those waiting their turn.
        job: nil,
        waiting: [],
+       answered: 0,
        expected: %{},
        warm: MapSet.new(),
        failures: 0,
@@ -243,6 +295,7 @@ defmodule HeexLint.Tailwind do
   end
 
   def handle_call(:warnings, _from, state), do: {:reply, Enum.reverse(state.warnings), state}
+  def handle_call(:answered, _from, state), do: {:reply, state.answered, state}
 
   def handle_call({kind, entry, tokens}, from, state) when kind in [:unknown, :font_size] do
     request = %{from: from, kind: kind, entry: entry, tokens: tokens}
@@ -345,7 +398,7 @@ defmodule HeexLint.Tailwind do
 
   defp reply_all(state, job) do
     Enum.each(job.requests, &GenServer.reply(&1.from, answer(state, &1)))
-    %{state | job: nil}
+    %{state | job: nil, answered: state.answered + 1}
   end
 
   defp answer(state, %{kind: kind, entry: entry, tokens: tokens}) do
@@ -742,8 +795,9 @@ defmodule HeexLint.Tailwind do
   end
 
   defp run_build(state, job, {tokens, with_bases}) do
-    dir = Path.join(System.tmp_dir!(), "heex_lint_#{System.unique_integer([:positive])}")
-    File.mkdir_p!(dir)
+    dir = Path.join(System.tmp_dir!(), build_dir_name())
+    # Not mkdir_p: a directory already there is not this build's to read.
+    File.mkdir!(dir)
 
     bases =
       for token <- tokens,
@@ -768,7 +822,9 @@ defmodule HeexLint.Tailwind do
       Enum.map(candidates, &~s[@source inline("#{&1}");\n])
     ])
 
-    case open_build(job.bin, args, cd: Path.dirname(job.entry)) do
+    env = [{~c"HEEX_LINT_BUILD_DIR", String.to_charlist(dir)}]
+
+    case open_build(job.bin, args, cd: Path.dirname(job.entry), env: env) do
       nil ->
         File.rm_rf(dir)
         build_error(state, job, "it could not be started")
@@ -789,6 +845,11 @@ defmodule HeexLint.Tailwind do
 
   defp keep_output(output, _data) when byte_size(output) > 4096, do: output
   defp keep_output(output, data), do: output <> data
+
+  # Integers from System.unique_integer repeat between VMs, and two linters can share
+  # a temp directory.
+  defp build_dir_name,
+    do: "heex_lint_#{System.pid()}_#{Base.encode16(:rand.bytes(8), case: :lower)}"
 
   defp clean_build(%{dir: dir}), do: File.rm_rf(dir)
   defp clean_build(_job), do: :ok

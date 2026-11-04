@@ -54,7 +54,7 @@ defmodule HeexLint.Config do
       `@import "tailwindcss"` stays out. An invalid pattern warns and is ignored.
       Stylesheets under `deps/` imported by relative path already count
     * `:merge_functions` - functions whose arguments contain classes
-    * `:variant_functions` - functions whose map values contain classes
+    * `:variant_functions` - functions whose config holds classes, under `base`, `variants` and the like
     * `:note` - text appended to every message
     * `:tailwind_bin` - the standalone Tailwind binary, when not in `_build/`
   """

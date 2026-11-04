@@ -62,14 +62,45 @@ theme applies to every app.
   `_build/tailwind-<target>`; run `mix tailwind.install` if it is missing, or
   set `tailwind_bin`.
 
-When neither works, the run warns once and every rule that asks Tailwind falls back
-to the class grammar, which checks less: it cannot know a plugin's classes, and gives
-no spelling suggestions. Fix the warning before relying on a clean result.
+**With neither installed, there is no warning.** Every rule that asks Tailwind uses
+the class grammar, which checks less: it cannot know a plugin's classes, and gives no
+spelling suggestions. A plugin's class is then reported as one Tailwind does not know.
+If that happens, look for one of the two above.
 
-If the warning says Tailwind did not answer in time, the theme's build took longer
-than the wait: 60 seconds for a stylesheet's first answer and 30 for later ones. A
-plugin stuck in a loop or a cycle of `@import`s does this. On a machine that is only
-slow, raise the wait with `HEEX_LINT_TAILWIND_TIMEOUT`, in milliseconds.
+A warning means Tailwind was found and could not answer: the theme does not build, or
+`node` exited with no binary to fall back on. That stylesheet then uses the grammar too.
+Fix the warning before relying on a clean result. Through the standalone binary, a class
+that makes a plugin throw takes the stylesheet there when the build reaches the class,
+through its own `@source` or through Tailwind's automatic detection from its directory, since
+Tailwind cannot build it at all; the project's real build fails the same way.
+
+If the warning says the Tailwind process did not answer within so many seconds, the
+theme's build took longer than the wait: 60 seconds for a stylesheet's first answer through Node and 30 for later
+ones, and 60 for each question through the standalone binary. A plugin stuck in a loop or
+a cycle of `@import`s does this. On a machine that is only slow, raise the wait with
+`HEEX_LINT_TAILWIND_TIMEOUT`, in milliseconds. It replaces all of those waits.
+
+## A file is not being linted
+
+- It has to match `inputs`, which defaults to `lib/**/*.{ex,exs,heex}`.
+- Any path with a directory named `deps` in it is skipped, since that is where Mix puts
+  dependencies. That includes `lib/my_app_web/components/deps/button.ex`, and a whole
+  project checked out under a directory named `deps`.
+
+## A run stops with an error
+
+- **`File.Error` with `:eisdir`.** An `inputs` glob matched a directory, such as
+  `apps/*/lib` or `lib/*`. Write a glob of files, `apps/*/lib/**/*.{ex,exs,heex}`, or the
+  directory itself, `lib`, which is expanded.
+- **`literal_alloc: Cannot allocate ... bytes`.** The VM ran out of room for the project it
+  keeps while linting, at about 1 GB. Generated code gets there first: an ordinary project
+  needs about 20 MB of source, more or less by how it is written. Take the generated files
+  out of `inputs`.
+- **An exception from a class or value** is a bug: please report it. One shape that still
+  stops a run is a number past the VM's integer limit, which is about 1 MB of hexadecimal,
+  1.4 million octal digits or 4.2 million binary ones, such as `p-0xfff...`. In
+  `allow_dynamic_identifiers`, so does an improper list
+  or a string that is not valid UTF-8.
 
 ## A class is reported unknown but has CSS
 
@@ -87,11 +118,15 @@ what the rule reports.
 Under `@import "tailwindcss" prefix(tw)`, a class generates CSS only with the
 prefix first: `tw:hover:flex`, not `flex` or `hover:tw:flex`.
 
+A class longer than 10,000 characters, with more than 64 variants, or that makes a
+plugin throw is not judged by `no_unknown_classes`. The other rules still read it.
+
 ## Findings in a value the linter cannot read
 
 `require_static_classes` reports class values it cannot read on components:
 socket assigns in a LiveView's `render/1`, calls to functions in other
-modules, text glued to a runtime value (`"bg-#{@tone}"`). Write complete
-class names, move the choice into the rendering function with `assign/3`, a
-local helper or a map lookup, or register a class helper in
-`merge_functions`.
+modules, text glued to a runtime value (`"bg-#{@tone}"`), and a computed key on an
+assigned table (`@tones[@tone]`). Write complete class names, move the choice into the
+rendering function with a local helper, a map lookup on a variable or `assign/3` of the
+class it picks, as in `assign(assigns, :tone_class, %{a: "p-1"}[assigns.tone])`, or
+register a class helper in `merge_functions`.
