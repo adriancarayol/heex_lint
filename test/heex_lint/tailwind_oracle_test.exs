@@ -789,7 +789,8 @@ defmodule HeexLint.TailwindOracleTest do
 
       assert [_shell, _sleep] = started = pids(pid_file)
       assert Enum.all?(started, &gone?/1)
-      eventually(fn -> Path.wildcard(Path.join(temp, "heex_lint_*")) == [] end)
+      assert dir |> Path.join("input.path") |> File.read!() |> String.starts_with?(temp)
+      assert eventually(fn -> Path.wildcard(Path.join(temp, "heex_lint_*")) == [] end)
     end
   end
 
