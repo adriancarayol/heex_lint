@@ -272,6 +272,17 @@ defmodule HeexLint.TailwindOracleTest do
       assert gone?(os_pid)
     end
 
+    test "keeps a plugin's write with no newline out of the answer", %{tmp_dir: dir} do
+      fake_tailwind(dir, ~s|fs.writeSync(1, "chatty")|)
+      css = write(dir, "app.css", ~s(@import "tailwindcss";\n))
+      {port, os_pid} = start_worker(dir)
+      request(port, css)
+
+      assert %{"id" => 1, "ok" => true} = worker_answer(port, "")
+      Port.close(port)
+      assert gone?(os_pid)
+    end
+
     test "says so when a plugin ends its thread, and takes the next question", %{tmp_dir: dir} do
       fake_tailwind(dir, ~s|process.exit(3)|)
       css = write(dir, "app.css", ~s(@import "tailwindcss";\n))
@@ -688,8 +699,20 @@ defmodule HeexLint.TailwindOracleTest do
     end
   end
 
+  defp worker_answer(port, buffer) do
+    assert_receive {^port, {:data, data}}, 5_000
+    {lines, rest} = (buffer <> data) |> String.split("\n") |> Enum.split(-1)
+
+    Enum.find_value(lines, fn line ->
+      case JSON.decode(line) do
+        {:ok, answer} -> answer
+        _ -> nil
+      end
+    end) || worker_answer(port, List.first(rest))
+  end
+
   describe "a VM that dies without stopping anything" do
-    defp die_during_lint(dir, pid_file, started, settings) do
+    defp die_during_lint(dir, pid_file, started, settings, env \\ []) do
       ebin = Path.wildcard(Path.expand("../../_build/test/lib/*/ebin", __DIR__))
 
       script =
@@ -731,7 +754,7 @@ defmodule HeexLint.TailwindOracleTest do
 
       {_output, 0} =
         System.cmd("sh", ["-c", Enum.join(command, " ")],
-          env: [{"HEEX_LINT_TAILWIND_TIMEOUT", "#{@give_up_ms}"}]
+          env: [{"HEEX_LINT_TAILWIND_TIMEOUT", "#{@give_up_ms}"} | env]
         )
     end
 
@@ -760,10 +783,68 @@ defmodule HeexLint.TailwindOracleTest do
     test "leaves no standalone build behind", %{tmp_dir: dir} do
       {bin, pid_file} = hung_binary(dir)
       project_files(dir, page())
-      die_during_lint(dir, pid_file, 2, tailwind_bin: bin)
+      temp = Path.join(dir, "temp")
+      File.mkdir_p!(temp)
+      die_during_lint(dir, pid_file, 2, [tailwind_bin: bin], [{"TMPDIR", temp}])
 
       assert [_shell, _sleep] = started = pids(pid_file)
       assert Enum.all?(started, &gone?/1)
+      eventually(fn -> Path.wildcard(Path.join(temp, "heex_lint_*")) == [] end)
+    end
+  end
+
+  describe "questions waiting their turn" do
+    test "each gets its answer, past the wait for any one of them", %{tmp_dir: dir} do
+      bin =
+        script(dir, "fake/tailwind", """
+        #!/bin/sh
+        sleep 0.5
+        while [ "$#" -gt 0 ]; do
+          [ "$1" = "--output" ] && : > "$2"
+          shift
+        done
+        """)
+
+      deadline(1_500)
+      write(dir, "assets/css/app.css", ~s(@import "tailwindcss";\n))
+      project = Project.load(dir, [], %{})
+      {:ok, oracle} = Tailwind.start(%{project | settings: [tailwind_bin: bin]})
+
+      # A caller's wait is 9.5 s here, for 10 s of questions.
+      answers =
+        for number <- 1..20 do
+          entry = write(dir, "assets/css/app#{number}.css", ~s(@import "tailwindcss";\n))
+          project = %{project | entry: entry, oracle: oracle}
+          Task.async(fn -> Tailwind.unknown(project, ["flex"]) end)
+        end
+        |> Task.await_many(:infinity)
+
+      assert Enum.all?(answers, &is_list/1)
+      assert Tailwind.warnings(oracle) == []
+      Tailwind.stop(oracle)
+    end
+  end
+
+  describe "two linters at once" do
+    test "name their build directories apart", %{tmp_dir: dir} do
+      bin =
+        script(dir, "fake/tailwind", """
+        #!/bin/sh
+        while [ "$#" -gt 0 ]; do
+          [ "$1" = "--input" ] && dirname "$2" >> "#{dir}/dirs"
+          [ "$1" = "--output" ] && : > "$2"
+          shift
+        done
+        """)
+
+      write(dir, "assets/css/app.css", ~s(@import "tailwindcss";\n))
+      project = Project.load(dir, [], %{})
+      {:ok, oracle} = Tailwind.start(%{project | settings: [tailwind_bin: bin]})
+      assert is_list(Tailwind.unknown(%{project | oracle: oracle}, ["flex"]))
+      Tailwind.stop(oracle)
+
+      name = dir |> Path.join("dirs") |> File.read!() |> String.trim() |> Path.basename()
+      assert name =~ ~r/^heex_lint_#{System.pid()}_[0-9a-f]{16}$/
     end
   end
 
