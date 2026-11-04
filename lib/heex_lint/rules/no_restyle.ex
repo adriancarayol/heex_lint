@@ -15,7 +15,10 @@ defmodule HeexLint.Rules.NoRestyle do
   Variants and sizes come from the component's declarations:
   `attr :variant, values: ~w(primary secondary)` and `attr :size, values: ...`.
   Wrappers that forward `class` (or global attributes) to a design-system
-  component get that component's contract and suggestions.
+  component get that component's contract and suggestions. Each class prop
+  follows its own path: a wrapper's `title_class` handed to `<.card_title>` is
+  checked against `card_title`, and one it hands to no design-system component
+  is not checked.
 
   ## Options
 
@@ -23,19 +26,19 @@ defmodule HeexLint.Rules.NoRestyle do
       patterns match the component's function name: `"^card_title$"`.
     * `:message` - a string, or a map of category keys (`layout`, `color`,
       `typography`, `spacing`, `shape`, `effects`, `motion`, `default`).
-      Also `{{category}}`, `{{variants}}`, `{{sizes}}`, `{{wrapper}}`,
+      Also `{{category}}`, `{{variants}}`, `{{sizes}}`, `{{wrapper}}`, `{{prop}}`,
       `{{where}}`, `{{around}}` and `{{entries}}`.
   """
 
   @behaviour HeexLint.Rule
 
-  alias HeexLint.{Policy, Project, Rule, Theme}
+  alias HeexLint.{Policy, Project, Rule, Tailwind, Theme}
   alias HeexLint.Policy.ConfigError
   alias HeexLint.Project.Component
 
   @not_allowed ~s|"{{className}}" is not allowed on <{{component}}>:|
   @owns "<{{component}}> owns its {{category}}."
-  @owns_via_wrapper "<{{wrapper}}> forwards class to <{{component}}>, which owns its {{category}}."
+  @owns_via_wrapper "<{{wrapper}}> forwards {{prop}} to <{{component}}>, which owns its {{category}}."
   @new_variant_guard "only if the design explicitly calls for a treatment none of these provides."
   @spacing_sizes "Use a size ({{sizes}}), or {{around}} for space around it."
   @spacing_around "For space around it, use {{around}}."
@@ -72,7 +75,9 @@ defmodule HeexLint.Rules.NoRestyle do
 
   @impl true
   def prepare(options, project) do
-    {policy, warnings} = Policy.compile(options, project.theme, "no_restyle")
+    {policy, warnings} =
+      Policy.compile(options, project.theme, "no_restyle", &Tailwind.known(project, &1))
+
     {:ok, policy, warnings}
   rescue
     error in ConfigError -> {:error, error.message}
@@ -127,6 +132,7 @@ defmodule HeexLint.Rules.NoRestyle do
       "variants" => variant_names,
       "sizes" => Enum.join(sizes || [], ", "),
       "wrapper" => Rule.display(site.wrapper),
+      "prop" => site.prop,
       "file" => shown,
       "where" => where
     }
@@ -217,7 +223,10 @@ defmodule HeexLint.Rules.NoRestyle do
     |> Enum.find_value(fn {{element, resolution}, index} ->
       if resolution && accepts.(resolution.name) do
         %{
-          name: resolution.name,
+          # As written, like the name it is shown by: a wrapper's target is
+          # still a place to offer. A slot is no component, and its owner is
+          # the place already named.
+          name: if(element.type == :slot, do: resolution.name, else: element.name),
           display: HeexLint.Element.display_name(element),
           direct: index == 0
         }

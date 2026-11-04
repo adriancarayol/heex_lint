@@ -1,0 +1,9 @@
+/* Linked into node_modules by run.sh, the way a pnpm workspace links a package. */
+@import "parity-workspace-kit/more.css";
+
+@theme {
+  --radius-*: initial;
+  --radius-card: 1px;
+  --shadow-foo: none;
+  --color-primary: red;
+}

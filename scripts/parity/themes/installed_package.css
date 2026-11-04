@@ -1,0 +1,8 @@
+/* A design system installed as a package, named by theme_imports. */
+@import "tailwindcss";
+@import "parity-installed-kit/theme.css";
+
+/* One color of the app's own. */
+@theme inline {
+  --color-spotlight: oklch(0.92 0 0);
+}
