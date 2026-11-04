@@ -407,11 +407,12 @@ defmodule HeexLint.Project.Source do
   defp nested_templates(template, module, name, clause) do
     if String.contains?(template.source, "~H") do
       # A heredoc's lines have lost their indentation, which is where they stand in the file.
+      # Elixir 1.18 adds a `:column` to every line, so the first is placed with spaces too.
       indent = "\n" <> String.duplicate(" ", template.indentation)
 
       for {:expr, code, {line, column}} <- Element.expressions(template),
-          code = String.replace(code, "\n", indent),
-          {:ok, ast} <- [Code.parse(code, line: line, column: max(column, 1))],
+          code = String.duplicate(" ", max(column - 1, 0)) <> String.replace(code, "\n", indent),
+          {:ok, ast} <- [Code.parse(code, line: line)],
           nested <- sigils(ast, module, name, clause),
           do: nested
     else
