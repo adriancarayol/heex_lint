@@ -91,7 +91,8 @@ defmodule HeexLint.Project.Source do
 
   defp modules(ast, parent, path, acc) do
     each_module(ast, parent, acc, fn name, line, body, acc ->
-      [read_module(%ModuleInfo{name: name, file: path, line: line}, body) | acc]
+      id = System.unique_integer([:positive])
+      [read_module(%ModuleInfo{name: name, file: path, line: line, id: id}, body) | acc]
     end)
   end
 

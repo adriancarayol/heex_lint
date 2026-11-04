@@ -763,22 +763,12 @@ defmodule HeexLint.Collector do
 
     with false <- MapSet.member?(state.seen, key),
          %ModuleInfo{} = module <- current_module(state) do
-      assigned =
-        for clauses <- Map.values(module.functions),
-            clause <- clauses,
-            value <- assigned_values(clause, name),
-            do: {clause, value}
-
-      defaults =
-        for component <- Map.values(module.components),
-            %{default: default} when default not in [:none, nil] <-
-              [Component.attr(component, name)],
-            do: {nil, default}
+      assigned = Map.get(module_assigns(module), name, [])
 
       hop(state, key, meta, fn state ->
         state = %{state | mode: :body, text: body_text(state, meta)}
 
-        Enum.reduce(assigned ++ defaults, state, fn {clause, value}, acc ->
+        Enum.reduce(assigned, state, fn {clause, value}, acc ->
           visit(%{acc | clause: clause}, value)
         end)
       end)
@@ -1223,11 +1213,8 @@ defmodule HeexLint.Collector do
 
   defp table_assigned(state, name) do
     case current_module(state) do
-      %ModuleInfo{functions: functions} ->
-        for clauses <- Map.values(functions),
-            clause <- clauses,
-            value <- assigned_values(clause, name),
-            do: value
+      %ModuleInfo{} = module ->
+        for {%{}, value} <- Map.get(module_assigns(module), name, []), do: value
 
       nil ->
         []
@@ -1316,20 +1303,20 @@ defmodule HeexLint.Collector do
   defp bound_values(nil, _name), do: nil
 
   defp bound_values(%{id: id, body: body}, name) do
-    key = {__MODULE__, :bindings, id}
-
-    index =
-      case Process.get(key) do
-        nil ->
-          index = bindings(body)
-          Process.put(key, index)
-          index
-
-        index ->
-          index
-      end
-
+    index = memo({__MODULE__, :bindings, id}, fn -> bindings(body) end)
     Map.get(index, name)
+  end
+
+  defp memo(key, fun) do
+    case Process.get(key) do
+      nil ->
+        value = fun.()
+        Process.put(key, value)
+        value
+
+      value ->
+        value
+    end
   end
 
   defp bindings(body) do
@@ -1345,47 +1332,76 @@ defmodule HeexLint.Collector do
     Map.new(found, fn {name, values} -> {name, Enum.reverse(values)} end)
   end
 
-  # The values `assign(assigns, :name, value)` and friends give an assign.
+  # The values `assign(assigns, :name, value)` and friends give an assign. A read of
+  # one in a template can come thousands of times in a module, so like the bindings
+  # above these are indexed once per task, by clause and by module.
   defp assigned_values(nil, _name), do: []
 
-  defp assigned_values(%{body: body}, name) do
-    atom = String.to_atom(name)
+  defp assigned_values(clause, name), do: Map.get(clause_assigns(clause), name, [])
 
-    {_, values} =
-      Macro.prewalk(body, [], fn node, acc ->
-        {node, acc ++ assignment(node, atom)}
+  defp clause_assigns(%{id: id, body: body}),
+    do: memo({__MODULE__, :assigns, id}, fn -> assignments(body) end)
+
+  defp assignments(body) do
+    {_, found} =
+      Macro.prewalk(body, %{}, fn node, acc ->
+        {node,
+         node
+         |> assignment()
+         |> Enum.reduce(acc, fn {name, value}, acc ->
+           Map.update(acc, Atom.to_string(name), [value], &[value | &1])
+         end)}
       end)
 
-    values
+    Map.new(found, fn {name, values} -> {name, Enum.reverse(values)} end)
   end
 
-  defp assignment({:|>, _, [_left, {fun, meta, args}]}, name) when is_list(args),
-    do: assignment({fun, meta, [:piped | args]}, name)
+  # What any function of the module assigns to each name, each value with its clause,
+  # and the defaults its components declare, with no clause.
+  defp module_assigns(%ModuleInfo{} = module) do
+    memo({__MODULE__, :module_assigns, module.id}, fn ->
+      assigned =
+        for clauses <- Map.values(module.functions),
+            clause <- clauses,
+            {name, values} <- clause_assigns(clause),
+            value <- values,
+            do: {name, {clause, value}}
 
-  defp assignment({fun, _, [_assigns, key, value]}, name)
-       when fun in [:assign, :assign_new, :update] do
-    cond do
-      key != name -> []
-      fun == :assign -> [value]
-      true -> fn_bodies(value)
-    end
+      defaults =
+        for component <- Map.values(module.components),
+            %{name: name, default: default} <- Enum.uniq_by(component.attrs, & &1.name),
+            default not in [:none, nil],
+            do: {name, {nil, default}}
+
+      Enum.group_by(assigned ++ defaults, &elem(&1, 0), &elem(&1, 1))
+    end)
   end
 
-  defp assignment({:assign, _, [_assigns, pairs]}, name) do
-    case pairs do
-      {:%{}, _, kv} -> kv |> Code.keyword() |> Keyword.get_values(name)
-      kv when is_list(kv) -> kv |> Code.keyword() |> Keyword.get_values(name)
-      _ -> []
-    end
+  defp assignment({:|>, _, [_left, {fun, meta, args}]}) when is_list(args),
+    do: assignment({fun, meta, [:piped | args]})
+
+  defp assignment({{:., _, [{:__aliases__, _, [:Phoenix, :Component]}, fun]}, meta, args})
+       when is_list(args),
+       do: assignment({fun, meta, args})
+
+  defp assignment({fun, _, [_assigns, key, value]})
+       when fun in [:assign, :assign_new, :update] and is_atom(key) do
+    if fun == :assign,
+      do: [{key, value}],
+      else: Enum.map(fn_bodies(value), &{key, &1})
   end
 
-  defp assignment(
-         {{:., _, [{:__aliases__, _, [:Map]}, :put]}, _, [{:assigns, _, _}, name, value]},
-         name
-       ),
-       do: [value]
+  defp assignment({:assign, _, [_assigns, {:%{}, _, pairs}]}), do: Code.keyword(pairs)
+  defp assignment({:assign, _, [_assigns, pairs]}) when is_list(pairs), do: Code.keyword(pairs)
 
-  defp assignment(_node, _name), do: []
+  defp assignment({:%{}, _, [{:|, _, [{:assigns, _, ctx}, pairs]}]}) when is_atom(ctx),
+    do: Code.keyword(pairs)
+
+  defp assignment({{:., _, [{:__aliases__, _, [:Map]}, :put]}, _, [{:assigns, _, _}, key, value]})
+       when is_atom(key),
+       do: [{key, value}]
+
+  defp assignment(_node), do: []
 
   defp fn_bodies({:fn, _, clauses}), do: for({:->, _, [_args, body]} <- clauses, do: body)
   defp fn_bodies(_other), do: []

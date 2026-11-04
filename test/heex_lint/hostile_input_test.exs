@@ -1122,6 +1122,29 @@ defmodule HeexLint.HostileInputTest do
     end
   end
 
+  describe "a read repeated across a module" do
+    # 6,400 components took 29 s when each read of an assign walked every clause.
+    test "an assign is read once from the module's index", %{tmp_dir: dir} do
+      components =
+        Enum.map_join(1..6400, "\n", fn n ->
+          """
+          attr :x#{n}, :any, default: nil
+          def c#{n}(assigns) do
+            assigns = assign(assigns, :t#{n}, %{"bg-pink-500" => true})
+            ~H"<div class={cn(@t#{n})} title={cn(@t#{n})} id={cn(@t#{n})} />"
+          end
+          """
+        end)
+
+      files = %{
+        "lib/app_web/big.ex" => "defmodule AppWeb.Big do\nuse AppWeb, :html\n#{components}\nend\n"
+      }
+
+      rules = [no_raw_colors: {:error, scan_all_strings: true}]
+      assert length(quick(fn -> lint(dir, files, rules: rules) end)) == 6400
+    end
+  end
+
   describe "parse_declarations" do
     defp values(css), do: css |> Theme.parse_declarations() |> elem(0)
 

@@ -890,6 +890,37 @@ defmodule HeexLint.Rules.NoRawColorsTest do
       )
     end
 
+    test "an assign set by the qualified call or a map update is followed", %{tmp_dir: dir} do
+      for set <- [
+            ~S|Phoenix.Component.assign(assigns, :tones, %{"bg-pink-500" => true})|,
+            ~S|Phoenix.Component.assign(assigns, tones: %{"bg-pink-500" => true})|,
+            ~S'assigns |> Phoenix.Component.assign(:tones, %{"bg-pink-500" => true})',
+            ~S|Phoenix.Component.assign_new(assigns, :tones, fn -> %{"bg-pink-500" => true} end)|,
+            ~S'%{assigns | tones: %{"bg-pink-500" => true}}'
+          ] do
+        body = """
+        def a(assigns) do
+          assigns = #{set}
+          ~H"<div class={cn(@tones)} />"
+        end
+        """
+
+        assert [finding] = templated(dir, body)
+        assert finding.message =~ "bg-pink-500"
+      end
+    end
+
+    test "a map update of something else sets no assign", %{tmp_dir: dir} do
+      body = ~S"""
+      def a(assigns) do
+        other = %{assigns.other | tones: %{"bg-pink-500" => true}}
+        ~H"<div class={cn(@tones)} data-x={other} />"
+      end
+      """
+
+      assert templated(dir, body) == []
+    end
+
     test "class map keys count when a template's merge call reads them", %{tmp_dir: dir} do
       for body <- [
             ~S"""

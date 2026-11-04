@@ -58,6 +58,9 @@ Each of these reports something that passed before.
   number of links away, and reports a raw color any number of links from a hole, as in
   `"--tone: #{v}"`. A long chain alone never makes a `style` dynamic. A `style` default that
   reads its own prop is reported as dynamic.
+- **Assigns set another way.** `Phoenix.Component.assign` and `%{assigns | tones: ...}` are
+  followed as `assign(assigns, :tones, ...)` is, so what they set reaches every rule, where
+  it was dynamic or, in `cn(@tones)` under `scan_all_strings`, unread.
 - **Variables read directly.** `<.button class={v}>` is read where the function binds `v`,
   with reports and fixes there. Its classes were dropped. `@name` in that value is a module
   attribute, not an assign.
@@ -316,6 +319,8 @@ Each of these reports something that passed before.
   stylesheet of escaped quotes, which took 16 seconds on 80 KB; scale steps naming one long
   value, which each parsed all of it; tens of thousands of `@import`s that find nothing. No
   findings change, except as listed above.
+- **Slow input read once per task:** assigns read in a module of thousands of components, as
+  `cn(@tones)` under `scan_all_strings` walked every clause on each read. No findings change.
 - The standalone binary takes one build for the classes a run's files and contract entries
   name, rather than one per `text-*` class, on a theme with an `@config` or `@plugin`.
 - `no_raw_colors` no longer runs a standalone Tailwind build for each undeclared color. Only

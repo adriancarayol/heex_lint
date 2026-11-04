@@ -852,6 +852,25 @@ defmodule HeexLint.VariableChainsTest do
     end
   end
 
+  describe "an assign set another way" do
+    for set <- [
+          ~S|Phoenix.Component.assign(assigns, :c, "bg-pink-500")|,
+          ~S'%{assigns | c: "bg-pink-500"}'
+        ] do
+      test "#{set} is read at a class site", %{tmp_dir: dir} do
+        files = page("assigns = #{unquote(set)}")
+
+        assert [%{rule: :no_raw_colors}] = lint(dir, files, rules: @rules)
+      end
+    end
+
+    test "another module's assign sets nothing", %{tmp_dir: dir} do
+      files = page(~S|assigns = Other.assign(assigns, :c, "bg-pink-500")|)
+
+      assert [%{rule: :require_static_classes}] = lint(dir, files, rules: @rules)
+    end
+  end
+
   describe "a variable a template reads" do
     test "is reported where the function binds it", %{tmp_dir: dir} do
       files = page(~s(v = "bg-pink-500"), "<.button class={v}>x</.button>")
