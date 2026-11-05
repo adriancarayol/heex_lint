@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.0
 
 HeexLint now follows [@shadcn/lint](https://github.com/shadcn-ui/lint) 0.2.4 and the changes
 merged after it, up to commit `9231259`, with the class grammar of

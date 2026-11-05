@@ -1,7 +1,7 @@
 defmodule HeexLint.MixProject do
   use Mix.Project
 
-  @version "0.2.2"
+  @version "0.3.0"
   @source_url "https://github.com/adriancarayol/heex_lint"
 
   def project do
