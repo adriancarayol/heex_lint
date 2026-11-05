@@ -353,6 +353,26 @@ defmodule HeexLint.HostileInputTest do
       end)
     end
 
+    # A minor collection walks all of a process's off-heap binaries, so with each literal
+    # one, 240,000 of them took 26 s instead of 9 s. Too slow to tell apart by time at a
+    # size CI can run, so this looks at where they are.
+    test "a line of many literals keeps them on the heap once parsed" do
+      literals = Enum.map_join(1..2_000, ", ", &~s("p-#{&1}"))
+
+      task =
+        Task.async(fn ->
+          {:ok, ast} = HeexLint.Code.parse("[#{literals}]")
+          :erlang.garbage_collect()
+          {:binary, off_heap} = Process.info(self(), :binary)
+          {ast, off_heap}
+        end)
+
+      {ast, off_heap} = Task.await(task)
+
+      assert length(ast) == 2_000
+      assert length(off_heap) < 100
+    end
+
     test "with an escape of its own offers no suggestion", %{tmp_dir: dir} do
       assert [%{suggestions: []}] =
                lint(dir, page(~S(<div class={"p-[12px] \\n"} />)),

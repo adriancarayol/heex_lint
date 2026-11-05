@@ -17,6 +17,10 @@ defmodule HeexLint.Grammar.Classes do
   # one, so /[/[/[ is not searched once per slash.
   @opacity_modifier "\\/(?:[\\w.%]+|\\[[^\\[\\]]*\\]|\\([^()]*\\))$"
 
+  # Read below through sigil_r, as the literals they are, so that each is compiled with
+  # this module. Compiled on each call, these took a third of the time on a class.
+  @palette_class "#{@color_prefix}(?:#{Enum.join(@palette, "|")})-\\d{2,3}(?:#{@opacity_modifier})?$"
+
   # What `\s` reads in a class string.
   @whitespace [" ", "\t", "\n", "\v", "\f", "\r"]
 
@@ -27,10 +31,10 @@ defmodule HeexLint.Grammar.Classes do
   def palette_names, do: @palette
 
   @doc "A regex matching the color utility prefix of a class base, such as `bg-`."
-  def color_prefix, do: Regex.compile!(@color_prefix)
+  def color_prefix, do: sigil_r(<<unquote(@color_prefix)>>, [])
 
   @doc "A regex matching an opacity modifier at the end of a class base, such as `/50`."
-  def opacity_modifier, do: Regex.compile!(@opacity_modifier)
+  def opacity_modifier, do: sigil_r(<<unquote(@opacity_modifier)>>, [])
 
   @doc """
   Splits a class into its variants and base. Brackets and parentheses keep
@@ -147,11 +151,7 @@ defmodule HeexLint.Grammar.Classes do
     Regex.match?(palette_regex(), normalize(token))
   end
 
-  defp palette_regex do
-    Regex.compile!(
-      "#{@color_prefix}(?:#{Enum.join(@palette, "|")})-\\d{2,3}(?:#{@opacity_modifier})?$"
-    )
-  end
+  defp palette_regex, do: sigil_r(<<unquote(@palette_class)>>, [])
 
   @doc """
   `token` with its base replaced by `base`, keeping variants and the
