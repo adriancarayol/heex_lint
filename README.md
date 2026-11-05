@@ -32,7 +32,7 @@ Or add it to your dev and test dependencies yourself:
 ```elixir
 def deps do
   [
-    {:heex_lint, "~> 0.2", only: [:dev, :test], runtime: false}
+    {:heex_lint, "~> 0.3", only: [:dev, :test], runtime: false}
   ]
 end
 ```
