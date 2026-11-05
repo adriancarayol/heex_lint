@@ -353,6 +353,26 @@ defmodule HeexLint.HostileInputTest do
       end)
     end
 
+    # A minor collection walks every off-heap string the tokenizer made, so with one for
+    # each literal, 240,000 of them took 26 s instead of 9 s. Too slow to tell apart by time
+    # at a size CI can run, so this looks at where they are.
+    test "a line of many literals keeps them on the heap once parsed" do
+      literals = Enum.map_join(1..2_000, ", ", &~s("p-#{&1}"))
+
+      task =
+        Task.async(fn ->
+          {:ok, ast} = HeexLint.Code.parse("[#{literals}]")
+          :erlang.garbage_collect()
+          {:binary, off_heap} = Process.info(self(), :binary)
+          {ast, off_heap}
+        end)
+
+      {ast, off_heap} = Task.await(task)
+
+      assert length(ast) == 2_000
+      assert length(off_heap) < 100
+    end
+
     test "with an escape of its own offers no suggestion", %{tmp_dir: dir} do
       assert [%{suggestions: []}] =
                lint(dir, page(~S(<div class={"p-[12px] \\n"} />)),
@@ -1204,7 +1224,8 @@ defmodule HeexLint.HostileInputTest do
       assert [_ | _] = quick(fn -> lint(dir, files, rules: rules) end)
     end
 
-    # 6,400 components took 29 s when each read of an assign walked every clause.
+    # 6,400 components took 29 s when each read of an assign walked every clause, and 2 s
+    # now. CI takes three times that, and more on a slow runner.
     test "an assign is read once from the module's index", %{tmp_dir: dir} do
       components =
         Enum.map_join(1..6400, "\n", fn n ->
@@ -1222,7 +1243,7 @@ defmodule HeexLint.HostileInputTest do
       }
 
       rules = [no_raw_colors: {:error, scan_all_strings: true}]
-      assert length(quick(fn -> lint(dir, files, rules: rules) end)) == 6400
+      assert length(quick(fn -> lint(dir, files, rules: rules) end, 20_000)) == 6400
     end
   end
 

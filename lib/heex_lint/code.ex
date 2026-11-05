@@ -20,7 +20,12 @@ defmodule HeexLint.Code do
     )
   end
 
-  defp encode(literal, meta) when is_binary(literal), do: {:ok, {:__block__, meta, [literal]}}
+  # The tokenizer makes each string off-heap, however short, and a minor collection walks
+  # every such string a process holds. A short copy is on the heap, so a parsed expression
+  # of many literals does not make each collection cost them all.
+  defp encode(literal, meta) when is_binary(literal),
+    do: {:ok, {:__block__, meta, [:binary.copy(literal)]}}
+
   defp encode(literal, _meta), do: {:ok, literal}
 
   @doc "The module name an alias node spells, such as `\"MyApp.Web\"`."
