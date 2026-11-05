@@ -21,8 +21,8 @@ defmodule HeexLint.Code do
   end
 
   # The tokenizer makes each string off-heap, however short, and a minor collection walks
-  # all of a process's off-heap binaries. A short copy is on the heap, so a parsed
-  # expression of many literals does not make each collection cost them all.
+  # every such string a process holds. A short copy is on the heap, so a parsed expression
+  # of many literals does not make each collection cost them all.
   defp encode(literal, meta) when is_binary(literal),
     do: {:ok, {:__block__, meta, [:binary.copy(literal)]}}
 

@@ -353,9 +353,9 @@ defmodule HeexLint.HostileInputTest do
       end)
     end
 
-    # A minor collection walks all of a process's off-heap binaries, so with each literal
-    # one, 240,000 of them took 26 s instead of 9 s. Too slow to tell apart by time at a
-    # size CI can run, so this looks at where they are.
+    # A minor collection walks every off-heap string the tokenizer made, so with one for
+    # each literal, 240,000 of them took 26 s instead of 9 s. Too slow to tell apart by time
+    # at a size CI can run, so this looks at where they are.
     test "a line of many literals keeps them on the heap once parsed" do
       literals = Enum.map_join(1..2_000, ", ", &~s("p-#{&1}"))
 

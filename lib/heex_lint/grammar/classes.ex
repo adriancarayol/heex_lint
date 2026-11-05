@@ -17,8 +17,8 @@ defmodule HeexLint.Grammar.Classes do
   # one, so /[/[/[ is not searched once per slash.
   @opacity_modifier "\\/(?:[\\w.%]+|\\[[^\\[\\]]*\\]|\\([^()]*\\))$"
 
-  # Read below through sigil_r, as the literals they are, so that each is compiled with
-  # this module. Compiled on each call, these took a third of the time on a class.
+  # Read below through sigil_r, as the literals they are, so that a call does not compile
+  # them. Compiled on each call, these took a third of the time on a class.
   @palette_class "#{@color_prefix}(?:#{Enum.join(@palette, "|")})-\\d{2,3}(?:#{@opacity_modifier})?$"
 
   # What `\s` reads in a class string.
