@@ -1224,7 +1224,8 @@ defmodule HeexLint.HostileInputTest do
       assert [_ | _] = quick(fn -> lint(dir, files, rules: rules) end)
     end
 
-    # 6,400 components took 29 s when each read of an assign walked every clause.
+    # 6,400 components took 29 s when each read of an assign walked every clause, and 2 s
+    # now. CI takes three times that, and more on a slow runner.
     test "an assign is read once from the module's index", %{tmp_dir: dir} do
       components =
         Enum.map_join(1..6400, "\n", fn n ->
@@ -1242,7 +1243,7 @@ defmodule HeexLint.HostileInputTest do
       }
 
       rules = [no_raw_colors: {:error, scan_all_strings: true}]
-      assert length(quick(fn -> lint(dir, files, rules: rules) end)) == 6400
+      assert length(quick(fn -> lint(dir, files, rules: rules) end, 20_000)) == 6400
     end
   end
 
